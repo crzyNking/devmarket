@@ -1,8 +1,14 @@
 // src/utils/supabase.js
 import { createClient } from '@supabase/supabase-js';
 
-// Use environment variables with fallback
-const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || 'https://iosaukezcsouefeaiblf.supabase.co';
-const supabaseKey = process.env.REACT_APP_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_TLWXxsizvtmo3JKAt-MM6A_sSI-tt_m';
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
+const supabaseKey = process.env.REACT_APP_SUPABASE_PUBLISHABLE_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+if (!supabaseUrl || !supabaseKey) {
+  console.error('Missing Supabase environment variables. Make sure REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_PUBLISHABLE_KEY are set.');
+}
+
+export const supabase = createClient(
+  supabaseUrl || '',
+  supabaseKey || ''
+);

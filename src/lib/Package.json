@@ -20,7 +20,8 @@
     "rules": {
       "no-unused-vars": "warn",
       "react-hooks/exhaustive-deps": "warn",
-      "jsx-a11y/anchor-is-valid": "warn"
+      "jsx-a11y/anchor-is-valid": "warn",
+      "no-case-declarations": "warn"
     }
   },
   "browserslist": {

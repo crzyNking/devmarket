@@ -50,10 +50,17 @@ function appReducer(state, action) {
     case 'MARK_MESSAGE_READ': return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'DELETE_MESSAGE': return { ...state, messages: (state.messages || []).filter(m => m.id !== action.payload) };
     case 'SET_FAVORITES': return { ...state, favorites: action.payload || [] };
-    case 'TOGGLE_FAVORITE': const favExists = (state.favorites || []).find(f => f.id === action.payload.id); return { ...state, favorites: favExists ? (state.favorites || []).filter(f => f.id !== action.payload.id) : [...(state.favorites || []), action.payload] };
+    case 'TOGGLE_FAVORITE': {
+      const favExists = (state.favorites || []).find(f => f.id === action.payload.id);
+      return { ...state, favorites: favExists ? (state.favorites || []).filter(f => f.id !== action.payload.id) : [...(state.favorites || []), action.payload] };
+    }
     case 'SET_AUTH_ERROR': return { ...state, authError: action.payload };
     case 'LOGOUT': return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], favorites: [] };
-    case 'TOGGLE_THEME': const newTheme = state.theme === 'light' ? 'dark' : 'light'; localStorage.setItem('devMarketTheme', newTheme); return { ...state, theme: newTheme };
+    case 'TOGGLE_THEME': {
+      const newTheme = state.theme === 'light' ? 'dark' : 'light';
+      localStorage.setItem('devMarketTheme', newTheme);
+      return { ...state, theme: newTheme };
+    }
     default: return state;
   }
 }
