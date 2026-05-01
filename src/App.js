@@ -35,8 +35,7 @@ const initialState = {
   onlineUsers: [],
   analyticsData: null,
   isAdmin: false,
-  moderationQueue: [],
-  users: [], // Admin users list
+  moderationQueue: []
 };
 
 function appReducer(state, action) {
@@ -69,8 +68,6 @@ function appReducer(state, action) {
       return { ...state, apps: action.payload || [] };
     case 'ADD_APP': 
       return { ...state, apps: [action.payload, ...(state.apps || [])] };
-    case 'UPDATE_APP':
-      return { ...state, apps: (state.apps || []).map(a => a.id === action.payload.id ? { ...a, ...action.payload } : a) };
     case 'DELETE_APP':
       return { ...state, apps: (state.apps || []).filter(a => a.id !== action.payload) };
     case 'SET_CODE_SNIPPETS': 
@@ -95,8 +92,6 @@ function appReducer(state, action) {
       return { ...state, messages: action.payload || [] };
     case 'ADD_MESSAGE': 
       return { ...state, messages: [action.payload, ...(state.messages || [])] };
-    case 'MARK_MESSAGE_READ':
-      return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'SET_CONVERSATIONS':
       return { ...state, conversations: action.payload || [] };
     case 'UPDATE_CONVERSATION':
@@ -111,14 +106,16 @@ function appReducer(state, action) {
         ...state,
         conversations: (state.conversations || []).map(c => {
           if (c.userId === action.payload.otherUserId) {
-            const isToCurrentUser = action.payload.message.to_user === state.currentUser?.id;
             return {
               ...c,
               messages: [...c.messages, action.payload.message],
               lastMessage: action.payload.message.message,
               lastMessageTime: action.payload.message.created_at,
-              unreadCount: isToCurrentUser ? c.unreadCount + 1 : c.unreadCount
+              unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
             };
+          }
+          if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
+            return c;
           }
           return c;
         })
@@ -132,6 +129,8 @@ function appReducer(state, action) {
           c.userId === action.payload ? { ...c, unreadCount: 0, messages: c.messages.map(m => ({ ...m, read: true })) } : c
         )
       };
+    case 'MARK_MESSAGE_READ': 
+      return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'DELETE_MESSAGE': 
       return { ...state, messages: (state.messages || []).filter(m => m.id !== action.payload) };
     case 'SET_FAVORITES': 
@@ -148,16 +147,10 @@ function appReducer(state, action) {
       return { ...state, analyticsData: action.payload };
     case 'SET_IS_ADMIN':
       return { ...state, isAdmin: action.payload };
-    case 'SET_USERS':
-      return { ...state, users: action.payload || [] };
-    case 'UPDATE_USER_ROLE':
-      return { ...state, users: (state.users || []).map(u => u.id === action.payload.id ? { ...u, role: action.payload.role } : u) };
-    case 'DELETE_USER':
-      return { ...state, users: (state.users || []).filter(u => u.id !== action.payload) };
     case 'SET_MODERATION_QUEUE':
       return { ...state, moderationQueue: action.payload || [] };
     case 'LOGOUT': 
-      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], isAdmin: false, users: [] };
+      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], isAdmin: false };
     case 'TOGGLE_THEME': {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
@@ -664,7 +657,6 @@ function App() {
   function setupRealtimeSubscriptions(userId) {
     realtimeManager.unsubscribeAll();
 
-    // Messages real-time subscription
     realtimeManager.subscribe(
       `messages-${userId}`,
       {
@@ -706,30 +698,6 @@ function App() {
       }
     );
 
-    // Also subscribe to sent messages to update conversations
-    realtimeManager.subscribe(
-      `messages-sent-${userId}`,
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-        filter: `from_user=eq.${userId}`
-      },
-      (payload) => {
-        const newMsg = payload.new;
-        dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
-        
-        dispatch({
-          type: 'ADD_CONVERSATION_MESSAGE',
-          payload: {
-            otherUserId: newMsg.to_user,
-            message: newMsg
-          }
-        });
-      }
-    );
-
-    // Notifications real-time
     realtimeManager.subscribe(
       `notifications-${userId}`,
       {
@@ -747,7 +715,6 @@ function App() {
       }
     );
 
-    // Listings real-time
     realtimeManager.subscribe(
       'listings-updates',
       {
@@ -764,42 +731,6 @@ function App() {
           dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
         }
         loadPublicData();
-      }
-    );
-
-    // Apps real-time
-    realtimeManager.subscribe(
-      'apps-updates',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'apps'
-      },
-      (payload) => {
-        if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_APP', payload: payload.new });
-        } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_APP', payload: payload.old.id });
-        } else if (payload.eventType === 'UPDATE') {
-          dispatch({ type: 'UPDATE_APP', payload: payload.new });
-        }
-      }
-    );
-
-    // Code snippets real-time
-    realtimeManager.subscribe(
-      'snippets-updates',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'code_snippets'
-      },
-      (payload) => {
-        if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_CODE_SNIPPET', payload: payload.new });
-        } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_SNIPPET', payload: payload.old.id });
-        }
       }
     );
 
@@ -937,7 +868,7 @@ function App() {
           </div>
           <p className="dm-loader__tagline">IT Marketplace Hub</p>
           <div className="dm-loader__bar-track">
-            <div className="dm-loader__bar-fill" style={{ animation: 'dmBarShimmer 1.2s ease-in-out infinite' }} />
+            <div className="dm-loader__bar-fill" style={{ width: '100%', animation: 'dmBarShimmer 1.6s linear infinite' }} />
           </div>
         </div>
       </div>
@@ -946,13 +877,9 @@ function App() {
 
   if (isInitialLoading && hasShownLoader) {
     return (
-      <div className="sync-loader">
-        <div className="sync-loader__spinner">
-          <div className="sync-loader__orbit">
-            <div className="sync-loader__planet"></div>
-          </div>
-        </div>
-        <p className="sync-loader__text">Syncing data...</p>
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ fontSize: '2rem' }}>🔄</div>
+        <p style={{ color: 'var(--gray-500)' }}>Syncing data...</p>
       </div>
     );
   }
@@ -1072,7 +999,9 @@ function Header() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('login');
+  const [showSearch, setShowSearch] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const navigate = useNavigate();
@@ -1080,6 +1009,16 @@ function Header() {
 
   const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
   const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      analytics.trackSearch(searchQuery, {});
+      navigate(`/marketplace?search=${encodeURIComponent(searchQuery.trim())}`);
+      setSearchQuery('');
+      setShowSearch(false);
+    }
+  };
 
   const handleAdvancedSearch = (searchData) => {
     const params = new URLSearchParams();
@@ -1154,9 +1093,33 @@ function Header() {
           </nav>
 
           <div className="header-actions">
+            <button className="icon-button search-button" onClick={() => setShowSearch(!showSearch)} title="Quick Search" aria-label="Search">
+              🔍
+            </button>
+            
             <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Advanced Search" aria-label="Advanced Search">
               🔎
             </button>
+            
+            {showSearch && (
+              <>
+                <div className="overlay-backdrop" onClick={() => setShowSearch(false)} />
+                <div className="search-overlay">
+                  <form onSubmit={handleSearch} className="search-form">
+                    <input 
+                      type="text" 
+                      placeholder="Quick search marketplace, apps, code..." 
+                      value={searchQuery} 
+                      onChange={e => setSearchQuery(e.target.value)} 
+                      className="search-input-header" 
+                      autoFocus 
+                    />
+                    <button type="submit" className="btn-search">Search</button>
+                    <button type="button" className="btn-close-search" onClick={() => setShowSearch(false)}>✕</button>
+                  </form>
+                </div>
+              </>
+            )}
             
             {state.currentUser ? (
               <>
@@ -1297,7 +1260,7 @@ function Header() {
 }
 
 // ============================================
-// AUTH MODAL - Simplified Design
+// AUTH MODAL
 // ============================================
 function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const { state, dispatch } = useAppContext();
@@ -1307,6 +1270,8 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [step, setStep] = useState(1);
   const [showSuccess, setShowSuccess] = useState(false);
   const [authStatus, setAuthStatus] = useState('');
   const navigate = useNavigate();
@@ -1320,6 +1285,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const resetForm = () => {
     setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'developer' });
     setErrors({});
+    setStep(1);
     setShowSuccess(false);
     setAuthStatus('');
     dispatch({ type: 'SET_AUTH_ERROR', payload: null });
@@ -1335,7 +1301,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) newErrors.email = 'Please enter a valid email';
     if (!formData.password) newErrors.password = 'Password is required';
     else if (formData.password.length < 6) newErrors.password = 'Password must be at least 6 characters';
-    if (authMode === 'signup') {
+    if (authMode === 'signup' && step === 2) {
       if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
       if (!formData.role) newErrors.role = 'Please select your role';
     }
@@ -1346,6 +1312,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validateForm()) return;
+    if (authMode === 'signup' && step === 1) { setStep(2); return; }
     setLoading(true);
     dispatch({ type: 'SET_AUTH_ERROR', payload: null });
     try {
@@ -1382,6 +1349,15 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     setLoading(false);
   };
 
+  const handleSocialLogin = async (provider) => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin } });
+      if (error) dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured.` });
+    } catch (error) {
+      dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not available.` });
+    }
+  };
+
   useEffect(() => {
     const handleEsc = (e) => { if (e.key === 'Escape') setShowAuth(false); };
     window.addEventListener('keydown', handleEsc);
@@ -1390,91 +1366,64 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
 
   return (
     <div className="modal-overlay" onClick={() => setShowAuth(false)}>
-      <div className="auth-modal-simple" onClick={e => e.stopPropagation()}>
+      <div className="auth-modal" onClick={e => e.stopPropagation()}>
         <button className="btn-close" onClick={() => setShowAuth(false)}>✕</button>
-        
         {showSuccess ? (
           <div className="success-state">
             <div className="success-icon">{authStatus === 'confirmation' ? '📧' : '🎉'}</div>
             <h2>{authStatus === 'confirmation' ? 'Check Your Email' : 'Account Created!'}</h2>
             <p>Welcome, <strong>{formData.name}</strong>!</p>
-            {authStatus === 'confirmation' && (
-              <button className="btn-primary" onClick={() => { setShowSuccess(false); setAuthMode('login'); resetForm(); }}>
-                Go to Login
-              </button>
-            )}
+            {authStatus === 'confirmation' && <button className="btn-primary" onClick={() => { setShowSuccess(false); setAuthMode('login'); resetForm(); }}>Go to Login</button>}
           </div>
         ) : (
           <>
-            <div className="auth-simple-header">
-              <div className="auth-simple-logo">🚀</div>
-              <h2>{authMode === 'login' ? 'Welcome Back' : 'Join DevMarket'}</h2>
+            <div className="auth-header">
+              <h2>{authMode === 'login' ? 'Welcome Back!' : 'Join DevMarket'}</h2>
               <p>{authMode === 'login' ? 'Sign in to your account' : 'Create your free account'}</p>
             </div>
-
-            {state.authError && (
-              <div className="auth-error">⚠️ {state.authError}</div>
-            )}
-
-            <form onSubmit={handleSubmit} className="auth-simple-form">
+            <div className="social-login">
+              <button className="social-btn" onClick={() => handleSocialLogin('google')}>G Google</button>
+              <button className="social-btn" onClick={() => handleSocialLogin('github')}>⌨️ GitHub</button>
+            </div>
+            <div className="auth-divider"><span>or email</span></div>
+            {state.authError && <div className="auth-error">⚠️ {state.authError}</div>}
+            <form onSubmit={handleSubmit} className="auth-form">
               {authMode === 'signup' && (
-                <div className="form-group-simple">
-                  <input 
-                    type="text" 
-                    placeholder="Full Name" 
-                    value={formData.name} 
-                    onChange={e => setFormData({...formData, name: e.target.value})} 
-                    className={errors.name ? 'error' : ''} 
-                  />
+                <div className="form-group">
+                  <label>Full Name</label>
+                  <input type="text" placeholder="John Doe" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className={errors.name ? 'error' : ''} />
                   {errors.name && <span className="error-message">{errors.name}</span>}
                 </div>
               )}
-              <div className="form-group-simple">
-                <input 
-                  type="email" 
-                  placeholder="Email address" 
-                  value={formData.email} 
-                  onChange={e => setFormData({...formData, email: e.target.value})} 
-                  className={errors.email ? 'error' : ''} 
-                />
+              <div className="form-group">
+                <label>Email</label>
+                <input type="email" placeholder="you@example.com" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className={errors.email ? 'error' : ''} />
                 {errors.email && <span className="error-message">{errors.email}</span>}
               </div>
-              <div className="form-group-simple">
-                <div className="password-wrapper">
-                  <input 
-                    type={showPassword ? "text" : "password"} 
-                    placeholder="Password" 
-                    value={formData.password} 
-                    onChange={e => setFormData({...formData, password: e.target.value})} 
-                    className={errors.password ? 'error' : ''} 
-                  />
-                  <button type="button" className="password-toggle-simple" onClick={() => setShowPassword(!showPassword)}>
-                    {showPassword ? '🙈' : '👁️'}
-                  </button>
-                </div>
+              <div className="form-group">
+                <label>Password</label>
+                <input type={showPassword ? "text" : "password"} placeholder="Password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className={errors.password ? 'error' : ''} />
+                <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)}>{showPassword ? '👁️' : '👁️‍🗨️'}</button>
                 {errors.password && <span className="error-message">{errors.password}</span>}
               </div>
-              {authMode === 'signup' && (
-                <div className="form-group-simple">
-                  <input 
-                    type={showPassword ? "text" : "password"} 
-                    placeholder="Confirm Password" 
-                    value={formData.confirmPassword} 
-                    onChange={e => setFormData({...formData, confirmPassword: e.target.value})} 
-                  />
-                  {errors.confirmPassword && <span className="error-message">{errors.confirmPassword}</span>}
-                </div>
+              {authMode === 'signup' && step === 2 && (
+                <>
+                  <div className="form-group">
+                    <label>Confirm Password</label>
+                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} />
+                  </div>
+                  <button type="button" className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
+                </>
               )}
-              <button type="submit" className="btn-simple-primary" disabled={loading}>
-                {loading ? 'Processing...' : authMode === 'login' ? 'Sign In' : 'Create Account'}
+              <button type="submit" className="btn-primary btn-full" disabled={loading}>
+                {loading ? 'Processing...' : authMode === 'login' ? '🚀 Sign In' : step === 1 ? 'Continue →' : '🎉 Create Account'}
               </button>
             </form>
-
-            <div className="auth-simple-footer">
+            <div className="auth-footer">
               {authMode === 'login' ? (
-                <p>Don't have an account? <button onClick={() => { setAuthMode('signup'); resetForm(); }} className="btn-link">Sign up</button></p>
+                <p>No account? <button onClick={() => { setAuthMode('signup'); resetForm(); }} className="btn-link">Create one</button></p>
               ) : (
-                <p>Already have an account? <button onClick={() => { setAuthMode('login'); resetForm(); }} className="btn-link">Sign in</button></p>
+                <p>Have account? <button onClick={() => { setAuthMode('login'); resetForm(); }} className="btn-link">Sign in</button></p>
               )}
             </div>
           </>
@@ -1485,111 +1434,12 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
 }
 
 // ============================================
-// ADMIN DASHBOARD - Full Admin Powers
+// ADMIN DASHBOARD
 // ============================================
 function AdminDashboard() {
   const { state, dispatch } = useAppContext();
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(false);
-  const [moderationFilter, setModerationFilter] = useState('all');
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [showUserEdit, setShowUserEdit] = useState(false);
-  const [userEditForm, setUserEditForm] = useState({ role: '', name: '' });
-  const [showBanConfirm, setShowBanConfirm] = useState(false);
-
-  useEffect(() => {
-    if (state.currentUser && state.isAdmin) {
-      loadAdminData();
-    }
-  }, [state.currentUser, state.isAdmin]);
-
-  const loadAdminData = async () => {
-    setLoading(true);
-    try {
-      const { data: users } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
-      if (users) {
-        dispatch({ type: 'SET_USERS', payload: users });
-      }
-
-      const { data: listings } = await supabase.from('listings').select('*').order('created_at', { ascending: false });
-      if (listings) {
-        dispatch({ type: 'SET_MODERATION_QUEUE', payload: listings });
-      }
-    } catch (error) {
-      console.error('Error loading admin data:', error);
-    }
-    setLoading(false);
-  };
-
-  const handleUpdateUserRole = async (userId, newRole) => {
-    try {
-      const { error } = await supabase.from('profiles').update({ role: newRole }).eq('id', userId);
-      if (!error) {
-        dispatch({ type: 'UPDATE_USER_ROLE', payload: { id: userId, role: newRole } });
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: `✅ User role updated to ${newRole}`, 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      }
-    } catch (error) {
-      console.error('Error updating user role:', error);
-    }
-  };
-
-  const handleDeleteUser = async (userId) => {
-    try {
-      const { error } = await supabase.from('profiles').delete().eq('id', userId);
-      if (!error) {
-        dispatch({ type: 'DELETE_USER', payload: userId });
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '✅ User deleted successfully', 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      }
-    } catch (error) {
-      console.error('Error deleting user:', error);
-    }
-    setShowBanConfirm(false);
-    setSelectedUser(null);
-  };
-
-  const handleApproveContent = async (listingId) => {
-    try {
-      const { error } = await supabase.from('listings').update({ approved: true }).eq('id', listingId);
-      if (!error) {
-        dispatch({ type: 'UPDATE_LISTING', payload: { id: listingId, approved: true } });
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '✅ Content approved', 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      }
-    } catch (error) {
-      console.error('Error approving content:', error);
-    }
-  };
-
-  const handleRemoveContent = async (listingId) => {
-    try {
-      const { error } = await supabase.from('listings').delete().eq('id', listingId);
-      if (!error) {
-        dispatch({ type: 'DELETE_LISTING', payload: listingId });
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '🗑️ Content removed successfully', 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      }
-    } catch (error) {
-      console.error('Error removing content:', error);
-    }
-  };
 
   if (!state.currentUser || !state.isAdmin) {
     return (
@@ -1604,312 +1454,137 @@ function AdminDashboard() {
   }
 
   const stats = state.analyticsData || {
-    totalUsers: state.users?.length || 0,
-    totalListings: state.listings?.length || 0,
-    totalApps: state.apps?.length || 0,
-    totalSnippets: state.codeSnippets?.length || 0,
-    totalMessages: state.messages?.length || 0
+    totalUsers: 0,
+    totalListings: 0,
+    totalApps: 0,
+    totalSnippets: 0,
+    totalMessages: 0
   };
 
-  const users = state.users || [];
-  const moderationQueue = state.moderationQueue || state.listings || [];
-
   return (
-    <>
-      <div className="admin-page">
-        <div className="page-header">
-          <h1>🛡️ Admin Dashboard</h1>
-          <p>Manage your DevMarket platform</p>
-          {state.realtimeConnected && (
-            <div className="realtime-badge connected">
-              <span className="realtime-pulse"></span> Live Updates Active
-            </div>
-          )}
-        </div>
-
-        <div className="admin-tabs">
-          {['overview', 'users', 'content', 'moderation', 'settings'].map(tab => (
-            <button
-              key={tab}
-              className={`admin-tab ${activeTab === tab ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </button>
-          ))}
-        </div>
-
-        {loading ? (
-          <SkeletonGrid count={4} />
-        ) : (
-          <>
-            {activeTab === 'overview' && (
-              <div className="admin-overview">
-                <div className="stats-grid">
-                  <div className="stat-card">
-                    <span className="stat-icon">👥</span>
-                    <h3>{users.length}</h3>
-                    <p>Total Users</p>
-                    <small>{users.filter(u => u.role === 'admin').length} admins</small>
-                  </div>
-                  <div className="stat-card">
-                    <span className="stat-icon">🛒</span>
-                    <h3>{moderationQueue.length}</h3>
-                    <p>Total Listings</p>
-                  </div>
-                  <div className="stat-card">
-                    <span className="stat-icon">📱</span>
-                    <h3>{state.apps?.length || 0}</h3>
-                    <p>Total Apps</p>
-                  </div>
-                  <div className="stat-card">
-                    <span className="stat-icon">💻</span>
-                    <h3>{state.codeSnippets?.length || 0}</h3>
-                    <p>Code Snippets</p>
-                  </div>
-                  <div className="stat-card">
-                    <span className="stat-icon">💬</span>
-                    <h3>{state.messages?.length || 0}</h3>
-                    <p>Messages</p>
-                  </div>
-                </div>
-
-                <div className="admin-section">
-                  <h3>Quick Actions</h3>
-                  <div className="admin-quick-actions">
-                    <button className="btn-primary" onClick={() => setActiveTab('users')}>👥 Manage Users</button>
-                    <button className="btn-secondary" onClick={() => setActiveTab('content')}>📝 View Content</button>
-                    <button className="btn-secondary" onClick={() => setActiveTab('moderation')}>🛡️ Moderate</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'users' && (
-              <div className="admin-section">
-                <h2>User Management</h2>
-                <div className="users-table-wrapper">
-                  <table className="users-table">
-                    <thead>
-                      <tr>
-                        <th>User</th>
-                        <th>Email</th>
-                        <th>Role</th>
-                        <th>Joined</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {users.map(user => (
-                        <tr key={user.id}>
-                          <td>
-                            <div className="user-cell">
-                              <img 
-                                src={user.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}&background=667eea&color=fff&size=30`} 
-                                alt={user.name} 
-                                className="user-avatar-small" 
-                              />
-                              <strong>{user.name || 'Unknown'}</strong>
-                            </div>
-                          </td>
-                          <td>{user.email}</td>
-                          <td>
-                            <span className={`role-badge ${user.role}`}>{user.role}</span>
-                          </td>
-                          <td>{new Date(user.created_at).toLocaleDateString()}</td>
-                          <td>
-                            <div className="user-actions">
-                              <select 
-                                value={user.role} 
-                                onChange={(e) => handleUpdateUserRole(user.id, e.target.value)}
-                                className="btn-sm"
-                              >
-                                <option value="developer">Developer</option>
-                                <option value="admin">Admin</option>
-                                <option value="moderator">Moderator</option>
-                              </select>
-                              <button 
-                                className="btn-sm" 
-                                style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                                onClick={() => { setSelectedUser(user); setShowBanConfirm(true); }}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'content' && (
-              <div className="admin-section">
-                <h2>Content Overview</h2>
-                <div className="admin-content-grid">
-                  <div className="admin-content-card">
-                    <h3>Recent Listings</h3>
-                    {(state.listings || []).slice(0, 5).map(listing => (
-                      <div key={listing.id} className="activity-item">
-                        <span>📢</span>
-                        <div>
-                          <strong>{listing.title}</strong>
-                          <p>By {listing.seller_name || listing.seller}</p>
-                        </div>
-                        <small>{listing.date}</small>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="admin-content-card">
-                    <h3>Recent Apps</h3>
-                    {(state.apps || []).slice(0, 5).map(app => (
-                      <div key={app.id} className="activity-item">
-                        <span>📱</span>
-                        <div>
-                          <strong>{app.appName}</strong>
-                          <p>By {app.developer_name || app.developer}</p>
-                        </div>
-                        <small>{app.date}</small>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'moderation' && (
-              <div className="moderation-panel">
-                <div className="moderation-header">
-                  <h3>Content Moderation</h3>
-                  <div className="moderation-filters">
-                    <button 
-                      className={`btn-sm ${moderationFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => setModerationFilter('all')}
-                    >
-                      All
-                    </button>
-                    <button 
-                      className={`btn-sm ${moderationFilter === 'pending' ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => setModerationFilter('pending')}
-                    >
-                      Pending
-                    </button>
-                    <button 
-                      className={`btn-sm ${moderationFilter === 'approved' ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => setModerationFilter('approved')}
-                    >
-                      Approved
-                    </button>
-                  </div>
-                </div>
-                <div className="moderation-list">
-                  {moderationQueue
-                    .filter(item => {
-                      if (moderationFilter === 'pending') return !item.approved;
-                      if (moderationFilter === 'approved') return item.approved;
-                      return true;
-                    })
-                    .slice(0, 20)
-                    .map(listing => (
-                      <div key={listing.id} className="moderation-item">
-                        <div className="moderation-content">
-                          <h4>{listing.title}</h4>
-                          <p>{listing.description?.substring(0, 100)}...</p>
-                          <small>By: {listing.seller_name || listing.seller} | {listing.date}</small>
-                          <small>Status: {listing.approved ? '✅ Approved' : '⏳ Pending'}</small>
-                        </div>
-                        <div className="moderation-actions">
-                          {!listing.approved && (
-                            <button 
-                              className="btn-sm" 
-                              style={{ background: 'var(--success)', color: 'white', border: 'none' }}
-                              onClick={() => handleApproveContent(listing.id)}
-                            >
-                              ✅ Approve
-                            </button>
-                          )}
-                          <button 
-                            className="btn-sm" 
-                            style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                            onClick={() => handleRemoveContent(listing.id)}
-                          >
-                            🚫 Remove
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'settings' && (
-              <div className="admin-settings">
-                <h3>Platform Settings</h3>
-                <div className="settings-form">
-                  <div className="setting-item">
-                    <div className="setting-info">
-                      <strong>Auto-Approve Listings</strong>
-                      <p>New listings are automatically published</p>
-                    </div>
-                    <label className="toggle-switch">
-                      <input type="checkbox" defaultChecked onChange={() => {}} />
-                      <span className="toggle-slider"></span>
-                    </label>
-                  </div>
-                  <div className="setting-item">
-                    <div className="setting-info">
-                      <strong>Require Email Verification</strong>
-                      <p>Users must verify email before posting</p>
-                    </div>
-                    <label className="toggle-switch">
-                      <input type="checkbox" defaultChecked onChange={() => {}} />
-                      <span className="toggle-slider"></span>
-                    </label>
-                  </div>
-                  <div className="setting-item">
-                    <div className="setting-info">
-                      <strong>Maintenance Mode</strong>
-                      <p>Show maintenance page to all users</p>
-                    </div>
-                    <label className="toggle-switch">
-                      <input type="checkbox" onChange={() => {}} />
-                      <span className="toggle-slider"></span>
-                    </label>
-                  </div>
-                  <div className="setting-item">
-                    <div className="setting-info">
-                      <strong>Enable Real-time Updates</strong>
-                      <p>Live updates for messages and listings</p>
-                    </div>
-                    <label className="toggle-switch">
-                      <input type="checkbox" defaultChecked onChange={() => {}} />
-                      <span className="toggle-slider"></span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+    <div className="admin-page">
+      <div className="page-header">
+        <h1>🛡️ Admin Dashboard</h1>
+        <p>Manage your DevMarket platform</p>
       </div>
-      
-      <ConfirmDialog
-        isOpen={showBanConfirm}
-        title="Delete User"
-        message={`Are you sure you want to delete ${selectedUser?.name || 'this user'}? This action cannot be undone.`}
-        onConfirm={() => handleDeleteUser(selectedUser?.id)}
-        onCancel={() => { setShowBanConfirm(false); setSelectedUser(null); }}
-        confirmText="Delete User"
-        type="danger"
-      />
-    </>
+
+      <div className="admin-tabs">
+        {['overview', 'users', 'listings', 'moderation', 'settings'].map(tab => (
+          <button
+            key={tab}
+            className={`admin-tab ${activeTab === tab ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && (
+        <div className="admin-overview">
+          <div className="stats-grid">
+            <div className="stat-card">
+              <span className="stat-icon">👥</span>
+              <h3>{stats.totalUsers}</h3>
+              <p>Total Users</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">🛒</span>
+              <h3>{stats.totalListings}</h3>
+              <p>Total Listings</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">📱</span>
+              <h3>{stats.totalApps}</h3>
+              <p>Total Apps</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">💻</span>
+              <h3>{stats.totalSnippets}</h3>
+              <p>Code Snippets</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">💬</span>
+              <h3>{stats.totalMessages}</h3>
+              <p>Messages</p>
+            </div>
+          </div>
+
+          <div className="admin-recent">
+            <h3>Recent Activity</h3>
+            <div className="activity-list">
+              {(state.listings || []).slice(0, 5).map(listing => (
+                <div key={listing.id} className="activity-item">
+                  <span>📢</span>
+                  <div>
+                    <strong>{listing.seller_name || listing.seller}</strong>
+                    <p>Listed "{listing.title}"</p>
+                  </div>
+                  <small>{listing.date}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'moderation' && (
+        <div className="moderation-panel">
+          <h3>Content Moderation</h3>
+          <div className="moderation-filters">
+            <button className="btn-sm">Flagged Content</button>
+            <button className="btn-sm">Reported Users</button>
+            <button className="btn-sm">Spam Detection</button>
+          </div>
+          <div className="moderation-list">
+            {(state.listings || []).slice(0, 10).map(listing => (
+              <div key={listing.id} className="moderation-item">
+                <div className="moderation-content">
+                  <h4>{listing.title}</h4>
+                  <p>{listing.description?.substring(0, 100)}...</p>
+                  <small>By: {listing.seller_name || listing.seller}</small>
+                </div>
+                <div className="moderation-actions">
+                  <button className="btn-sm btn-secondary">👁 View</button>
+                  <button className="btn-sm" style={{ background: 'var(--success)', color: 'white', border: 'none' }}>✅ Approve</button>
+                  <button className="btn-sm" style={{ background: 'var(--danger)', color: 'white', border: 'none' }}>🚫 Remove</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'settings' && (
+        <div className="admin-settings">
+          <h3>Platform Settings</h3>
+          <div className="settings-form">
+            <div className="setting-item">
+              <div className="setting-info">
+                <strong>Auto-Approve Listings</strong>
+                <p>New listings are automatically published</p>
+              </div>
+              <label className="toggle-switch">
+                <input type="checkbox" defaultChecked onChange={() => {}} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="setting-item">
+              <div className="setting-info">
+                <strong>Require Email Verification</strong>
+                <p>Users must verify email before posting</p>
+              </div>
+              <label className="toggle-switch">
+                <input type="checkbox" defaultChecked onChange={() => {}} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
-
-
-
 
 // ============================================
 // ANALYTICS PAGE
