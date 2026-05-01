@@ -1,4 +1,4 @@
-// App.js - Complete Working Version with Fixed Supabase Integration & Data Persistence
+// App.js - Complete Fixed Version with DevMarket Loader & Single Sign-In Button
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
@@ -98,6 +98,129 @@ function appReducer(state, action) {
 }
 
 // ============================================
+// DEVMARKET LOADER COMPONENT
+// ============================================
+function DevMarketLoader() {
+  const [progress, setProgress] = useState(0);
+  const [activeStep, setActiveStep] = useState(0);
+  const [dots, setDots] = useState([true, false, false]);
+
+  const steps = [
+    { icon: '🔌', label: 'Connecting to Supabase...' },
+    { icon: '📡', label: 'Loading marketplace data...' },
+    { icon: '🚀', label: 'Preparing DevMarket...' }
+  ];
+
+  useEffect(() => {
+    // Animate progress bar
+    const progressInterval = setInterval(() => {
+      setProgress(prev => {
+        if (prev >= 90) return prev;
+        return prev + Math.random() * 15;
+      });
+    }, 400);
+
+    // Rotate through steps
+    const stepInterval = setInterval(() => {
+      setActiveStep(prev => {
+        if (prev < steps.length - 1) return prev + 1;
+        return prev;
+      });
+    }, 1500);
+
+    // Animate dots
+    const dotsInterval = setInterval(() => {
+      setDots(prev => {
+        const nextIndex = prev.findIndex(d => d) + 1;
+        if (nextIndex >= prev.length) return [true, false, false];
+        return prev.map((_, i) => i === nextIndex);
+      });
+    }, 500);
+
+    return () => {
+      clearInterval(progressInterval);
+      clearInterval(stepInterval);
+      clearInterval(dotsInterval);
+    };
+  }, [steps.length]);
+
+  return (
+    <div className="dm-loader">
+      {/* Animated grid background */}
+      <div className="dm-loader__grid">
+        {Array.from({ length: 64 }).map((_, i) => (
+          <div key={i} className="dm-loader__cell" style={{ animationDelay: `${Math.random() * 3}s` }} />
+        ))}
+      </div>
+
+      {/* Floating code tokens */}
+      <div className="dm-loader__tokens">
+        {['const', 'function', 'import', 'export', 'async', 'await', 'return', 'class', 'interface', 'type'].map((token, i) => (
+          <span key={i} className="dm-loader__token">{token}</span>
+        ))}
+      </div>
+
+      {/* Center card */}
+      <div className="dm-loader__card">
+        {/* Logo with orbiting rings */}
+        <div className="dm-loader__logo-wrap">
+          <span className="dm-loader__logo-icon">🚀</span>
+          <div className="dm-loader__orbit">
+            <div className="dm-loader__orbit-dot" />
+          </div>
+          <div className="dm-loader__orbit dm-loader__orbit--2">
+            <div className="dm-loader__orbit-dot--2" />
+          </div>
+        </div>
+
+        {/* Brand text */}
+        <div className="dm-loader__brand">
+          <span className="dm-loader__brand-dev">Dev</span>
+          <span className="dm-loader__brand-market">Market</span>
+        </div>
+        <p className="dm-loader__tagline">IT Marketplace Hub</p>
+
+        {/* Progress bar */}
+        <div className="dm-loader__bar-track">
+          <div 
+            className="dm-loader__bar-fill" 
+            style={{ width: `${Math.min(progress, 100)}%` }} 
+          />
+        </div>
+
+        {/* Step indicators */}
+        <div className="dm-loader__steps">
+          {steps.map((step, i) => (
+            <div 
+              key={i} 
+              className={`dm-loader__step ${
+                i < activeStep ? 'dm-loader__step--done' : 
+                i === activeStep ? 'dm-loader__step--active' : ''
+              }`}
+            >
+              <span className="dm-loader__step-icon">
+                {i < activeStep ? '✓' : step.icon}
+              </span>
+              <span className="dm-loader__step-label">{step.label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Pulsing dots */}
+        <div className="dm-loader__dots">
+          {dots.map((isOn, i) => (
+            <div 
+              key={i} 
+              className={`dm-loader__dot ${isOn ? 'dm-loader__dot--on' : ''}`} 
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
 // TOAST COMPONENT
 // ============================================
 function Toast({ notification, onClose }) {
@@ -161,6 +284,7 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
 
   // Load all public data from Supabase
   async function loadPublicData() {
@@ -211,7 +335,6 @@ function App() {
       console.log('Public data loaded successfully');
     } catch (error) {
       console.error('Error loading public data:', error);
-      // Don't load sample data - show empty state instead
       dispatch({ type: 'SET_LISTINGS', payload: [] });
       dispatch({ type: 'SET_APPS', payload: [] });
       dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
@@ -245,7 +368,6 @@ function App() {
           avatar_url: meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || user.email?.split('@')[0] || 'User')}&background=667eea&color=fff`
         };
 
-        // Try to create profile in Supabase
         try {
           await supabase.from('profiles').upsert({ 
             ...defaultProfile, 
@@ -332,11 +454,18 @@ function App() {
         
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
+          // Hide loader after a short delay for smooth transition
+          setTimeout(() => {
+            setIsInitialLoading(false);
+          }, 800);
         }
       } catch (error) {
         console.error('Init error:', error);
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
+          setTimeout(() => {
+            setIsInitialLoading(false);
+          }, 800);
         }
       }
 
@@ -349,11 +478,9 @@ function App() {
             dispatch({ type: 'SET_USER', payload: session.user });
             await loadProfile(session.user);
             await loadUserData(session.user.id);
-            // Reload public data when user signs in
             await loadPublicData();
           } else if (event === 'SIGNED_OUT') {
             dispatch({ type: 'LOGOUT' });
-            // Reload public data when user signs out
             await loadPublicData();
           }
         }
@@ -382,14 +509,9 @@ function App() {
     dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
   }, []);
 
-  if (state.loading) {
-    return (
-      <div className="loading-screen">
-        <div className="loading-logo">🚀</div>
-        <h2>Loading DevMarket...</h2>
-        <p>Connecting to Supabase...</p>
-      </div>
-    );
+  // Show loader during initial loading
+  if (isInitialLoading || (!state.initialized && state.loading)) {
+    return <DevMarketLoader />;
   }
 
   return (
@@ -435,7 +557,7 @@ function useAppContext() {
 }
 
 // ============================================
-// HEADER COMPONENT
+// HEADER COMPONENT (FIXED - Single Sign In Button)
 // ============================================
 function Header() {
   const { state, dispatch } = useAppContext();
@@ -515,17 +637,7 @@ function Header() {
                 </Link>
               </>
             )}
-            <div className="mobile-auth-section">
-              {state.currentUser ? (
-                <button className="btn-login mobile-only" onClick={() => { closeAll(); setShowLogoutConfirm(true); }}>
-                  🚪 Logout
-                </button>
-              ) : (
-                <button className="btn-login mobile-only" onClick={() => { closeAll(); setShowAuth(true); }}>
-                  👤 Sign In
-                </button>
-              )}
-            </div>
+            {/* REMOVED: Mobile auth section with duplicate sign-in button */}
           </nav>
 
           <div className="header-actions">
@@ -603,7 +715,8 @@ function Header() {
                 </div>
               </>
             ) : (
-              <button className="btn-login desktop-only" onClick={() => setShowAuth(true)}>
+              /* ONLY ONE SIGN IN BUTTON - Desktop only */
+              <button className="btn-login" onClick={() => setShowAuth(true)}>
                 👤 Sign In
               </button>
             )}
@@ -953,7 +1066,6 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
                 </div>
               )}
 
-              {/* Form fields remain the same as original */}
               {(authMode === 'login' || step === 1) && (
                 <>
                   {authMode === 'signup' && (
@@ -1199,7 +1311,7 @@ function Home() {
 }
 
 // ============================================
-// LISTING CARD COMPONENT
+// LISTING CARD COMPONENT (FIXED - No contact column)
 // ============================================
 function ListingCard({ listing }) {
   const { state, dispatch } = useAppContext();
@@ -1220,12 +1332,10 @@ function ListingCard({ listing }) {
     
     if (showContact && message.trim()) {
       try {
+        // FIXED: Removed contact and to_email fields that don't exist in the schema
         await supabase.from('messages').insert([{
           from_user: state.currentUser.id,
           to_user: listing.user_id,
-          from_name: state.profile?.name || state.currentUser.email,
-          from_email: state.currentUser.email,
-          to_email: listing.contact,
           subject: `Inquiry about ${listing.title}`,
           message: message,
           listing_id: listing.id,
@@ -1355,7 +1465,7 @@ function ListingCard({ listing }) {
 }
 
 // ============================================
-// MARKETPLACE COMPONENT WITH SUPABASE PERSISTENCE
+// MARKETPLACE COMPONENT (FIXED - Removed contact field)
 // ============================================
 function Marketplace() {
   const { state, dispatch } = useAppContext();
@@ -1368,7 +1478,6 @@ function Marketplace() {
     description: '',
     price: '',
     url: '',
-    contact: '',
     imageUrl: '',
     category: 'website'
   });
@@ -1387,7 +1496,7 @@ function Marketplace() {
       return;
     }
     
-    if (!formData.title || !formData.description || !formData.price || !formData.contact) {
+    if (!formData.title || !formData.description || !formData.price) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: 'Please fill in all required fields', 
         type: 'warning', 
@@ -1400,12 +1509,12 @@ function Marketplace() {
     setSubmitting(true);
     
     try {
+      // FIXED: Removed 'contact' field that doesn't exist in the schema
       const listingData = {
         title: formData.title,
         description: formData.description,
         price: formData.price,
         url: formData.url,
-        contact: formData.contact,
         image_url: formData.imageUrl || 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600',
         category: formData.category,
         seller_name: state.profile?.name || state.currentUser.email,
@@ -1441,13 +1550,11 @@ function Marketplace() {
         read: false 
       }});
       
-      // Reset form
       setFormData({
         title: '',
         description: '',
         price: '',
         url: '',
-        contact: '',
         imageUrl: '',
         category: 'website'
       });
@@ -1480,7 +1587,6 @@ function Marketplace() {
       } else if (sortBy === 'title') {
         return (a.title || '').localeCompare(b.title || '');
       }
-      // Default sort by date
       return new Date(b.created_at || 0) - new Date(a.created_at || 0);
     });
 
@@ -1579,16 +1685,7 @@ function Marketplace() {
                   onChange={e => setFormData({ ...formData, imageUrl: e.target.value })} 
                 />
               </div>
-              <div className="form-group">
-                <label>Contact Email *</label>
-                <input 
-                  type="email" 
-                  placeholder="your@email.com" 
-                  value={formData.contact} 
-                  onChange={e => setFormData({ ...formData, contact: e.target.value })} 
-                  required 
-                />
-              </div>
+              {/* REMOVED: Contact Email field since it's not in the schema */}
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '8px' }}>
                 <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
                   Cancel
@@ -1649,7 +1746,7 @@ function Marketplace() {
 }
 
 // ============================================
-// ADVERTISE COMPONENT WITH SUPABASE PERSISTENCE
+// ADVERTISE COMPONENT
 // ============================================
 function Advertise() {
   const { state, dispatch } = useAppContext();
@@ -1930,12 +2027,10 @@ function AppCard({ app }) {
     
     if (showContact && message.trim()) {
       try {
+        // FIXED: Removed from_name, from_email, to_email fields
         await supabase.from('messages').insert([{
           from_user: state.currentUser.id,
           to_user: app.user_id,
-          from_name: state.profile?.name,
-          from_email: state.currentUser.email,
-          to_email: app.contact,
           subject: `Inquiry about ${app.appName}`,
           message: message,
           read: false,
@@ -2011,7 +2106,7 @@ function AppCard({ app }) {
 }
 
 // ============================================
-// CODE SHARING COMPONENT WITH SUPABASE PERSISTENCE
+// CODE SHARING COMPONENT
 // ============================================
 function CodeSharing() {
   const { state, dispatch } = useAppContext();
@@ -2057,7 +2152,6 @@ function CodeSharing() {
           author_avatar: state.profile?.avatar_url,
           user_id: state.currentUser.id,
           likes: 0,
-          liked_by: [],
           created_at: new Date().toISOString()
         }])
         .select()
@@ -2069,7 +2163,7 @@ function CodeSharing() {
         ...data,
         author: data.author_name,
         authorAvatar: data.author_avatar,
-        likedBy: data.liked_by || [],
+        likedBy: [],
         date: new Date(data.created_at).toLocaleDateString()
       };
       
@@ -2128,8 +2222,25 @@ function CodeSharing() {
     try {
       await supabase
         .from('code_snippets')
-        .update({ likes: newLikes, liked_by: newLikedBy })
+        .update({ likes: newLikes })
         .eq('id', snippet.id);
+      
+      // Handle snippet_likes table
+      if (userLiked) {
+        await supabase
+          .from('snippet_likes')
+          .delete()
+          .eq('snippet_id', snippet.id)
+          .eq('user_id', state.currentUser.id);
+      } else {
+        await supabase
+          .from('snippet_likes')
+          .insert([{
+            snippet_id: snippet.id,
+            user_id: state.currentUser.id,
+            created_at: new Date().toISOString()
+          }]);
+      }
     } catch (error) {
       console.error('Error updating like:', error);
     }
@@ -2420,11 +2531,9 @@ function Messages() {
                 🗑️
               </button>
               <div className="message-header">
-                <span><strong>From:</strong> {msg.from_name || msg.from_email}</span>
-                <span><strong>To:</strong> {msg.to_email}</span>
+                <span><strong>Subject:</strong> {msg.subject}</span>
                 <span>{new Date(msg.created_at).toLocaleDateString()}</span>
               </div>
-              <h4>{msg.subject}</h4>
               <p>{msg.message}</p>
             </div>
           ))}
