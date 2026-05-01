@@ -1,4 +1,4 @@
-// App.js - Complete Working Version with All Features
+// App.js - Complete Working Version with Supabase Integration & Mobile Responsive
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
@@ -109,7 +109,7 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
         <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>{type === 'danger' ? '⚠️' : type === 'success' ? '✅' : 'ℹ️'}</div>
         <h3 style={{ marginBottom: '8px', color: 'var(--gray-800)' }}>{title || 'Confirm'}</h3>
         <p style={{ color: 'var(--gray-500)', marginBottom: '24px', lineHeight: '1.6' }}>{message || 'Are you sure?'}</p>
-        <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
           <button className="btn-secondary" onClick={onCancel}>Cancel</button>
           <button 
             className="btn-primary" 
@@ -125,10 +125,27 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
 }
 
 // ============================================
-// MAIN APP
+// MAIN APP WITH SUPABASE INTEGRATION
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
+
+  const loadSampleDataFn = useCallback(() => {
+    const listings = [
+      { id: 'sample-1', title: "Modern E-commerce Platform", description: "Fully functional e-commerce website built with React and Node.js.", price: "$1,500", url: "https://example-ecommerce.com", contact: "seller1@example.com", imageUrl: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600", category: "ecommerce", date: "2024-01-15", seller: "JohnDoe", sellerAvatar: "https://ui-avatars.com/api/?name=JohnDoe&background=667eea&color=fff", views: 245, inquiries: 12, rating: 4.5 },
+      { id: 'sample-2', title: "Developer Portfolio Template", description: "Beautiful and responsive portfolio template for developers.", price: "$75", url: "https://example-portfolio.com", contact: "seller2@example.com", imageUrl: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600", category: "portfolio", date: "2024-01-20", seller: "JaneSmith", sellerAvatar: "https://ui-avatars.com/api/?name=JaneSmith&background=764ba2&color=fff", views: 189, inquiries: 8, rating: 4.8 },
+      { id: 'sample-3', title: "SaaS Dashboard Template", description: "Complete SaaS dashboard with analytics and user management.", price: "$299", url: "https://example-saas.com", contact: "seller3@example.com", imageUrl: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=600", category: "saas", date: "2024-02-01", seller: "MikeDev", sellerAvatar: "https://ui-avatars.com/api/?name=MikeDev&background=667eea&color=fff", views: 312, inquiries: 15, rating: 4.6 }
+    ];
+    const apps = [
+      { id: 'sample-a1', appName: "TaskFlow Pro", description: "Advanced project management with AI-powered task prioritization.", platform: "Web", appUrl: "https://taskflow-pro.com", contact: "dev@taskflow.com", features: ["AI Task Management", "Team Collaboration", "Time Tracking", "Analytics"], price: "$12/month", date: "2024-01-10", developer: "TechCorp", developerAvatar: "https://ui-avatars.com/api/?name=TechCorp&background=667eea&color=fff", rating: 4.5, downloads: 1200 }
+    ];
+    const snippets = [
+      { id: 'sample-s1', title: "React Custom Hook for API Calls", description: "A reusable custom hook for making API calls.", language: "React", code: `import { useState, useEffect } from 'react';\n\nconst useAPI = (url) => {\n  const [data, setData] = useState(null);\n  const [loading, setLoading] = useState(true);\n  const [error, setError] = useState(null);\n\n  useEffect(() => {\n    const fetchData = async () => {\n      try {\n        const response = await fetch(url);\n        const result = await response.json();\n        setData(result);\n        setLoading(false);\n      } catch (err) {\n        setError(err);\n        setLoading(false);\n      }\n    };\n    fetchData();\n  }, [url]);\n\n  return { data, loading, error };\n};\n\nexport default useAPI;`, author: "CodeMaster", authorAvatar: "https://ui-avatars.com/api/?name=CodeMaster&background=764ba2&color=fff", tags: ["react", "hooks", "api"], date: "2024-02-01", likes: 42, likedBy: [] }
+    ];
+    listings.forEach(l => dispatch({ type: 'ADD_LISTING', payload: l }));
+    apps.forEach(a => dispatch({ type: 'ADD_APP', payload: a }));
+    snippets.forEach(s => dispatch({ type: 'ADD_CODE_SNIPPET', payload: s }));
+  }, [dispatch]);
 
   useEffect(() => {
     let mounted = true;
@@ -144,30 +161,43 @@ function App() {
         if (mounted) dispatch({ type: 'INITIALIZED' });
       } catch (error) {
         console.error('Init error:', error);
-        if (mounted) { loadSampleData(); dispatch({ type: 'INITIALIZED' }); }
+        if (mounted) { 
+          dispatch({ type: 'SET_LISTINGS', payload: [] });
+          dispatch({ type: 'SET_APPS', payload: [] });
+          dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
+          dispatch({ type: 'INITIALIZED' }); 
+        }
       }
 
-      supabase.auth.onAuthStateChange(async (event, session) => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
         if (mounted) {
           dispatch({ type: 'SET_SESSION', payload: session });
           if (event === 'SIGNED_IN' && session?.user) {
             dispatch({ type: 'SET_USER', payload: session.user });
             await loadProfile(session.user);
             await loadUserData(session.user.id);
+            await loadPublicData();
           } else if (event === 'SIGNED_OUT') {
             dispatch({ type: 'LOGOUT' });
+            await loadPublicData();
           }
         }
       });
+
+      return () => {
+        subscription?.unsubscribe();
+      };
     }
 
     initialize();
     return () => { mounted = false; };
+    // eslint-disable-next-line
   }, []);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('devMarketTheme');
     if (savedTheme && savedTheme !== state.theme) dispatch({ type: 'TOGGLE_THEME' });
+    // eslint-disable-next-line
   }, []);
 
   async function loadProfile(user) {
@@ -189,6 +219,13 @@ function App() {
           twitter: '',
           avatar_url: meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || user.email?.split('@')[0] || 'User')}&background=667eea&color=fff`
         };
+        
+        try {
+          await supabase.from('profiles').upsert({ ...defaultProfile, updated_at: new Date().toISOString() });
+        } catch (err) {
+          console.log('Could not save profile to Supabase:', err);
+        }
+        
         dispatch({ type: 'SET_PROFILE', payload: defaultProfile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...defaultProfile } });
       }
@@ -229,39 +266,49 @@ function App() {
         supabase.from('apps').select('*').order('created_at', { ascending: false }),
         supabase.from('code_snippets').select('*').order('created_at', { ascending: false })
       ]);
+      
       let hasData = false;
-      if (l.data?.length > 0) { hasData = true; dispatch({ type: 'SET_LISTINGS', payload: l.data.map(x => ({...x, seller: x.seller_name, sellerAvatar: x.seller_avatar, imageUrl: x.image_url, date: new Date(x.created_at).toLocaleDateString()})) }); }
-      if (a.data?.length > 0) { hasData = true; dispatch({ type: 'SET_APPS', payload: a.data.map(x => ({...x, appName: x.app_name, appUrl: x.app_url, developer: x.developer_name, developerAvatar: x.developer_avatar, date: new Date(x.created_at).toLocaleDateString()})) }); }
-      if (s.data?.length > 0) { hasData = true; dispatch({ type: 'SET_CODE_SNIPPETS', payload: s.data.map(x => ({...x, author: x.author_name, authorAvatar: x.author_avatar, date: new Date(x.created_at).toLocaleDateString()})) }); }
-      if (!hasData) loadSampleData();
-    } catch (error) { loadSampleData(); }
-  }
-
-  function loadSampleData() {
-    const listings = [
-      { id: 1, title: "Modern E-commerce Platform", description: "Fully functional e-commerce website built with React and Node.js.", price: "$1,500", url: "https://example-ecommerce.com", contact: "seller1@example.com", imageUrl: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600", category: "ecommerce", date: "2024-01-15", seller: "JohnDoe", sellerAvatar: "https://ui-avatars.com/api/?name=JohnDoe&background=667eea&color=fff", views: 245, inquiries: 12, rating: 4.5 },
-      { id: 2, title: "Developer Portfolio Template", description: "Beautiful and responsive portfolio template for developers.", price: "$75", url: "https://example-portfolio.com", contact: "seller2@example.com", imageUrl: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600", category: "portfolio", date: "2024-01-20", seller: "JaneSmith", sellerAvatar: "https://ui-avatars.com/api/?name=JaneSmith&background=764ba2&color=fff", views: 189, inquiries: 8, rating: 4.8 },
-      { id: 3, title: "SaaS Dashboard Template", description: "Complete SaaS dashboard with analytics and user management.", price: "$299", url: "https://example-saas.com", contact: "seller3@example.com", imageUrl: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=600", category: "saas", date: "2024-02-01", seller: "MikeDev", sellerAvatar: "https://ui-avatars.com/api/?name=MikeDev&background=667eea&color=fff", views: 312, inquiries: 15, rating: 4.6 }
-    ];
-    const apps = [
-      { id: 1, appName: "TaskFlow Pro", description: "Advanced project management with AI-powered task prioritization.", platform: "Web", appUrl: "https://taskflow-pro.com", contact: "dev@taskflow.com", features: ["AI Task Management", "Team Collaboration", "Time Tracking", "Analytics"], price: "$12/month", date: "2024-01-10", developer: "TechCorp", developerAvatar: "https://ui-avatars.com/api/?name=TechCorp&background=667eea&color=fff", rating: 4.5, downloads: 1200 }
-    ];
-    const snippets = [
-      { id: 1, title: "React Custom Hook for API Calls", description: "A reusable custom hook for making API calls.", language: "React", code: `import { useState, useEffect } from 'react';\n\nconst useAPI = (url) => {\n  const [data, setData] = useState(null);\n  const [loading, setLoading] = useState(true);\n  const [error, setError] = useState(null);\n\n  useEffect(() => {\n    const fetchData = async () => {\n      try {\n        const response = await fetch(url);\n        const result = await response.json();\n        setData(result);\n        setLoading(false);\n      } catch (err) {\n        setError(err);\n        setLoading(false);\n      }\n    };\n    fetchData();\n  }, [url]);\n\n  return { data, loading, error };\n};\n\nexport default useAPI;`, author: "CodeMaster", authorAvatar: "https://ui-avatars.com/api/?name=CodeMaster&background=764ba2&color=fff", tags: ["react", "hooks", "api"], date: "2024-02-01", likes: 42, likedBy: [] }
-    ];
-    listings.forEach(l => dispatch({ type: 'ADD_LISTING', payload: l }));
-    apps.forEach(a => dispatch({ type: 'ADD_APP', payload: a }));
-    snippets.forEach(s => dispatch({ type: 'ADD_CODE_SNIPPET', payload: s }));
+      
+      if (l.data?.length > 0) { 
+        hasData = true; 
+        dispatch({ type: 'SET_LISTINGS', payload: l.data.map(x => ({...x, seller: x.seller_name, sellerAvatar: x.seller_avatar, imageUrl: x.image_url, date: new Date(x.created_at).toLocaleDateString()})) }); 
+      } else {
+        dispatch({ type: 'SET_LISTINGS', payload: [] });
+      }
+      
+      if (a.data?.length > 0) { 
+        hasData = true; 
+        dispatch({ type: 'SET_APPS', payload: a.data.map(x => ({...x, appName: x.app_name, appUrl: x.app_url, developer: x.developer_name, developerAvatar: x.developer_avatar, date: new Date(x.created_at).toLocaleDateString()})) }); 
+      } else {
+        dispatch({ type: 'SET_APPS', payload: [] });
+      }
+      
+      if (s.data?.length > 0) { 
+        hasData = true; 
+        dispatch({ type: 'SET_CODE_SNIPPETS', payload: s.data.map(x => ({...x, author: x.author_name, authorAvatar: x.author_avatar, likedBy: x.liked_by || [], date: new Date(x.created_at).toLocaleDateString()})) }); 
+      } else {
+        dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
+      }
+      
+      if (!hasData && !state.session) {
+        loadSampleDataFn();
+      }
+    } catch (error) { 
+      console.error('Error loading public data:', error);
+      if (!state.session) {
+        loadSampleDataFn();
+      }
+    }
   }
 
   const removeNotification = useCallback((id) => dispatch({ type: 'REMOVE_NOTIFICATION', payload: id }), []);
 
   if (state.loading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', gap: '20px', fontFamily: 'var(--font-sans)', background: 'linear-gradient(135deg, #667eea08 0%, #764ba208 100%)' }}>
-        <div style={{ fontSize: '4rem', animation: 'logoFloat 3s ease-in-out infinite' }}>🚀</div>
-        <h2 style={{ color: 'var(--primary)' }}>Loading DevMarket...</h2>
-        <p style={{ color: 'var(--gray-400)' }}>Connecting to Supabase...</p>
+      <div className="loading-screen">
+        <div className="loading-logo">🚀</div>
+        <h2>Loading DevMarket...</h2>
+        <p>Connecting to Supabase...</p>
       </div>
     );
   }
@@ -297,7 +344,8 @@ function App() {
 
 function ProtectedRoute({ children }) {
   const { state } = useAppContext();
-  if (!state.currentUser) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!state.currentUser) return <Navigate to="/" state={{ from: location }} replace />;
   return children;
 }
 
@@ -306,7 +354,7 @@ function useAppContext() {
 }
 
 // ============================================
-// HEADER WITH LOGOUT CONFIRMATION
+// HEADER COMPONENT (MOBILE RESPONSIVE)
 // ============================================
 function Header() {
   const { state, dispatch } = useAppContext();
@@ -317,6 +365,7 @@ function Header() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -337,35 +386,51 @@ function Header() {
     dispatch({ type: 'LOGOUT' });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👋 You have been logged out successfully', type: 'info', time: new Date().toLocaleTimeString(), read: false } });
     setShowLogoutConfirm(false);
+    setShowUserMenu(false);
     navigate('/');
   };
 
   const userDisplayName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
   const userAvatar = state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff`;
 
+  const closeAll = () => {
+    setIsMenuOpen(false);
+    setShowUserMenu(false);
+    setShowNotifications(false);
+  };
+
   return (
     <>
       <header className="header">
         <div className="header-container">
-          <Link to="/" className="logo">
+          <Link to="/" className="logo" onClick={closeAll}>
             <div className="logo-icon-wrapper"><span className="logo-icon">🚀</span></div>
             <div className="logo-text"><h1>DevMarket</h1><p>IT Marketplace Hub</p></div>
           </Link>
 
           <nav className={`nav-menu ${isMenuOpen ? 'active' : ''}`}>
-            <Link to="/marketplace" className={`nav-link ${location.pathname === '/marketplace' ? 'active' : ''}`} onClick={() => setIsMenuOpen(false)}><span className="nav-icon">🛒</span> Marketplace</Link>
-            <Link to="/advertise" className={`nav-link ${location.pathname === '/advertise' ? 'active' : ''}`} onClick={() => setIsMenuOpen(false)}><span className="nav-icon">📱</span> Advertise</Link>
-            <Link to="/code-sharing" className={`nav-link ${location.pathname === '/code-sharing' ? 'active' : ''}`} onClick={() => setIsMenuOpen(false)}><span className="nav-icon">💻</span> Code Share</Link>
+            <Link to="/marketplace" className={`nav-link ${location.pathname === '/marketplace' ? 'active' : ''}`} onClick={closeAll}><span className="nav-icon">🛒</span> Marketplace</Link>
+            <Link to="/advertise" className={`nav-link ${location.pathname === '/advertise' ? 'active' : ''}`} onClick={closeAll}><span className="nav-icon">📱</span> Advertise</Link>
+            <Link to="/code-sharing" className={`nav-link ${location.pathname === '/code-sharing' ? 'active' : ''}`} onClick={closeAll}><span className="nav-icon">💻</span> Code Share</Link>
             {state.currentUser && (
               <>
-                <Link to="/favorites" className={`nav-link ${location.pathname === '/favorites' ? 'active' : ''}`} onClick={() => setIsMenuOpen(false)}><span className="nav-icon">⭐</span> Favorites</Link>
-                <Link to="/messages" className={`nav-link ${location.pathname === '/messages' ? 'active' : ''}`} onClick={() => setIsMenuOpen(false)}><span className="nav-icon">💬</span> Messages{unreadMessages > 0 && <span className="notification-badge">{unreadMessages}</span>}</Link>
+                <Link to="/favorites" className={`nav-link ${location.pathname === '/favorites' ? 'active' : ''}`} onClick={closeAll}><span className="nav-icon">⭐</span> Favorites</Link>
+                <Link to="/messages" className={`nav-link ${location.pathname === '/messages' ? 'active' : ''}`} onClick={closeAll}><span className="nav-icon">💬</span> Messages{unreadMessages > 0 && <span className="notification-badge">{unreadMessages}</span>}</Link>
               </>
             )}
+            {/* Mobile auth button */}
+            <div className="mobile-auth-section">
+              {state.currentUser ? (
+                <button className="btn-login mobile-only" onClick={() => { closeAll(); setShowLogoutConfirm(true); }}>🚪 Logout</button>
+              ) : (
+                <button className="btn-login mobile-only" onClick={() => { closeAll(); setShowAuth(true); }}>👤 Sign In</button>
+              )}
+            </div>
           </nav>
 
           <div className="header-actions">
-            <button className="icon-button search-button" onClick={() => setShowSearch(!showSearch)} title="Search">🔍</button>
+            <button className="icon-button search-button" onClick={() => setShowSearch(!showSearch)} title="Search" aria-label="Search">🔍</button>
+            
             {showSearch && (
               <>
                 <div className="overlay-backdrop" onClick={() => setShowSearch(false)} />
@@ -378,38 +443,45 @@ function Header() {
                 </div>
               </>
             )}
+            
             {state.currentUser ? (
               <>
-                <button className="icon-button notification-bell" onClick={() => { setShowNotifications(!showNotifications); if (showNotifications) dispatch({ type: 'MARK_NOTIFICATIONS_READ' }); }} title="Notifications">
+                <button className="icon-button notification-bell" onClick={() => setShowNotifications(!showNotifications)} title="Notifications" aria-label="Notifications">
                   🔔{unreadNotifications > 0 && <span className="notification-badge">{unreadNotifications}</span>}
                 </button>
+                
                 <div className="user-menu">
-                  <div className="user-menu-trigger">
+                  <div className="user-menu-trigger" onClick={() => setShowUserMenu(!showUserMenu)}>
                     <img src={userAvatar} alt={userDisplayName} className="user-avatar" onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff`; }} />
                     <span className="user-name">{userDisplayName}</span>
                     <span className="dropdown-arrow">▾</span>
                   </div>
-                  <div className="dropdown-menu">
-                    <div className="dropdown-header">
-                      <img src={userAvatar} alt={userDisplayName} className="dropdown-avatar" />
-                      <div><strong>{userDisplayName}</strong><p>{state.currentUser.email}</p></div>
+                  {showUserMenu && (
+                    <div className="dropdown-menu">
+                      <div className="dropdown-header">
+                        <img src={userAvatar} alt={userDisplayName} className="dropdown-avatar" />
+                        <div><strong>{userDisplayName}</strong><p>{state.currentUser.email}</p></div>
+                      </div>
+                      <div className="dropdown-divider"></div>
+                      <Link to="/profile" onClick={() => setShowUserMenu(false)}><span>👤</span> My Profile</Link>
+                      <Link to="/settings" onClick={() => setShowUserMenu(false)}><span>⚙️</span> Settings</Link>
+                      <div className="dropdown-divider"></div>
+                      <button onClick={() => { setShowUserMenu(false); setShowLogoutConfirm(true); }}><span>🚪</span> Logout</button>
                     </div>
-                    <div className="dropdown-divider"></div>
-                    <Link to="/profile" onClick={() => setIsMenuOpen(false)}><span>👤</span> My Profile</Link>
-                    <Link to="/settings" onClick={() => setIsMenuOpen(false)}><span>⚙️</span> Settings</Link>
-                    <div className="dropdown-divider"></div>
-                    <button onClick={() => setShowLogoutConfirm(true)}><span>🚪</span> Logout</button>
-                  </div>
+                  )}
                 </div>
               </>
             ) : (
-              <button className="btn-login" onClick={() => setShowAuth(true)}>👤 Sign In</button>
+              <button className="btn-login desktop-only" onClick={() => setShowAuth(true)}>👤 Sign In</button>
             )}
-            <button className="menu-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)} aria-label="Toggle menu">{isMenuOpen ? '✕' : '☰'}</button>
+            
+            <button className="menu-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)} aria-label="Toggle menu">
+              {isMenuOpen ? '✕' : '☰'}
+            </button>
           </div>
         </div>
 
-        {showNotifications && (
+        {showNotifications && !isMenuOpen && (
           <>
             <div className="overlay-backdrop" onClick={() => setShowNotifications(false)} />
             <div className="notifications-dropdown">
@@ -446,7 +518,7 @@ function Header() {
 }
 
 // ============================================
-// AUTH MODAL WITH SOCIAL LOGIN (FIXED)
+// AUTH MODAL
 // ============================================
 function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const { state, dispatch } = useAppContext();
@@ -464,6 +536,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     document.body.classList.add('modal-open');
     resetForm();
     return () => document.body.classList.remove('modal-open');
+    // eslint-disable-next-line
   }, [authMode]);
 
   const resetForm = () => {
@@ -538,55 +611,17 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     setLoading(false);
   };
 
-  // Social Login Handlers - Using Supabase OAuth with proper redirect
-  const handleGoogleLogin = async () => {
+  const handleSocialLogin = async (provider) => {
     try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin
-        }
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: window.location.origin }
       });
       if (error) {
-        dispatch({ type: 'SET_AUTH_ERROR', payload: 'Google login is not configured. Please check Supabase settings.' });
-        console.error('Google login error:', error);
+        dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login is not configured. Please check Supabase settings.` });
       }
     } catch (error) {
-      dispatch({ type: 'SET_AUTH_ERROR', payload: 'Google login is not available.' });
-    }
-  };
-
-  const handleFacebookLogin = async () => {
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'facebook',
-        options: {
-          redirectTo: window.location.origin
-        }
-      });
-      if (error) {
-        dispatch({ type: 'SET_AUTH_ERROR', payload: 'Facebook login is not configured. Please check Supabase settings.' });
-        console.error('Facebook login error:', error);
-      }
-    } catch (error) {
-      dispatch({ type: 'SET_AUTH_ERROR', payload: 'Facebook login is not available.' });
-    }
-  };
-
-  const handleGithubLogin = async () => {
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'github',
-        options: {
-          redirectTo: window.location.origin
-        }
-      });
-      if (error) {
-        dispatch({ type: 'SET_AUTH_ERROR', payload: 'GitHub login is not configured. Please check Supabase settings.' });
-        console.error('GitHub login error:', error);
-      }
-    } catch (error) {
-      dispatch({ type: 'SET_AUTH_ERROR', payload: 'GitHub login is not available.' });
+      dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login is not available.` });
     }
   };
 
@@ -633,15 +668,14 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
               <p>{authMode === 'login' ? 'Sign in to access your account' : 'Create your free account'}</p>
             </div>
 
-            {/* Social Login Buttons */}
             <div className="social-login">
-              <button className="social-btn google" type="button" onClick={handleGoogleLogin} title="Sign in with Google">
+              <button className="social-btn google" type="button" onClick={() => handleSocialLogin('google')} title="Sign in with Google">
                 <span style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#4285f4' }}>G</span> Google
               </button>
-              <button className="social-btn facebook" type="button" onClick={handleFacebookLogin} title="Sign in with Facebook" style={{ background: '#1877f2', color: 'white', border: 'none' }}>
+              <button className="social-btn facebook" type="button" onClick={() => handleSocialLogin('facebook')} title="Sign in with Facebook" style={{ background: '#1877f2', color: 'white', border: 'none' }}>
                 <span style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>f</span> Facebook
               </button>
-              <button className="social-btn github" type="button" onClick={handleGithubLogin} title="Sign in with GitHub">
+              <button className="social-btn github" type="button" onClick={() => handleSocialLogin('github')} title="Sign in with GitHub">
                 <span>⌨️</span> GitHub
               </button>
             </div>
@@ -741,9 +775,6 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
                 <p>Already have an account? <button onClick={() => { setAuthMode('login'); resetForm(); }} type="button" className="btn-link">Sign in</button></p>
               )}
             </div>
-            <div style={{ marginTop: '16px', padding: '12px', background: state.theme === 'dark' ? '#1e293b' : '#f0f9ff', borderRadius: '8px', textAlign: 'center' }}>
-              <p style={{ fontSize: '0.85rem', color: state.theme === 'dark' ? '#93c5fd' : '#0369a1', margin: 0 }}>💡 Use any email to sign up. No email verification required.</p>
-            </div>
           </>
         )}
       </div>
@@ -799,7 +830,7 @@ function Home() {
 }
 
 // ============================================
-// LISTING CARD
+// LISTING CARD COMPONENT
 // ============================================
 function ListingCard({ listing }) {
   const { state, dispatch } = useAppContext();
@@ -807,33 +838,57 @@ function ListingCard({ listing }) {
   const [message, setMessage] = useState('');
   const isFavorited = (state.favorites || []).some(f => f.id === listing.id);
 
-  const handleContact = () => {
+  const handleContact = async () => {
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to contact sellers', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     if (showContact && message.trim()) {
-      dispatch({ type: 'ADD_MESSAGE', payload: { from: state.currentUser.email, fromName: state.profile?.name || state.currentUser.email, to: listing.contact || listing.seller, subject: `Inquiry about ${listing.title}`, message, date: new Date().toLocaleString(), listingId: listing.id, read: false } });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `Message sent about "${listing.title}"`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      try {
+        await supabase.from('messages').insert([{
+          from_user: state.currentUser.id,
+          to_user: listing.user_id,
+          from_name: state.profile?.name || state.currentUser.email,
+          from_email: state.currentUser.email,
+          to_email: listing.contact,
+          subject: `Inquiry about ${listing.title}`,
+          message: message,
+          listing_id: listing.id,
+          read: false,
+          created_at: new Date().toISOString()
+        }]);
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `Message sent about "${listing.title}"`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      } catch (error) {
+        console.error('Error sending message:', error);
+      }
       setShowContact(false); setMessage('');
     } else setShowContact(!showContact);
   };
 
-  const toggleFavorite = () => {
+  const toggleFavorite = async () => {
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to save favorites', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     dispatch({ type: 'TOGGLE_FAVORITE', payload: listing });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { message: isFavorited ? 'Removed from favorites' : 'Added to favorites', type: 'info', time: new Date().toLocaleTimeString(), read: false } });
+    try {
+      if (isFavorited) {
+        await supabase.from('favorites').delete().eq('user_id', state.currentUser.id).eq('listing_id', listing.id);
+      } else {
+        await supabase.from('favorites').insert([{ user_id: state.currentUser.id, listing_id: listing.id, created_at: new Date().toISOString() }]);
+      }
+    } catch (error) {
+      console.error('Error updating favorites:', error);
+    }
   };
 
   return (
     <div className="listing-card">
       <div className="card-image">
-        {listing.imageUrl ? <img src={listing.imageUrl} alt={listing.title} /> : <div className="placeholder-image"><span>🌐</span></div>}
+        {listing.imageUrl ? <img src={listing.imageUrl} alt={listing.title} loading="lazy" /> : <div className="placeholder-image"><span>🌐</span></div>}
         <span className="category-badge">{listing.category}</span>
-        <button className={`favorite-button ${isFavorited ? 'active' : ''}`} onClick={toggleFavorite} title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>{isFavorited ? '⭐' : '☆'}</button>
+        <button className={`favorite-button ${isFavorited ? 'active' : ''}`} onClick={toggleFavorite} title={isFavorited ? 'Remove from favorites' : 'Add to favorites'} aria-label={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>{isFavorited ? '⭐' : '☆'}</button>
       </div>
       <div className="card-content">
         <div className="card-header"><h3>{listing.title}</h3><span className="price-tag">{listing.price}</span></div>
-        <p className="description">{listing.description?.substring(0, 150)}...</p>
+        <p className="description">{listing.description?.substring(0, 150)}{listing.description?.length > 150 ? '...' : ''}</p>
         <div className="card-meta">
-          <span className="seller-info"><img src={listing.sellerAvatar || `https://ui-avatars.com/api/?name=${listing.seller}`} alt="Seller" />{listing.seller}</span>
+          <span className="seller-info"><img src={listing.sellerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(listing.seller || 'User')}&background=667eea&color=fff`} alt={listing.seller} />{listing.seller}</span>
           <span className="rating">⭐ {listing.rating || 'New'}</span>
         </div>
         <div className="card-stats"><span>👁 {listing.views || 0}</span><span>💬 {listing.inquiries || 0}</span><span>{listing.date}</span></div>
@@ -848,7 +903,7 @@ function ListingCard({ listing }) {
 }
 
 // ============================================
-// MARKETPLACE COMPONENT
+// MARKETPLACE COMPONENT WITH SUPABASE
 // ============================================
 function Marketplace() {
   const { state, dispatch } = useAppContext();
@@ -863,11 +918,35 @@ function Marketplace() {
     e.preventDefault();
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to create a listing', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     setSubmitting(true);
-    const newListing = { id: Date.now(), ...formData, date: new Date().toLocaleDateString(), seller: state.profile?.name || state.currentUser.email, sellerAvatar: state.profile?.avatar_url, views: 0, inquiries: 0, rating: 'New' };
-    dispatch({ type: 'ADD_LISTING', payload: newListing });
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ Listing "${formData.title}" published successfully!`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    setFormData({ title: '', description: '', price: '', url: '', contact: '', imageUrl: '', category: 'website' });
-    setShowForm(false);
+    try {
+      const { data, error } = await supabase.from('listings').insert([{
+        title: formData.title,
+        description: formData.description,
+        price: formData.price,
+        url: formData.url,
+        contact: formData.contact,
+        image_url: formData.imageUrl,
+        category: formData.category,
+        seller_name: state.profile?.name || state.currentUser.email,
+        seller_avatar: state.profile?.avatar_url,
+        user_id: state.currentUser.id,
+        views: 0,
+        inquiries: 0,
+        rating: null,
+        created_at: new Date().toISOString()
+      }]).select().single();
+      
+      if (error) throw error;
+      
+      const newListing = { ...data, seller: data.seller_name, sellerAvatar: data.seller_avatar, imageUrl: data.image_url, date: new Date(data.created_at).toLocaleDateString() };
+      dispatch({ type: 'ADD_LISTING', payload: newListing });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ Listing "${formData.title}" published!`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      setFormData({ title: '', description: '', price: '', url: '', contact: '', imageUrl: '', category: 'website' });
+      setShowForm(false);
+    } catch (error) {
+      console.error('Error creating listing:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Failed to publish: ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } });
+    }
     setSubmitting(false);
   };
 
@@ -875,7 +954,7 @@ function Marketplace() {
     const ms = l.title?.toLowerCase().includes(searchTerm.toLowerCase()) || l.description?.toLowerCase().includes(searchTerm.toLowerCase());
     const mp = filterPrice === 'all' ? true : filterPrice === 'free' ? l.price?.toLowerCase().includes('free') : !l.price?.toLowerCase().includes('free');
     return ms && mp;
-  }).sort((a, b) => sortBy === 'price' ? (a.price || '').localeCompare(b.price || '') : sortBy === 'title' ? (a.title || '').localeCompare(b.title || '') : b.id - a.id);
+  }).sort((a, b) => sortBy === 'price' ? (a.price || '').localeCompare(b.price || '') : sortBy === 'title' ? (a.title || '').localeCompare(b.title || '') : new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
   return (
     <div className="marketplace-page">
@@ -887,21 +966,24 @@ function Marketplace() {
 
       {showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
-          <div className="modal-content large" onClick={e => e.stopPropagation()} style={{ background: 'white', borderRadius: '16px', padding: '32px' }}>
-            <h2 style={{ marginBottom: '20px', color: 'var(--primary)' }}>📢 Create New Listing</h2>
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                <div className="form-group"><label>Title *</label><input type="text" placeholder="Website Title" value={formData.title} onChange={e => setFormData({ ...formData, title: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-                <div className="form-group"><label>Category</label><select value={formData.category} onChange={e => setFormData({ ...formData, category: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }}><option value="website">Website</option><option value="portfolio">Portfolio</option><option value="ecommerce">E-Commerce</option><option value="blog">Blog</option><option value="saas">SaaS</option><option value="other">Other</option></select></div>
+          <div className="modal-content large" onClick={e => e.stopPropagation()}>
+            <h2>📢 Create New Listing</h2>
+            <form onSubmit={handleSubmit} className="listing-form">
+              <div className="form-row-2">
+                <div className="form-group"><label>Title *</label><input type="text" placeholder="Website Title" value={formData.title} onChange={e => setFormData({ ...formData, title: e.target.value })} required /></div>
+                <div className="form-group"><label>Category</label><select value={formData.category} onChange={e => setFormData({ ...formData, category: e.target.value })}><option value="website">Website</option><option value="portfolio">Portfolio</option><option value="ecommerce">E-Commerce</option><option value="blog">Blog</option><option value="saas">SaaS</option><option value="other">Other</option></select></div>
               </div>
-              <div className="form-group"><label>Description *</label><textarea placeholder="Describe your website" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required rows="3" style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)', resize: 'vertical' }} /></div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                <div className="form-group"><label>Price *</label><input type="text" placeholder="$500 or Negotiable" value={formData.price} onChange={e => setFormData({ ...formData, price: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-                <div className="form-group"><label>Website URL</label><input type="url" placeholder="https://example.com" value={formData.url} onChange={e => setFormData({ ...formData, url: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
+              <div className="form-group"><label>Description *</label><textarea placeholder="Describe your website" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required rows="3" /></div>
+              <div className="form-row-2">
+                <div className="form-group"><label>Price *</label><input type="text" placeholder="$500 or Negotiable" value={formData.price} onChange={e => setFormData({ ...formData, price: e.target.value })} required /></div>
+                <div className="form-group"><label>Website URL</label><input type="url" placeholder="https://example.com" value={formData.url} onChange={e => setFormData({ ...formData, url: e.target.value })} /></div>
               </div>
-              <div className="form-group"><label>Image URL (optional)</label><input type="url" placeholder="https://example.com/image.jpg" value={formData.imageUrl} onChange={e => setFormData({ ...formData, imageUrl: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div className="form-group"><label>Contact Email *</label><input type="email" placeholder="your@email.com" value={formData.contact} onChange={e => setFormData({ ...formData, contact: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '8px' }}><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn-primary" disabled={submitting}>{submitting ? 'Publishing...' : '📤 Publish Listing'}</button></div>
+              <div className="form-group"><label>Image URL (optional)</label><input type="url" placeholder="https://example.com/image.jpg" value={formData.imageUrl} onChange={e => setFormData({ ...formData, imageUrl: e.target.value })} /></div>
+              <div className="form-group"><label>Contact Email *</label><input type="email" placeholder="your@email.com" value={formData.contact} onChange={e => setFormData({ ...formData, contact: e.target.value })} required /></div>
+              <div className="form-actions">
+                <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={submitting}>{submitting ? 'Publishing...' : '📤 Publish Listing'}</button>
+              </div>
             </form>
             <button className="btn-close" onClick={() => setShowForm(false)}>✕</button>
           </div>
@@ -910,8 +992,8 @@ function Marketplace() {
 
       <div className="filters-bar">
         <input type="text" placeholder="🔍 Search listings..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="search-input" />
-        <select value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="date">Sort by Date</option><option value="price">Sort by Price</option><option value="title">Sort by Title</option></select>
-        <select value={filterPrice} onChange={e => setFilterPrice(e.target.value)}><option value="all">All Prices</option><option value="free">Free Only</option><option value="paid">Paid Only</option></select>
+        <select value={sortBy} onChange={e => setSortBy(e.target.value)} aria-label="Sort by"><option value="date">Sort by Date</option><option value="price">Sort by Price</option><option value="title">Sort by Title</option></select>
+        <select value={filterPrice} onChange={e => setFilterPrice(e.target.value)} aria-label="Filter by price"><option value="all">All Prices</option><option value="free">Free Only</option><option value="paid">Paid Only</option></select>
       </div>
 
       <div className="listings-grid">
@@ -923,7 +1005,7 @@ function Marketplace() {
 }
 
 // ============================================
-// ADVERTISE COMPONENT
+// ADVERTISE COMPONENT WITH SUPABASE
 // ============================================
 function Advertise() {
   const { state, dispatch } = useAppContext();
@@ -933,15 +1015,30 @@ function Advertise() {
   const [formData, setFormData] = useState({ appName: '', description: '', platform: '', appUrl: '', contact: '', features: '', price: '' });
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to advertise', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     setSubmitting(true);
-    const newApp = { id: Date.now(), ...formData, features: formData.features.split(',').map(f => f.trim()).filter(f => f), date: new Date().toLocaleDateString(), developer: state.profile?.name || state.currentUser.email, developerAvatar: state.profile?.avatar_url, rating: 0, downloads: 0 };
-    dispatch({ type: 'ADD_APP', payload: newApp });
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ App "${formData.appName}" published!`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    setFormData({ appName: '', description: '', platform: '', appUrl: '', contact: '', features: '', price: '' });
-    setShowForm(false);
+    try {
+      const featuresArray = formData.features.split(',').map(f => f.trim()).filter(f => f);
+      const { data, error } = await supabase.from('apps').insert([{
+        app_name: formData.appName, description: formData.description, platform: formData.platform,
+        app_url: formData.appUrl, contact: formData.contact, features: featuresArray, price: formData.price,
+        developer_name: state.profile?.name || state.currentUser.email, developer_avatar: state.profile?.avatar_url,
+        user_id: state.currentUser.id, rating: 0, downloads: 0, created_at: new Date().toISOString()
+      }]).select().single();
+      
+      if (error) throw error;
+      
+      const newApp = { ...data, appName: data.app_name, appUrl: data.app_url, developer: data.developer_name, developerAvatar: data.developer_avatar, date: new Date(data.created_at).toLocaleDateString() };
+      dispatch({ type: 'ADD_APP', payload: newApp });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ App "${formData.appName}" published!`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      setFormData({ appName: '', description: '', platform: '', appUrl: '', contact: '', features: '', price: '' });
+      setShowForm(false);
+    } catch (error) {
+      console.error('Error creating app:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Failed to publish: ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } });
+    }
     setSubmitting(false);
   };
 
@@ -963,19 +1060,19 @@ function Advertise() {
 
       {showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
-          <div className="modal-content large" onClick={e => e.stopPropagation()} style={{ background: 'white', borderRadius: '16px', padding: '32px' }}>
-            <h2 style={{ marginBottom: '20px', color: 'var(--primary)' }}>📱 Create App Listing</h2>
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div className="form-group"><label>App Name *</label><input type="text" placeholder="My Awesome App" value={formData.appName} onChange={e => setFormData({ ...formData, appName: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div className="form-group"><label>Description *</label><textarea placeholder="Describe your app" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required rows="3" style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)', resize: 'vertical' }} /></div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                <div className="form-group"><label>Platform *</label><select value={formData.platform} onChange={e => setFormData({ ...formData, platform: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }}><option value="">Select</option><option value="Web">Web</option><option value="iOS">iOS</option><option value="Android">Android</option><option value="Desktop">Desktop</option><option value="Cross-platform">Cross-platform</option></select></div>
-                <div className="form-group"><label>Price</label><input type="text" placeholder="Free / $9.99/month" value={formData.price} onChange={e => setFormData({ ...formData, price: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
+          <div className="modal-content large" onClick={e => e.stopPropagation()}>
+            <h2>📱 Create App Listing</h2>
+            <form onSubmit={handleSubmit} className="listing-form">
+              <div className="form-group"><label>App Name *</label><input type="text" placeholder="My Awesome App" value={formData.appName} onChange={e => setFormData({ ...formData, appName: e.target.value })} required /></div>
+              <div className="form-group"><label>Description *</label><textarea placeholder="Describe your app" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required rows="3" /></div>
+              <div className="form-row-2">
+                <div className="form-group"><label>Platform *</label><select value={formData.platform} onChange={e => setFormData({ ...formData, platform: e.target.value })} required><option value="">Select</option><option value="Web">Web</option><option value="iOS">iOS</option><option value="Android">Android</option><option value="Desktop">Desktop</option><option value="Cross-platform">Cross-platform</option></select></div>
+                <div className="form-group"><label>Price</label><input type="text" placeholder="Free / $9.99/month" value={formData.price} onChange={e => setFormData({ ...formData, price: e.target.value })} /></div>
               </div>
-              <div className="form-group"><label>App URL</label><input type="url" placeholder="https://myapp.com" value={formData.appUrl} onChange={e => setFormData({ ...formData, appUrl: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div className="form-group"><label>Key Features * (comma-separated)</label><input type="text" placeholder="Feature 1, Feature 2, Feature 3" value={formData.features} onChange={e => setFormData({ ...formData, features: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div className="form-group"><label>Contact Email *</label><input type="email" placeholder="your@email.com" value={formData.contact} onChange={e => setFormData({ ...formData, contact: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn-primary" disabled={submitting}>{submitting ? 'Publishing...' : '📱 Publish App'}</button></div>
+              <div className="form-group"><label>App URL</label><input type="url" placeholder="https://myapp.com" value={formData.appUrl} onChange={e => setFormData({ ...formData, appUrl: e.target.value })} /></div>
+              <div className="form-group"><label>Key Features * (comma-separated)</label><input type="text" placeholder="Feature 1, Feature 2, Feature 3" value={formData.features} onChange={e => setFormData({ ...formData, features: e.target.value })} required /></div>
+              <div className="form-group"><label>Contact Email *</label><input type="email" placeholder="your@email.com" value={formData.contact} onChange={e => setFormData({ ...formData, contact: e.target.value })} required /></div>
+              <div className="form-actions"><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn-primary" disabled={submitting}>{submitting ? 'Publishing...' : '📱 Publish App'}</button></div>
             </form>
             <button className="btn-close" onClick={() => setShowForm(false)}>✕</button>
           </div>
@@ -984,7 +1081,7 @@ function Advertise() {
 
       <div className="filters-bar">
         <input type="text" placeholder="🔍 Search apps..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="search-input" />
-        <select value={filterPlatform} onChange={e => setFilterPlatform(e.target.value)}><option value="all">All Platforms</option>{platforms.map(p => <option key={p} value={p?.toLowerCase()}>{p}</option>)}</select>
+        <select value={filterPlatform} onChange={e => setFilterPlatform(e.target.value)} aria-label="Filter by platform"><option value="all">All Platforms</option>{platforms.map(p => <option key={p} value={p?.toLowerCase()}>{p}</option>)}</select>
       </div>
       <div className="app-grid">
         {filteredApps.map(app => <AppCard key={app.id} app={app} />)}
@@ -999,11 +1096,20 @@ function AppCard({ app }) {
   const [showContact, setShowContact] = useState(false);
   const [message, setMessage] = useState('');
 
-  const handleInquiry = () => {
+  const handleInquiry = async () => {
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to inquire', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     if (showContact && message.trim()) {
-      dispatch({ type: 'ADD_MESSAGE', payload: { from: state.currentUser.email, fromName: state.profile?.name, to: app.contact, subject: `Inquiry about ${app.appName}`, message, date: new Date().toLocaleString(), read: false } });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `Inquiry sent about "${app.appName}"`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      try {
+        await supabase.from('messages').insert([{
+          from_user: state.currentUser.id, to_user: app.user_id,
+          from_name: state.profile?.name, from_email: state.currentUser.email,
+          to_email: app.contact, subject: `Inquiry about ${app.appName}`,
+          message: message, read: false, created_at: new Date().toISOString()
+        }]);
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `Inquiry sent about "${app.appName}"`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      } catch (error) {
+        console.error('Error sending inquiry:', error);
+      }
       setShowContact(false); setMessage('');
     } else setShowContact(!showContact);
   };
@@ -1011,10 +1117,10 @@ function AppCard({ app }) {
   return (
     <div className="app-card">
       <div className="app-header"><span className={`platform-badge ${app.platform?.toLowerCase()}`}>{app.platform}</span>{app.price && <span className="price-badge">{app.price}</span>}</div>
-      <h3>{app.appName}</h3><p className="description">{app.description?.substring(0, 150)}...</p>
+      <h3>{app.appName}</h3><p className="description">{app.description?.substring(0, 150)}{app.description?.length > 150 ? '...' : ''}</p>
       <div className="features-list">{app.features?.map((f, i) => <span key={i} className="feature-tag">✓ {f}</span>)}</div>
       <div className="app-meta"><span>⭐ {app.rating || 'New'}</span><span>⬇️ {app.downloads || 0}</span></div>
-      <div className="developer-info"><span><img src={app.developerAvatar || `https://ui-avatars.com/api/?name=${app.developer}`} alt={app.developer} style={{ width: '25px', height: '25px', borderRadius: '50%', marginRight: '8px' }} />{app.developer}</span><span>{app.date}</span></div>
+      <div className="developer-info"><span><img src={app.developerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(app.developer || 'Dev')}&background=667eea&color=fff`} alt={app.developer} />{app.developer}</span><span>{app.date}</span></div>
       {showContact && <textarea placeholder="Write your inquiry..." value={message} onChange={e => setMessage(e.target.value)} className="contact-message" />}
       <div className="app-actions">{app.appUrl && <a href={app.appUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary">🔗 Visit</a>}<button onClick={handleInquiry} className="btn-primary">{showContact ? '📤 Send' : '💬 Inquire'}</button></div>
     </div>
@@ -1022,7 +1128,7 @@ function AppCard({ app }) {
 }
 
 // ============================================
-// CODE SHARING COMPONENT
+// CODE SHARING COMPONENT WITH SUPABASE
 // ============================================
 function CodeSharing() {
   const { state, dispatch } = useAppContext();
@@ -1032,23 +1138,41 @@ function CodeSharing() {
   const [formData, setFormData] = useState({ title: '', description: '', language: '', code: '', tags: '' });
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to share code', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     setSubmitting(true);
-    const newSnippet = { id: Date.now(), ...formData, tags: formData.tags.split(',').map(t => t.trim()).filter(t => t), date: new Date().toLocaleDateString(), author: state.profile?.name || state.currentUser.email, authorAvatar: state.profile?.avatar_url, likes: 0, likedBy: [] };
-    dispatch({ type: 'ADD_CODE_SNIPPET', payload: newSnippet });
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ Code snippet "${formData.title}" shared!`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    setFormData({ title: '', description: '', language: '', code: '', tags: '' });
-    setShowForm(false);
+    try {
+      const tagsArray = formData.tags.split(',').map(t => t.trim()).filter(t => t);
+      const { data, error } = await supabase.from('code_snippets').insert([{
+        title: formData.title, description: formData.description, language: formData.language,
+        code: formData.code, tags: tagsArray,
+        author_name: state.profile?.name || state.currentUser.email, author_avatar: state.profile?.avatar_url,
+        user_id: state.currentUser.id, likes: 0, liked_by: [], created_at: new Date().toISOString()
+      }]).select().single();
+      
+      if (error) throw error;
+      
+      const newSnippet = { ...data, author: data.author_name, authorAvatar: data.author_avatar, likedBy: data.liked_by || [], date: new Date(data.created_at).toLocaleDateString() };
+      dispatch({ type: 'ADD_CODE_SNIPPET', payload: newSnippet });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ Code snippet "${formData.title}" shared!`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+      setFormData({ title: '', description: '', language: '', code: '', tags: '' });
+      setShowForm(false);
+    } catch (error) {
+      console.error('Error creating snippet:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Failed to share: ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } });
+    }
     setSubmitting(false);
   };
 
-  const handleLike = (snippet) => {
+  const handleLike = async (snippet) => {
     if (!state.currentUser) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to like', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); return; }
     const userName = state.profile?.name || state.currentUser.email;
     const userLiked = snippet.likedBy?.includes(userName);
-    dispatch({ type: 'LIKE_SNIPPET', payload: { ...snippet, likes: userLiked ? snippet.likes - 1 : snippet.likes + 1, likedBy: userLiked ? snippet.likedBy.filter(u => u !== userName) : [...(snippet.likedBy || []), userName] } });
+    const newLikedBy = userLiked ? snippet.likedBy.filter(u => u !== userName) : [...(snippet.likedBy || []), userName];
+    const newLikes = userLiked ? snippet.likes - 1 : snippet.likes + 1;
+    dispatch({ type: 'LIKE_SNIPPET', payload: { ...snippet, likes: newLikes, likedBy: newLikedBy } });
+    try { await supabase.from('code_snippets').update({ likes: newLikes, liked_by: newLikedBy }).eq('id', snippet.id); } catch (error) { console.error('Error updating like:', error); }
   };
 
   const filteredSnippets = (state.codeSnippets || []).filter(s => {
@@ -1069,17 +1193,17 @@ function CodeSharing() {
 
       {showForm && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
-          <div className="modal-content large" onClick={e => e.stopPropagation()} style={{ background: 'white', borderRadius: '16px', padding: '32px' }}>
-            <h2 style={{ marginBottom: '20px', color: 'var(--primary)' }}>💻 Share Code Snippet</h2>
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div className="form-group"><label>Title *</label><input type="text" placeholder="e.g., React Custom Hook for API" value={formData.title} onChange={e => setFormData({ ...formData, title: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
-              <div className="form-group"><label>Description *</label><textarea placeholder="Briefly explain what this code does" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required rows="3" style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)', resize: 'vertical' }} /></div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                <div className="form-group"><label>Language *</label><select value={formData.language} onChange={e => setFormData({ ...formData, language: e.target.value })} required style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }}><option value="">Select</option>{['JavaScript', 'Python', 'React', 'Node.js', 'HTML/CSS', 'TypeScript', 'Java', 'C++', 'Ruby', 'Go', 'PHP'].map(l => <option key={l} value={l}>{l}</option>)}</select></div>
-                <div className="form-group"><label>Tags (comma-separated)</label><input type="text" placeholder="react, hooks, api" value={formData.tags} onChange={e => setFormData({ ...formData, tags: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }} /></div>
+          <div className="modal-content large" onClick={e => e.stopPropagation()}>
+            <h2>💻 Share Code Snippet</h2>
+            <form onSubmit={handleSubmit} className="listing-form">
+              <div className="form-group"><label>Title *</label><input type="text" placeholder="e.g., React Custom Hook for API" value={formData.title} onChange={e => setFormData({ ...formData, title: e.target.value })} required /></div>
+              <div className="form-group"><label>Description *</label><textarea placeholder="Briefly explain what this code does" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required rows="3" /></div>
+              <div className="form-row-2">
+                <div className="form-group"><label>Language *</label><select value={formData.language} onChange={e => setFormData({ ...formData, language: e.target.value })} required><option value="">Select</option>{['JavaScript', 'Python', 'React', 'Node.js', 'HTML/CSS', 'TypeScript', 'Java', 'C++', 'Ruby', 'Go', 'PHP'].map(l => <option key={l} value={l}>{l}</option>)}</select></div>
+                <div className="form-group"><label>Tags (comma-separated)</label><input type="text" placeholder="react, hooks, api" value={formData.tags} onChange={e => setFormData({ ...formData, tags: e.target.value })} /></div>
               </div>
-              <div className="form-group"><label>Code *</label><textarea placeholder="Paste your code here..." value={formData.code} onChange={e => setFormData({ ...formData, code: e.target.value })} required rows="8" style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)', fontFamily: 'var(--font-mono)', fontSize: '0.9rem', resize: 'vertical', background: 'var(--gray-50)' }} /></div>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn-primary" disabled={submitting}>{submitting ? 'Publishing...' : '💻 Publish Code'}</button></div>
+              <div className="form-group"><label>Code *</label><textarea placeholder="Paste your code here..." value={formData.code} onChange={e => setFormData({ ...formData, code: e.target.value })} required rows="8" className="code-textarea" /></div>
+              <div className="form-actions"><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button><button type="submit" className="btn-primary" disabled={submitting}>{submitting ? 'Publishing...' : '💻 Publish Code'}</button></div>
             </form>
             <button className="btn-close" onClick={() => setShowForm(false)}>✕</button>
           </div>
@@ -1088,7 +1212,7 @@ function CodeSharing() {
 
       <div className="filters-bar">
         <input type="text" placeholder="🔍 Search snippets..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="search-input" />
-        <select value={filterLanguage} onChange={e => setFilterLanguage(e.target.value)}><option value="all">All Languages</option>{languages.map(l => <option key={l} value={l?.toLowerCase()}>{l}</option>)}</select>
+        <select value={filterLanguage} onChange={e => setFilterLanguage(e.target.value)} aria-label="Filter by language"><option value="all">All Languages</option>{languages.map(l => <option key={l} value={l?.toLowerCase()}>{l}</option>)}</select>
       </div>
       <div className="code-grid">
         {filteredSnippets.map(snippet => <CodeCard key={snippet.id} snippet={snippet} onLike={handleLike} />)}
@@ -1102,7 +1226,15 @@ function CodeCard({ snippet, onLike }) {
   const { state } = useAppContext();
   const handleCopy = () => {
     navigator.clipboard.writeText(snippet.code).then(() => {
-      // Optional: show copy notification
+      // Copy success
+    }).catch(() => {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = snippet.code;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
     });
   };
   const userName = state.profile?.name || state.currentUser?.email;
@@ -1115,8 +1247,8 @@ function CodeCard({ snippet, onLike }) {
       <pre className="code-preview"><code>{snippet.code?.substring(0, 200)}{snippet.code?.length > 200 ? '...' : ''}</code></pre>
       <div className="tags-container">{snippet.tags?.map((t, i) => <span key={i} className="tag">#{t}</span>)}</div>
       <div className="code-footer">
-        <div className="author-info"><span><img src={snippet.authorAvatar || `https://ui-avatars.com/api/?name=${snippet.author}`} alt={snippet.author} style={{ width: '20px', height: '20px', borderRadius: '50%', marginRight: '5px' }} />{snippet.author}</span><span>{snippet.date}</span></div>
-        <div className="code-actions"><button onClick={() => onLike(snippet)} className={`btn-like ${isLiked ? 'liked' : ''}`}>{isLiked ? '❤️' : '🤍'} {snippet.likes}</button><button onClick={handleCopy} className="btn-copy">📋 Copy</button></div>
+        <div className="author-info"><span><img src={snippet.authorAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(snippet.author || 'Dev')}&background=667eea&color=fff`} alt={snippet.author} />{snippet.author}</span><span>{snippet.date}</span></div>
+        <div className="code-actions"><button onClick={() => onLike(snippet)} className={`btn-like ${isLiked ? 'liked' : ''}`} aria-label={isLiked ? 'Unlike' : 'Like'}>{isLiked ? '❤️' : '🤍'} {snippet.likes}</button><button onClick={handleCopy} className="btn-copy" aria-label="Copy code">📋 Copy</button></div>
       </div>
     </div>
   );
@@ -1129,11 +1261,17 @@ function Messages() {
   const { state, dispatch } = useAppContext();
   if (!state.currentUser) return <div className="messages-page"><div className="empty-state"><h2>📧 Messages</h2><p>Please login to view messages</p></div></div>;
 
-  const userMessages = (state.messages || []).filter(m => m.from === state.currentUser.email || m.to === state.currentUser.email || m.fromName === (state.profile?.name || state.currentUser.email));
+  const userMessages = (state.messages || []).filter(m => m.from_user === state.currentUser.id || m.to_user === state.currentUser.id);
 
-  const deleteMessage = (id) => {
+  const deleteMessage = async (id) => {
     dispatch({ type: 'DELETE_MESSAGE', payload: id });
+    try { await supabase.from('messages').delete().eq('id', id); } catch (error) { console.error('Error deleting message:', error); }
     dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Message deleted', type: 'info', time: new Date().toLocaleTimeString(), read: false } });
+  };
+
+  const markAsRead = async (id) => {
+    dispatch({ type: 'MARK_MESSAGE_READ', payload: id });
+    try { await supabase.from('messages').update({ read: true }).eq('id', id); } catch (error) { console.error('Error marking message read:', error); }
   };
 
   return (
@@ -1144,9 +1282,9 @@ function Messages() {
       ) : (
         <div className="messages-list">
           {userMessages.map(msg => (
-            <div key={msg.id} className="message-card" style={{ position: 'relative' }}>
-              <button onClick={() => deleteMessage(msg.id)} style={{ position: 'absolute', top: '12px', right: '12px', background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer', color: 'var(--gray-400)', padding: '4px' }} title="Delete message">🗑️</button>
-              <div className="message-header"><span><strong>From:</strong> {msg.fromName || msg.from}</span><span><strong>To:</strong> {msg.to}</span><span>{msg.date}</span></div>
+            <div key={msg.id} className={`message-card ${!msg.read ? 'unread' : ''}`} onClick={() => !msg.read && markAsRead(msg.id)}>
+              <button onClick={(e) => { e.stopPropagation(); deleteMessage(msg.id); }} className="message-delete-btn" title="Delete message" aria-label="Delete message">🗑️</button>
+              <div className="message-header"><span><strong>From:</strong> {msg.from_name || msg.from_email}</span><span><strong>To:</strong> {msg.to_email}</span><span>{new Date(msg.created_at).toLocaleDateString()}</span></div>
               <h4>{msg.subject}</h4><p>{msg.message}</p>
             </div>
           ))}
@@ -1164,14 +1302,15 @@ function Profile() {
   if (!state.currentUser) return <div className="profile-page"><div className="empty-state"><h2>👤 Profile</h2><p>Please login to view your profile</p></div></div>;
 
   const userName = state.profile?.name || state.currentUser.email;
-  const userListings = (state.listings || []).filter(l => l.seller === userName);
-  const userApps = (state.apps || []).filter(a => a.developer === userName);
-  const userSnippets = (state.codeSnippets || []).filter(s => s.author === userName);
+  const userListings = (state.listings || []).filter(l => l.user_id === state.currentUser.id || l.seller === userName);
+  const userApps = (state.apps || []).filter(a => a.user_id === state.currentUser.id || a.developer === userName);
+  const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id || s.author === userName);
+  const userReceivedMessages = (state.messages || []).filter(m => m.to_user === state.currentUser.id);
 
   return (
     <div className="profile-page">
       <div className="profile-header">
-        <img src={state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${userName}&background=667eea&color=fff`} alt="Profile" className="profile-avatar" />
+        <img src={state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=667eea&color=fff`} alt={userName} className="profile-avatar" />
         <div>
           <h1>{userName}</h1>
           <p>{state.currentUser.email}</p>
@@ -1184,7 +1323,7 @@ function Profile() {
         <div className="stat-box"><h3>{userListings.length}</h3><p>Active Listings</p></div>
         <div className="stat-box"><h3>{userApps.length}</h3><p>Apps Advertised</p></div>
         <div className="stat-box"><h3>{userSnippets.length}</h3><p>Code Snippets</p></div>
-        <div className="stat-box"><h3>{(state.messages || []).filter(m => m.to === state.currentUser.email).length}</h3><p>Messages</p></div>
+        <div className="stat-box"><h3>{userReceivedMessages.length}</h3><p>Messages</p></div>
       </div>
       {userListings.length > 0 && <div className="profile-section"><h2>Your Listings</h2><div className="listings-grid">{userListings.map(l => <ListingCard key={l.id} listing={l} />)}</div></div>}
       {userSnippets.length > 0 && <div className="profile-section"><h2>Your Code Snippets</h2><div className="code-grid">{userSnippets.map(s => <CodeCard key={s.id} snippet={s} onLike={() => {}} />)}</div></div>}
@@ -1208,7 +1347,7 @@ function Favorites() {
 }
 
 // ============================================
-// FULL SETTINGS COMPONENT (ALL TABS RESTORED)
+// SETTINGS COMPONENT
 // ============================================
 function Settings() {
   const { state, dispatch } = useAppContext();
@@ -1216,119 +1355,53 @@ function Settings() {
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
-  // Profile form
   const [profileForm, setProfileForm] = useState({
-    name: state.profile?.name || '',
-    email: state.currentUser?.email || '',
-    bio: state.profile?.bio || '',
-    website: state.profile?.website || '',
-    github: state.profile?.github || '',
-    twitter: state.profile?.twitter || ''
+    name: state.profile?.name || '', email: state.currentUser?.email || '',
+    bio: state.profile?.bio || '', website: state.profile?.website || '',
+    github: state.profile?.github || '', twitter: state.profile?.twitter || ''
   });
   
-  // Security form
-  const [securityForm, setSecurityForm] = useState({
-    currentPassword: '',
-    newPassword: '',
-    confirmNewPassword: ''
-  });
+  const [securityForm, setSecurityForm] = useState({ currentPassword: '', newPassword: '', confirmNewPassword: '' });
   
-  // Notification preferences
   const [notificationPrefs, setNotificationPrefs] = useState({
-    emailNotifications: true,
-    pushNotifications: false,
-    marketingEmails: false,
-    listingUpdates: true,
-    messageAlerts: true,
-    favoritesActivity: true,
-    weeklyDigest: false
+    emailNotifications: true, pushNotifications: false, marketingEmails: false,
+    listingUpdates: true, messageAlerts: true, favoritesActivity: true, weeklyDigest: false
   });
   
-  // Privacy settings
   const [privacySettings, setPrivacySettings] = useState({
-    profileVisibility: 'public',
-    showEmail: false,
-    showActivity: true,
-    allowMessages: true
+    profileVisibility: 'public', showEmail: false, showActivity: true, allowMessages: true
   });
 
   useEffect(() => {
     setProfileForm({
-      name: state.profile?.name || '',
-      email: state.currentUser?.email || '',
-      bio: state.profile?.bio || '',
-      website: state.profile?.website || '',
-      github: state.profile?.github || '',
-      twitter: state.profile?.twitter || ''
+      name: state.profile?.name || '', email: state.currentUser?.email || '',
+      bio: state.profile?.bio || '', website: state.profile?.website || '',
+      github: state.profile?.github || '', twitter: state.profile?.twitter || ''
     });
   }, [state.profile, state.currentUser]);
 
   if (!state.currentUser) return <div className="settings-page"><div className="empty-state"><h2>⚙️ Settings</h2><p>Please login to access settings</p></div></div>;
 
   const handleProfileUpdate = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    
-    // Update local state
+    e.preventDefault(); setSaving(true);
     dispatch({ type: 'UPDATE_PROFILE', payload: profileForm });
-    
-    // Try to update in Supabase
-    try {
-      await supabase.from('profiles').upsert({
-        id: state.currentUser.id,
-        ...profileForm,
-        updated_at: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('Could not save to Supabase:', error);
-    }
-    
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Profile updated successfully!', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
+    try { await supabase.from('profiles').upsert({ id: state.currentUser.id, ...profileForm, updated_at: new Date().toISOString() }); } catch (error) { console.error('Could not save to Supabase:', error); }
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Profile updated!', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
     setSaving(false);
   };
 
   const handlePasswordChange = async (e) => {
     e.preventDefault();
-    
-    if (!securityForm.currentPassword) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Please enter your current password', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-      return;
-    }
-    if (securityForm.newPassword !== securityForm.confirmNewPassword) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ New passwords do not match', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-      return;
-    }
-    if (securityForm.newPassword.length < 6) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Password must be at least 6 characters', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-      return;
-    }
-    
+    if (!securityForm.currentPassword) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Please enter current password', type: 'error', time: new Date().toLocaleTimeString(), read: false } }); return; }
+    if (securityForm.newPassword !== securityForm.confirmNewPassword) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Passwords do not match', type: 'error', time: new Date().toLocaleTimeString(), read: false } }); return; }
+    if (securityForm.newPassword.length < 6) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Password must be at least 6 characters', type: 'error', time: new Date().toLocaleTimeString(), read: false } }); return; }
     setSaving(true);
     try {
       const { error } = await supabase.auth.updateUser({ password: securityForm.newPassword });
-      if (error) {
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-      } else {
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Password changed successfully!', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-        setSecurityForm({ currentPassword: '', newPassword: '', confirmNewPassword: '' });
-      }
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to update password', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
+      if (error) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } }); }
+      else { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Password changed!', type: 'success', time: new Date().toLocaleTimeString(), read: false } }); setSecurityForm({ currentPassword: '', newPassword: '', confirmNewPassword: '' }); }
+    } catch (error) { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to update password', type: 'error', time: new Date().toLocaleTimeString(), read: false } }); }
     setSaving(false);
-  };
-
-  const handleNotificationSave = () => {
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-  };
-
-  const handlePrivacySave = () => {
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Privacy settings saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-  };
-
-  const handleDeleteAccount = () => {
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '⚠️ Account deletion is not available in demo mode', type: 'warning', time: new Date().toLocaleTimeString(), read: false } });
-    setShowDeleteConfirm(false);
   };
 
   const sidebarTabs = [
@@ -1348,18 +1421,17 @@ function Settings() {
           <div className="settings-sidebar">
             {sidebarTabs.map(tab => (
               <button key={tab.id} className={`settings-nav-btn ${activeTab === tab.id ? 'active' : ''}`} onClick={() => setActiveTab(tab.id)}>
-                {tab.icon} {tab.label}
+                <span>{tab.icon}</span> <span className="settings-nav-label">{tab.label}</span>
               </button>
             ))}
           </div>
           <div className="settings-content">
-            {/* Profile Tab */}
             {activeTab === 'profile' && (
               <form onSubmit={handleProfileUpdate} className="settings-form">
                 <h3>Profile Information</h3>
                 <p className="settings-description">Update your personal information and public profile</p>
                 <div className="form-group"><label>Full Name</label><div className="input-wrapper"><span className="input-icon">👤</span><input type="text" value={profileForm.name} onChange={e => setProfileForm({ ...profileForm, name: e.target.value })} placeholder="Your full name" /></div></div>
-                <div className="form-group"><label>Email Address</label><div className="input-wrapper"><span className="input-icon">📧</span><input type="email" value={profileForm.email} disabled style={{ background: 'var(--gray-100)' }} /></div><small style={{ color: 'var(--gray-400)' }}>Email cannot be changed</small></div>
+                <div className="form-group"><label>Email Address</label><div className="input-wrapper"><span className="input-icon">📧</span><input type="email" value={profileForm.email} disabled style={{ background: 'var(--gray-100)' }} /></div></div>
                 <div className="form-group"><label>Bio</label><textarea value={profileForm.bio} onChange={e => setProfileForm({ ...profileForm, bio: e.target.value })} placeholder="Tell us about yourself..." rows="4" className="settings-textarea" /></div>
                 <div className="form-group"><label>Website</label><div className="input-wrapper"><span className="input-icon">🌐</span><input type="url" value={profileForm.website} onChange={e => setProfileForm({ ...profileForm, website: e.target.value })} placeholder="https://yourwebsite.com" /></div></div>
                 <div className="form-row">
@@ -1370,7 +1442,6 @@ function Settings() {
               </form>
             )}
 
-            {/* Security Tab */}
             {activeTab === 'security' && (
               <form onSubmit={handlePasswordChange} className="settings-form">
                 <h3>Change Password</h3>
@@ -1382,7 +1453,6 @@ function Settings() {
               </form>
             )}
 
-            {/* Notifications Tab */}
             {activeTab === 'notifications' && (
               <div className="settings-form">
                 <h3>Notification Preferences</h3>
@@ -1390,53 +1460,30 @@ function Settings() {
                 <div className="notification-settings">
                   {Object.entries(notificationPrefs).map(([key, value]) => (
                     <div className="setting-item" key={key}>
-                      <div className="setting-info">
-                        <strong>{key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</strong>
-                        <p>Manage your {key.replace(/([A-Z])/g, ' $1').toLowerCase()} settings</p>
-                      </div>
-                      <label className="toggle-switch">
-                        <input type="checkbox" checked={value} onChange={() => setNotificationPrefs({ ...notificationPrefs, [key]: !value })} />
-                        <span className="toggle-slider"></span>
-                      </label>
+                      <div className="setting-info"><strong>{key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</strong></div>
+                      <label className="toggle-switch"><input type="checkbox" checked={value} onChange={() => setNotificationPrefs({ ...notificationPrefs, [key]: !value })} /><span className="toggle-slider"></span></label>
                     </div>
                   ))}
                 </div>
-                <button onClick={handleNotificationSave} className="btn-primary">💾 Save Preferences</button>
+                <button onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false } })} className="btn-primary">💾 Save Preferences</button>
               </div>
             )}
 
-            {/* Privacy Tab */}
             {activeTab === 'privacy' && (
               <div className="settings-form">
                 <h3>Privacy Settings</h3>
                 <p className="settings-description">Control your privacy and visibility</p>
-                <div className="form-group">
-                  <label>Profile Visibility</label>
-                  <select value={privacySettings.profileVisibility} onChange={e => setPrivacySettings({ ...privacySettings, profileVisibility: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid var(--gray-200)' }}>
-                    <option value="public">Public - Anyone can see my profile</option>
-                    <option value="members">Members Only - Only registered users</option>
-                    <option value="private">Private - Only I can see my profile</option>
-                  </select>
-                </div>
-                <div className="notification-settings">
-                  <div className="setting-item">
-                    <div className="setting-info"><strong>Show Email Address</strong><p>Display your email on your public profile</p></div>
-                    <label className="toggle-switch"><input type="checkbox" checked={privacySettings.showEmail} onChange={() => setPrivacySettings({ ...privacySettings, showEmail: !privacySettings.showEmail })} /><span className="toggle-slider"></span></label>
+                <div className="form-group"><label>Profile Visibility</label><select value={privacySettings.profileVisibility} onChange={e => setPrivacySettings({ ...privacySettings, profileVisibility: e.target.value })} className="settings-select"><option value="public">Public</option><option value="members">Members Only</option><option value="private">Private</option></select></div>
+                {Object.entries({ showEmail: 'Show Email', showActivity: 'Show Activity', allowMessages: 'Allow Messages' }).map(([key, label]) => (
+                  <div className="setting-item" key={key}>
+                    <div className="setting-info"><strong>{label}</strong></div>
+                    <label className="toggle-switch"><input type="checkbox" checked={privacySettings[key]} onChange={() => setPrivacySettings({ ...privacySettings, [key]: !privacySettings[key] })} /><span className="toggle-slider"></span></label>
                   </div>
-                  <div className="setting-item">
-                    <div className="setting-info"><strong>Show Activity</strong><p>Show your recent activity to others</p></div>
-                    <label className="toggle-switch"><input type="checkbox" checked={privacySettings.showActivity} onChange={() => setPrivacySettings({ ...privacySettings, showActivity: !privacySettings.showActivity })} /><span className="toggle-slider"></span></label>
-                  </div>
-                  <div className="setting-item">
-                    <div className="setting-info"><strong>Allow Messages</strong><p>Allow other users to send you messages</p></div>
-                    <label className="toggle-switch"><input type="checkbox" checked={privacySettings.allowMessages} onChange={() => setPrivacySettings({ ...privacySettings, allowMessages: !privacySettings.allowMessages })} /><span className="toggle-slider"></span></label>
-                  </div>
-                </div>
-                <button onClick={handlePrivacySave} className="btn-primary">💾 Save Privacy Settings</button>
+                ))}
+                <button onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Privacy settings saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false } })} className="btn-primary">💾 Save Privacy Settings</button>
               </div>
             )}
 
-            {/* Appearance Tab */}
             {activeTab === 'appearance' && (
               <div className="settings-form">
                 <h3>Appearance Settings</h3>
@@ -1445,34 +1492,30 @@ function Settings() {
                   <div className="theme-info"><strong>Theme Mode</strong><p>Choose between light and dark theme</p></div>
                   <button type="button" className="theme-toggle" onClick={() => dispatch({ type: 'TOGGLE_THEME' })}>{state.theme === 'light' ? '🌙 Switch to Dark' : '☀️ Switch to Light'}</button>
                 </div>
-                <div className="current-theme-preview" style={{ marginTop: '16px' }}>
-                  <p>Current theme: <strong>{state.theme === 'light' ? '☀️ Light' : '🌙 Dark'}</strong></p>
-                </div>
+                <p style={{ marginTop: '16px', color: 'var(--gray-500)' }}>Current theme: <strong>{state.theme === 'light' ? '☀️ Light' : '🌙 Dark'}</strong></p>
               </div>
             )}
 
-            {/* Danger Zone Tab */}
             {activeTab === 'danger' && (
               <div className="settings-form">
                 <h3 style={{ color: 'var(--danger)' }}>⚠️ Danger Zone</h3>
                 <p className="settings-description">Irreversible actions for your account</p>
-                <div style={{ padding: '20px', border: '2px solid var(--danger)', borderRadius: '12px', background: 'var(--danger-light)' }}>
-                  <h4 style={{ color: 'var(--danger)', marginBottom: '8px' }}>Delete Account</h4>
-                  <p style={{ color: 'var(--gray-600)', marginBottom: '16px' }}>Once you delete your account, there is no going back. Please be certain.</p>
+                <div className="danger-zone-card">
+                  <h4 style={{ color: 'var(--danger)' }}>Delete Account</h4>
+                  <p>Once you delete your account, there is no going back.</p>
                   <button className="btn-primary" onClick={() => setShowDeleteConfirm(true)} style={{ background: 'var(--danger)' }}>🗑️ Delete My Account</button>
                 </div>
-                <div style={{ marginTop: '20px', padding: '20px', border: '2px solid var(--warning)', borderRadius: '12px', background: 'var(--warning-light)' }}>
-                  <h4 style={{ color: 'var(--warning)', marginBottom: '8px' }}>Export Data</h4>
-                  <p style={{ color: 'var(--gray-600)', marginBottom: '16px' }}>Download all your data including listings, messages, and activity.</p>
-                  <button className="btn-secondary" onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '📦 Data export started! You will receive an email shortly.', type: 'info', time: new Date().toLocaleTimeString(), read: false } })}>📥 Export My Data</button>
+                <div className="danger-zone-card warning">
+                  <h4 style={{ color: 'var(--warning)' }}>Export Data</h4>
+                  <p>Download all your data including listings, messages, and activity.</p>
+                  <button className="btn-secondary" onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '📦 Data export started!', type: 'info', time: new Date().toLocaleTimeString(), read: false } })}>📥 Export My Data</button>
                 </div>
               </div>
             )}
           </div>
         </div>
       </div>
-
-      <ConfirmDialog isOpen={showDeleteConfirm} title="Delete Account" message="Are you absolutely sure you want to delete your account? This action cannot be undone. All your listings, messages, and data will be permanently removed." onConfirm={handleDeleteAccount} onCancel={() => setShowDeleteConfirm(false)} confirmText="Delete Forever" type="danger" />
+      <ConfirmDialog isOpen={showDeleteConfirm} title="Delete Account" message="Are you absolutely sure? This action cannot be undone." onConfirm={() => { dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '⚠️ Account deletion is not available in demo mode', type: 'warning', time: new Date().toLocaleTimeString(), read: false } }); setShowDeleteConfirm(false); }} onCancel={() => setShowDeleteConfirm(false)} confirmText="Delete Forever" type="danger" />
     </>
   );
 }
@@ -1481,15 +1524,16 @@ function Settings() {
 // FOOTER COMPONENT
 // ============================================
 function Footer() {
+  const currentYear = new Date().getFullYear();
   return (
     <footer className="footer">
       <div className="footer-content">
         <div className="footer-section"><h3>🚀 DevMarket</h3><p>The ultimate marketplace for developers to trade, showcase, and share digital products.</p></div>
         <div className="footer-section"><h4>Quick Links</h4><Link to="/marketplace">Marketplace</Link><Link to="/advertise">Advertise</Link><Link to="/code-sharing">Code Sharing</Link><Link to="/messages">Messages</Link></div>
         <div className="footer-section"><h4>Community</h4><a href="https://discord.com" target="_blank" rel="noopener noreferrer">Discord</a><a href="https://twitter.com" target="_blank" rel="noopener noreferrer">Twitter</a><a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a></div>
-        <div className="footer-section"><h4>Support</h4><a href="mailto:support@devmarket.com">Contact Us</a><a href="#">FAQs</a><a href="#">Terms of Service</a><a href="#">Privacy Policy</a></div>
+        <div className="footer-section"><h4>Support</h4><a href="mailto:support@devmarket.com">Contact Us</a><Link to="/faq">FAQs</Link><Link to="/terms">Terms of Service</Link><Link to="/privacy">Privacy Policy</Link></div>
       </div>
-      <div className="footer-bottom"><p>&copy; {new Date().getFullYear()} DevMarket. All rights reserved. Built with React & Supabase ❤️</p></div>
+      <div className="footer-bottom"><p>&copy; {currentYear} DevMarket. All rights reserved. Built with React & Supabase ❤️</p></div>
     </footer>
   );
 }
