@@ -3407,3 +3407,318 @@ input:checked + .toggle-slider:before {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================
+   DEVMARKET LOADER
+   ============================================ */
+
+/* Full-screen backdrop */
+.dm-loader {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a14;
+  z-index: 9999;
+  overflow: hidden;
+  font-family: var(--font-sans);
+}
+
+/* ── Animated grid ── */
+.dm-loader__grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  pointer-events: none;
+}
+
+.dm-loader__cell {
+  border: 1px solid rgba(102, 126, 234, 0.07);
+  animation: dmCellPulse 3s ease-in-out infinite;
+}
+
+@keyframes dmCellPulse {
+  0%, 100% { background: transparent; }
+  50%       { background: rgba(102, 126, 234, 0.04); }
+}
+
+/* ── Floating code tokens ── */
+.dm-loader__tokens {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.dm-loader__token {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: rgba(102, 126, 234, 0.22);
+  font-weight: 600;
+  animation: dmTokenFloat 8s ease-in-out infinite;
+  user-select: none;
+}
+
+/* Scatter tokens around the screen */
+.dm-loader__token:nth-child(1)  { top: 12%; left: 8%;  animation-delay: 0s;   animation-duration: 7s; }
+.dm-loader__token:nth-child(2)  { top: 22%; right: 10%;animation-delay: 0.6s; animation-duration: 9s; }
+.dm-loader__token:nth-child(3)  { top: 68%; left: 6%;  animation-delay: 1.2s; animation-duration: 8s; }
+.dm-loader__token:nth-child(4)  { top: 78%; right: 8%; animation-delay: 1.8s; animation-duration: 6s; }
+.dm-loader__token:nth-child(5)  { top: 45%; left: 3%;  animation-delay: 0.3s; animation-duration: 10s;}
+.dm-loader__token:nth-child(6)  { top: 15%; left: 50%; animation-delay: 2.1s; animation-duration: 7s; }
+.dm-loader__token:nth-child(7)  { top: 85%; left: 40%; animation-delay: 0.9s; animation-duration: 8s; }
+.dm-loader__token:nth-child(8)  { top: 55%; right: 5%; animation-delay: 1.5s; animation-duration: 9s; }
+.dm-loader__token:nth-child(9)  { top: 33%; left: 15%; animation-delay: 2.4s; animation-duration: 6s; }
+.dm-loader__token:nth-child(10) { top: 72%; right: 18%;animation-delay: 0.5s; animation-duration: 11s;}
+
+@keyframes dmTokenFloat {
+  0%, 100% { transform: translateY(0px) rotate(0deg);   opacity: 0.5; }
+  33%       { transform: translateY(-18px) rotate(3deg); opacity: 1;   }
+  66%       { transform: translateY(10px) rotate(-2deg); opacity: 0.3; }
+}
+
+/* ── Centre card ── */
+.dm-loader__card {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  width: min(420px, 90vw);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(102, 126, 234, 0.18);
+  border-radius: 28px;
+  padding: 48px 40px 40px;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow:
+    0 0 0 1px rgba(102, 126, 234, 0.08),
+    0 32px 80px rgba(0, 0, 0, 0.6),
+    0 0 60px rgba(102, 126, 234, 0.08) inset;
+  animation: dmCardIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes dmCardIn {
+  from { opacity: 0; transform: translateY(32px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Logo ── */
+.dm-loader__logo-wrap {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.dm-loader__logo-icon {
+  font-size: 3rem;
+  position: relative;
+  z-index: 2;
+  animation: dmRocketBob 2.4s ease-in-out infinite;
+  filter: drop-shadow(0 0 18px rgba(102, 126, 234, 0.7));
+}
+
+@keyframes dmRocketBob {
+  0%, 100% { transform: translateY(0) rotate(-8deg); }
+  50%       { transform: translateY(-10px) rotate(4deg); }
+}
+
+/* Orbiting rings */
+.dm-loader__orbit {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(102, 126, 234, 0.35);
+  animation: dmOrbit 2.8s linear infinite;
+}
+
+.dm-loader__orbit--2 {
+  inset: -14px;
+  border-color: rgba(118, 75, 162, 0.3);
+  animation-duration: 4.2s;
+  animation-direction: reverse;
+}
+
+@keyframes dmOrbit {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.dm-loader__orbit-dot,
+.dm-loader__orbit-dot--2 {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #667eea;
+  top: -4px;
+  left: calc(50% - 4px);
+  box-shadow: 0 0 10px #667eea;
+}
+
+.dm-loader__orbit-dot--2 {
+  background: #764ba2;
+  box-shadow: 0 0 10px #764ba2;
+}
+
+/* ── Brand text ── */
+.dm-loader__brand {
+  display: flex;
+  gap: 2px;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 6px;
+  animation: dmBrandIn 0.8s 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+@keyframes dmBrandIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.dm-loader__brand-dev {
+  background: linear-gradient(135deg, #667eea, #818cf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.dm-loader__brand-market {
+  background: linear-gradient(135deg, #764ba2, #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.dm-loader__tagline {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  margin-bottom: 32px;
+  animation: dmBrandIn 0.8s 0.5s both;
+}
+
+/* ── Progress bar ── */
+.dm-loader__bar-track {
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+.dm-loader__bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #667eea, #764ba2, #a78bfa);
+  background-size: 200% 100%;
+  transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: dmBarShimmer 1.6s linear infinite;
+  box-shadow: 0 0 12px rgba(102, 126, 234, 0.6);
+}
+
+@keyframes dmBarShimmer {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+/* ── Step list ── */
+.dm-loader__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 28px;
+}
+
+.dm-loader__step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.03);
+  transition: all 0.4s ease;
+  opacity: 0.35;
+}
+
+.dm-loader__step--active {
+  opacity: 1;
+  background: rgba(102, 126, 234, 0.1);
+  border-color: rgba(102, 126, 234, 0.25);
+  box-shadow: 0 0 20px rgba(102, 126, 234, 0.08);
+}
+
+.dm-loader__step--done {
+  opacity: 0.7;
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+.dm-loader__step-icon {
+  font-size: 1.1rem;
+  width: 28px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.dm-loader__step--done .dm-loader__step-icon {
+  color: #10b981;
+  font-style: normal;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.dm-loader__step-label {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.75);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ── Pulsing dots ── */
+.dm-loader__dots {
+  display: flex;
+  gap: 8px;
+}
+
+.dm-loader__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+
+.dm-loader__dot--on {
+  background: #667eea;
+  box-shadow: 0 0 10px rgba(102, 126, 234, 0.8);
+}
+
+/* ── Mobile adjustments ── */
+@media (max-width: 480px) {
+  .dm-loader__card {
+    padding: 36px 24px 32px;
+    border-radius: 20px;
+    width: 92vw;
+  }
+  .dm-loader__brand { font-size: 1.6rem; }
+  .dm-loader__logo-icon { font-size: 2.4rem; }
+  .dm-loader__logo-wrap { width: 72px; height: 72px; margin-bottom: 18px; }
+  .dm-loader__step { padding: 9px 12px; }
+  .dm-loader__step-label { font-size: 0.825rem; }
+  .dm-loader__token { display: none; } /* hide floating tokens on very small screens */
+}
