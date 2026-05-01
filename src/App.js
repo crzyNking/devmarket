@@ -1,4 +1,5 @@
-// App.js - Complete Fixed Version with DevMarket Loader & Single Sign-In Button
+// App.js - Complete Production-Ready Version
+// Features: Real-time messaging, Profile avatar upload, Delete own listings, Simplified listing form, Loader only on first visit
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
@@ -62,7 +63,7 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
     case 'ADD_NOTIFICATION': 
-      return { ...state, notifications: [{...action.payload, id: Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
+      return { ...state, notifications: [{...action.payload, id: Date.now() + Math.random(), read: false}, ...(state.notifications || [])].slice(0, 50) };
     case 'REMOVE_NOTIFICATION': 
       return { ...state, notifications: (state.notifications || []).filter(n => n.id !== action.payload) };
     case 'CLEAR_NOTIFICATIONS': 
@@ -98,9 +99,9 @@ function appReducer(state, action) {
 }
 
 // ============================================
-// DEVMARKET LOADER COMPONENT
+// DEVMARKET LOADER COMPONENT (Only on first visit, not on refresh)
 // ============================================
-function DevMarketLoader() {
+function DevMarketLoader({ onFinish }) {
   const [progress, setProgress] = useState(0);
   const [activeStep, setActiveStep] = useState(0);
   const [dots, setDots] = useState([true, false, false]);
@@ -112,7 +113,6 @@ function DevMarketLoader() {
   ];
 
   useEffect(() => {
-    // Animate progress bar
     const progressInterval = setInterval(() => {
       setProgress(prev => {
         if (prev >= 90) return prev;
@@ -120,7 +120,6 @@ function DevMarketLoader() {
       });
     }, 400);
 
-    // Rotate through steps
     const stepInterval = setInterval(() => {
       setActiveStep(prev => {
         if (prev < steps.length - 1) return prev + 1;
@@ -128,7 +127,6 @@ function DevMarketLoader() {
       });
     }, 1500);
 
-    // Animate dots
     const dotsInterval = setInterval(() => {
       setDots(prev => {
         const nextIndex = prev.findIndex(d => d) + 1;
@@ -137,32 +135,33 @@ function DevMarketLoader() {
       });
     }, 500);
 
+    const finishTimeout = setTimeout(() => {
+      if (onFinish) onFinish();
+    }, 2000);
+
     return () => {
       clearInterval(progressInterval);
       clearInterval(stepInterval);
       clearInterval(dotsInterval);
+      clearTimeout(finishTimeout);
     };
-  }, [steps.length]);
+  }, [steps.length, onFinish]);
 
   return (
     <div className="dm-loader">
-      {/* Animated grid background */}
       <div className="dm-loader__grid">
         {Array.from({ length: 64 }).map((_, i) => (
           <div key={i} className="dm-loader__cell" style={{ animationDelay: `${Math.random() * 3}s` }} />
         ))}
       </div>
 
-      {/* Floating code tokens */}
       <div className="dm-loader__tokens">
         {['const', 'function', 'import', 'export', 'async', 'await', 'return', 'class', 'interface', 'type'].map((token, i) => (
           <span key={i} className="dm-loader__token">{token}</span>
         ))}
       </div>
 
-      {/* Center card */}
       <div className="dm-loader__card">
-        {/* Logo with orbiting rings */}
         <div className="dm-loader__logo-wrap">
           <span className="dm-loader__logo-icon">🚀</span>
           <div className="dm-loader__orbit">
@@ -173,14 +172,12 @@ function DevMarketLoader() {
           </div>
         </div>
 
-        {/* Brand text */}
         <div className="dm-loader__brand">
           <span className="dm-loader__brand-dev">Dev</span>
           <span className="dm-loader__brand-market">Market</span>
         </div>
         <p className="dm-loader__tagline">IT Marketplace Hub</p>
 
-        {/* Progress bar */}
         <div className="dm-loader__bar-track">
           <div 
             className="dm-loader__bar-fill" 
@@ -188,7 +185,6 @@ function DevMarketLoader() {
           />
         </div>
 
-        {/* Step indicators */}
         <div className="dm-loader__steps">
           {steps.map((step, i) => (
             <div 
@@ -206,7 +202,6 @@ function DevMarketLoader() {
           ))}
         </div>
 
-        {/* Pulsing dots */}
         <div className="dm-loader__dots">
           {dots.map((isOn, i) => (
             <div 
@@ -280,11 +275,20 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
 }
 
 // ============================================
-// MAIN APP WITH FIXED SUPABASE INTEGRATION
+// MAIN APP WITH ALL FEATURES
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+  // Check if this is a refresh (not first visit) - using sessionStorage to skip loader on refresh
+  const [showLoader, setShowLoader] = useState(() => {
+    const hasVisited = sessionStorage.getItem('devmarket_loaded_once');
+    if (!hasVisited) {
+      sessionStorage.setItem('devmarket_loaded_once', 'true');
+      return true;
+    }
+    return false;
+  });
 
   // Load all public data from Supabase
   async function loadPublicData() {
@@ -431,13 +435,45 @@ function App() {
     }
   }
 
+  // Real-time message subscription
+  let messageChannel = null;
+
+  function setupRealtimeMessages() {
+    if (messageChannel) return;
+    
+    messageChannel = supabase
+      .channel('messages-realtime')
+      .on('postgres_changes', 
+        { event: 'INSERT', schema: 'public', table: 'messages' }, 
+        async (payload) => {
+          const newMsg = payload.new;
+          if (state.currentUser && (newMsg.to_user === state.currentUser.id || newMsg.from_user === state.currentUser.id)) {
+            dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
+            // Send real-time notification
+            dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+              message: `💬 New message: ${newMsg.subject || 'Message received'}`, 
+              type: 'info',
+              time: new Date().toLocaleTimeString()
+            }});
+          } else if (state.currentUser && newMsg.to_user === state.currentUser.id) {
+            // Play notification sound effect (optional)
+            dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+              message: `📨 ${newMsg.from_name || 'Someone'} sent you a message!`, 
+              type: 'success',
+              time: new Date().toLocaleTimeString()
+            }});
+          }
+        }
+      )
+      .subscribe();
+  }
+
   // Initialize the app
   useEffect(() => {
     let mounted = true;
 
     async function initialize() {
       try {
-        // Get current session
         const { data: { session } } = await supabase.auth.getSession();
         
         if (mounted) {
@@ -449,15 +485,14 @@ function App() {
           }
         }
 
-        // Always load public data
         await loadPublicData();
         
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
-          // Hide loader after a short delay for smooth transition
+          setupRealtimeMessages();
           setTimeout(() => {
             setIsInitialLoading(false);
-          }, 800);
+          }, 500);
         }
       } catch (error) {
         console.error('Init error:', error);
@@ -465,11 +500,10 @@ function App() {
           dispatch({ type: 'INITIALIZED' });
           setTimeout(() => {
             setIsInitialLoading(false);
-          }, 800);
+          }, 500);
         }
       }
 
-      // Listen for auth state changes
       const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
         if (mounted) {
           dispatch({ type: 'SET_SESSION', payload: session });
@@ -489,6 +523,9 @@ function App() {
       return () => {
         mounted = false;
         subscription?.unsubscribe();
+        if (messageChannel) {
+          supabase.removeChannel(messageChannel);
+        }
       };
     }
 
@@ -509,9 +546,13 @@ function App() {
     dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
   }, []);
 
-  // Show loader during initial loading
+  // Show loader only on first visit (not on refresh)
+  if (showLoader) {
+    return <DevMarketLoader onFinish={() => setShowLoader(false)} />;
+  }
+
   if (isInitialLoading || (!state.initialized && state.loading)) {
-    return <DevMarketLoader />;
+    return <DevMarketLoader onFinish={() => setIsInitialLoading(false)} />;
   }
 
   return (
@@ -557,7 +598,7 @@ function useAppContext() {
 }
 
 // ============================================
-// HEADER COMPONENT (FIXED - Single Sign In Button)
+// HEADER COMPONENT (Single Sign In Button)
 // ============================================
 function Header() {
   const { state, dispatch } = useAppContext();
@@ -637,7 +678,6 @@ function Header() {
                 </Link>
               </>
             )}
-            {/* REMOVED: Mobile auth section with duplicate sign-in button */}
           </nav>
 
           <div className="header-actions">
@@ -715,7 +755,6 @@ function Header() {
                 </div>
               </>
             ) : (
-              /* ONLY ONE SIGN IN BUTTON - Desktop only */
               <button className="btn-login" onClick={() => setShowAuth(true)}>
                 👤 Sign In
               </button>
@@ -1311,13 +1350,46 @@ function Home() {
 }
 
 // ============================================
-// LISTING CARD COMPONENT (FIXED - No contact column)
+// LISTING CARD COMPONENT (With Delete for Owner)
 // ============================================
 function ListingCard({ listing }) {
   const { state, dispatch } = useAppContext();
   const [showContact, setShowContact] = useState(false);
   const [message, setMessage] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const isFavorited = (state.favorites || []).some(f => f.id === listing.id);
+  const isOwner = state.currentUser?.id === listing.user_id;
+
+  const handleDelete = async () => {
+    if (!isOwner) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'You can only delete your own listings', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
+    }
+    
+    const { error } = await supabase.from('listings').delete().eq('id', listing.id);
+    if (!error) {
+      dispatch({ type: 'DELETE_LISTING', payload: listing.id });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: `🗑️ "${listing.title}" has been deleted`, 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    } else {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Failed to delete listing', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    }
+    setShowDeleteConfirm(false);
+  };
 
   const handleContact = async () => {
     if (!state.currentUser) {
@@ -1332,19 +1404,19 @@ function ListingCard({ listing }) {
     
     if (showContact && message.trim()) {
       try {
-        // FIXED: Removed contact and to_email fields that don't exist in the schema
         await supabase.from('messages').insert([{
           from_user: state.currentUser.id,
           to_user: listing.user_id,
           subject: `Inquiry about ${listing.title}`,
           message: message,
+          from_name: state.profile?.name,
           listing_id: listing.id,
           read: false,
           created_at: new Date().toISOString()
         }]);
         
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: `Message sent about "${listing.title}"`, 
+          message: `📤 Message sent about "${listing.title}"`, 
           type: 'success', 
           time: new Date().toLocaleTimeString(), 
           read: false 
@@ -1378,7 +1450,7 @@ function ListingCard({ listing }) {
     
     dispatch({ type: 'TOGGLE_FAVORITE', payload: listing });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-      message: isFavorited ? 'Removed from favorites' : 'Added to favorites', 
+      message: isFavorited ? '⭐ Removed from favorites' : '⭐ Added to favorites', 
       type: 'info', 
       time: new Date().toLocaleTimeString(), 
       read: false 
@@ -1400,72 +1472,89 @@ function ListingCard({ listing }) {
   };
 
   return (
-    <div className="listing-card">
-      <div className="card-image">
-        {listing.imageUrl ? (
-          <img src={listing.imageUrl} alt={listing.title} loading="lazy" />
-        ) : (
-          <div className="placeholder-image"><span>🌐</span></div>
-        )}
-        <span className="category-badge">{listing.category}</span>
-        <button 
-          className={`favorite-button ${isFavorited ? 'active' : ''}`} 
-          onClick={toggleFavorite}
-          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-          aria-label={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-        >
-          {isFavorited ? '⭐' : '☆'}
-        </button>
-      </div>
-      <div className="card-content">
-        <div className="card-header">
-          <h3>{listing.title}</h3>
-          <span className="price-tag">{listing.price}</span>
-        </div>
-        <p className="description">
-          {listing.description?.substring(0, 150)}{listing.description?.length > 150 ? '...' : ''}
-        </p>
-        <div className="card-meta">
-          <span className="seller-info">
-            <img 
-              src={listing.sellerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(listing.seller || 'User')}&background=667eea&color=fff`} 
-              alt={listing.seller} 
-            />
-            {listing.seller}
-          </span>
-          <span className="rating">⭐ {listing.rating || 'New'}</span>
-        </div>
-        <div className="card-stats">
-          <span>👁 {listing.views || 0}</span>
-          <span>💬 {listing.inquiries || 0}</span>
-          <span>{listing.date}</span>
-        </div>
-        {showContact && (
-          <textarea 
-            placeholder="Write your message..." 
-            value={message} 
-            onChange={e => setMessage(e.target.value)} 
-            className="contact-message" 
-            rows="3" 
-          />
-        )}
-        <div className="card-actions">
-          {listing.url && (
-            <a href={listing.url} target="_blank" rel="noopener noreferrer" className="btn-secondary btn-sm">
-              🔗 View
-            </a>
+    <>
+      <div className="listing-card">
+        <div className="card-image">
+          {listing.imageUrl ? (
+            <img src={listing.imageUrl} alt={listing.title} loading="lazy" />
+          ) : (
+            <div className="placeholder-image"><span>🌐</span></div>
           )}
-          <button onClick={handleContact} className="btn-primary btn-sm">
-            {showContact ? '📤 Send' : '📧 Contact'}
+          <span className="category-badge">{listing.category || 'Website'}</span>
+          <button 
+            className={`favorite-button ${isFavorited ? 'active' : ''}`} 
+            onClick={toggleFavorite}
+            title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+            aria-label={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+          >
+            {isFavorited ? '⭐' : '☆'}
           </button>
         </div>
+        <div className="card-content">
+          <div className="card-header">
+            <h3>{listing.title}</h3>
+            <span className="price-tag">{listing.price}</span>
+          </div>
+          <p className="description">
+            {listing.description?.substring(0, 150)}{listing.description?.length > 150 ? '...' : ''}
+          </p>
+          <div className="card-meta">
+            <span className="seller-info">
+              <img 
+                src={listing.sellerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(listing.seller || 'User')}&background=667eea&color=fff`} 
+                alt={listing.seller} 
+              />
+              {listing.seller}
+            </span>
+            <span className="rating">⭐ {listing.rating || 'New'}</span>
+          </div>
+          <div className="card-stats">
+            <span>👁 {listing.views || 0}</span>
+            <span>💬 {listing.inquiries || 0}</span>
+            <span>{listing.date}</span>
+          </div>
+          {showContact && (
+            <textarea 
+              placeholder="Write your message..." 
+              value={message} 
+              onChange={e => setMessage(e.target.value)} 
+              className="contact-message" 
+              rows="3" 
+            />
+          )}
+          <div className="card-actions">
+            {listing.url && (
+              <a href={listing.url} target="_blank" rel="noopener noreferrer" className="btn-secondary btn-sm">
+                🔗 View
+              </a>
+            )}
+            <button onClick={handleContact} className="btn-primary btn-sm">
+              {showContact ? '📤 Send' : '📧 Contact'}
+            </button>
+            {isOwner && (
+              <button onClick={() => setShowDeleteConfirm(true)} className="btn-delete btn-sm" style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer' }}>
+                🗑️ Delete
+              </button>
+            )}
+          </div>
+        </div>
       </div>
-    </div>
+      
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        title="Delete Listing"
+        message={`Are you sure you want to delete "${listing.title}"? This action cannot be undone.`}
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+        confirmText="Delete Permanently"
+        type="danger"
+      />
+    </>
   );
 }
 
 // ============================================
-// MARKETPLACE COMPONENT (FIXED - Removed contact field)
+// MARKETPLACE COMPONENT (Simplified Form Design)
 // ============================================
 function Marketplace() {
   const { state, dispatch } = useAppContext();
@@ -1509,7 +1598,6 @@ function Marketplace() {
     setSubmitting(true);
     
     try {
-      // FIXED: Removed 'contact' field that doesn't exist in the schema
       const listingData = {
         title: formData.title,
         description: formData.description,
@@ -1685,7 +1773,6 @@ function Marketplace() {
                   onChange={e => setFormData({ ...formData, imageUrl: e.target.value })} 
                 />
               </div>
-              {/* REMOVED: Contact Email field since it's not in the schema */}
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '8px' }}>
                 <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
                   Cancel
@@ -2027,7 +2114,6 @@ function AppCard({ app }) {
     
     if (showContact && message.trim()) {
       try {
-        // FIXED: Removed from_name, from_email, to_email fields
         await supabase.from('messages').insert([{
           from_user: state.currentUser.id,
           to_user: app.user_id,
@@ -2225,7 +2311,6 @@ function CodeSharing() {
         .update({ likes: newLikes })
         .eq('id', snippet.id);
       
-      // Handle snippet_likes table
       if (userLiked) {
         await supabase
           .from('snippet_likes')
@@ -2455,11 +2540,13 @@ function CodeCard({ snippet, onLike }) {
 }
 
 // ============================================
-// MESSAGES COMPONENT
+// MESSAGES COMPONENT with Real-time Updates & Reply Functionality
 // ============================================
 function Messages() {
   const { state, dispatch } = useAppContext();
-  
+  const [replyText, setReplyText] = useState({});
+  const [replyLoading, setReplyLoading] = useState({});
+
   if (!state.currentUser) {
     return (
       <div className="messages-page">
@@ -2472,9 +2559,75 @@ function Messages() {
     );
   }
 
+  // Get messages where user is sender or receiver
   const userMessages = (state.messages || []).filter(
     m => m.from_user === state.currentUser.id || m.to_user === state.currentUser.id
   );
+
+  const sendReply = async (originalMsg, replyContent) => {
+    if (!replyContent.trim()) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Please enter a reply message', 
+        type: 'warning', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
+    }
+
+    setReplyLoading(prev => ({ ...prev, [originalMsg.id]: true }));
+
+    try {
+      const toUserId = originalMsg.from_user === state.currentUser.id ? originalMsg.to_user : originalMsg.from_user;
+      
+      const newMessage = {
+        from_user: state.currentUser.id,
+        to_user: toUserId,
+        subject: `Re: ${originalMsg.subject || 'Message'}`,
+        message: replyContent,
+        from_name: state.profile?.name,
+        read: false,
+        created_at: new Date().toISOString()
+      };
+
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([newMessage])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      dispatch({ type: 'ADD_MESSAGE', payload: data });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '📤 Reply sent successfully!', 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      
+      setReplyText(prev => ({ ...prev, [originalMsg.id]: '' }));
+    } catch (error) {
+      console.error('Error sending reply:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Failed to send reply', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    }
+
+    setReplyLoading(prev => ({ ...prev, [originalMsg.id]: false }));
+  };
+
+  const markAsRead = async (id) => {
+    dispatch({ type: 'MARK_MESSAGE_READ', payload: id });
+    try {
+      await supabase.from('messages').update({ read: true }).eq('id', id);
+    } catch (error) {
+      console.error('Error marking message read:', error);
+    }
+  };
 
   const deleteMessage = async (id) => {
     dispatch({ type: 'DELETE_MESSAGE', payload: id });
@@ -2491,64 +2644,263 @@ function Messages() {
     }});
   };
 
-  const markAsRead = async (id) => {
-    dispatch({ type: 'MARK_MESSAGE_READ', payload: id });
-    try {
-      await supabase.from('messages').update({ read: true }).eq('id', id);
-    } catch (error) {
-      console.error('Error marking message read:', error);
+  // Group messages by conversation (thread)
+  const conversations = {};
+  userMessages.forEach(msg => {
+    const otherUserId = msg.from_user === state.currentUser.id ? msg.to_user : msg.from_user;
+    if (!conversations[otherUserId]) {
+      conversations[otherUserId] = {
+        userId: otherUserId,
+        messages: [],
+        lastMessage: null,
+        otherUserName: msg.from_name || (msg.from_user === state.currentUser.id ? 'You' : 'User')
+      };
     }
-  };
+    conversations[otherUserId].messages.push(msg);
+    if (!conversations[otherUserId].lastMessage || new Date(msg.created_at) > new Date(conversations[otherUserId].lastMessage?.created_at)) {
+      conversations[otherUserId].lastMessage = msg;
+    }
+  });
+
+  // Sort conversations by latest message
+  const sortedConversations = Object.values(conversations).sort((a, b) => 
+    new Date(b.lastMessage?.created_at || 0) - new Date(a.lastMessage?.created_at || 0)
+  );
 
   return (
     <div className="messages-page">
       <div className="page-header">
-        <h1>Messages</h1>
-        <p>Your conversations and inquiries</p>
+        <h1>💬 Messages</h1>
+        <p>Real-time conversations with other developers</p>
       </div>
       
       {userMessages.length === 0 ? (
         <div className="empty-state">
           <span className="empty-icon">💬</span>
           <h3>No messages yet</h3>
-          <p>Messages from your listings and inquiries will appear here</p>
+          <p>Contact sellers or respond to inquiries to start conversations</p>
         </div>
       ) : (
-        <div className="messages-list">
-          {userMessages.map(msg => (
-            <div 
-              key={msg.id} 
-              className={`message-card ${!msg.read ? 'unread' : ''}`}
-              onClick={() => !msg.read && markAsRead(msg.id)}
-            >
-              <button 
-                onClick={(e) => { e.stopPropagation(); deleteMessage(msg.id); }} 
-                className="btn-remove-notification" 
-                title="Delete message" 
-                aria-label="Delete message"
-                style={{ float: 'right' }}
-              >
-                🗑️
-              </button>
-              <div className="message-header">
-                <span><strong>Subject:</strong> {msg.subject}</span>
-                <span>{new Date(msg.created_at).toLocaleDateString()}</span>
+        <div className="messages-container">
+          {sortedConversations.map(conv => (
+            <div key={conv.userId} className="conversation-thread">
+              <div className="conversation-header">
+                <div className="conversation-avatar">
+                  <img 
+                    src={`https://ui-avatars.com/api/?name=${encodeURIComponent(conv.otherUserName)}&background=667eea&color=fff`} 
+                    alt={conv.otherUserName}
+                    style={{ width: '40px', height: '40px', borderRadius: '50%' }}
+                  />
+                </div>
+                <div className="conversation-info">
+                  <h4>{conv.otherUserName}</h4>
+                  <small>{conv.messages.length} message{conv.messages.length !== 1 ? 's' : ''}</small>
+                </div>
               </div>
-              <p>{msg.message}</p>
+              
+              <div className="conversation-messages">
+                {conv.messages.map(msg => (
+                  <div 
+                    key={msg.id} 
+                    className={`message-bubble ${msg.from_user === state.currentUser.id ? 'sent' : 'received'} ${!msg.read && msg.to_user === state.currentUser.id ? 'unread' : ''}`}
+                    onClick={() => !msg.read && msg.to_user === state.currentUser.id && markAsRead(msg.id)}
+                  >
+                    <div className="message-subject">
+                      <strong>{msg.subject}</strong>
+                      <small>{new Date(msg.created_at).toLocaleString()}</small>
+                    </div>
+                    <p className="message-text">{msg.message}</p>
+                    <div className="message-actions">
+                      {msg.to_user === state.currentUser.id && !msg.read && (
+                        <span className="unread-badge">New</span>
+                      )}
+                      <button 
+                        onClick={() => deleteMessage(msg.id)} 
+                        className="btn-delete-message"
+                        title="Delete message"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="reply-section">
+                <textarea
+                  className="reply-input"
+                  placeholder={`Reply to ${conv.otherUserName}...`}
+                  value={replyText[conv.userId] || ''}
+                  onChange={(e) => setReplyText(prev => ({ ...prev, [conv.userId]: e.target.value }))}
+                  rows="2"
+                />
+                <button 
+                  className="btn-primary"
+                  onClick={() => sendReply({ 
+                    id: conv.userId, 
+                    from_user: conv.userId, 
+                    to_user: state.currentUser.id,
+                    subject: conv.lastMessage?.subject || 'Conversation'
+                  }, replyText[conv.userId])}
+                  disabled={replyLoading[conv.userId]}
+                >
+                  {replyLoading[conv.userId] ? 'Sending...' : '📤 Send Reply'}
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
+
+      <style>{`
+        .messages-container {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+          max-width: 900px;
+          margin: 0 auto;
+        }
+        .conversation-thread {
+          background: var(--white);
+          border-radius: var(--radius-xl);
+          padding: 20px;
+          box-shadow: var(--shadow);
+          border: 1px solid var(--gray-100);
+        }
+        .conversation-header {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding-bottom: 12px;
+          border-bottom: 2px solid var(--gray-100);
+          margin-bottom: 16px;
+        }
+        .conversation-info h4 {
+          margin: 0;
+          font-size: 1.1rem;
+        }
+        .conversation-messages {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          max-height: 400px;
+          overflow-y: auto;
+          padding-right: 8px;
+        }
+        .message-bubble {
+          background: var(--gray-50);
+          border-radius: var(--radius-lg);
+          padding: 12px 16px;
+          transition: 0.2s;
+        }
+        .message-bubble.sent {
+          background: linear-gradient(135deg, var(--primary)10, var(--secondary)10);
+          margin-left: 20px;
+        }
+        .message-bubble.received {
+          background: var(--gray-100);
+          margin-right: 20px;
+        }
+        .message-bubble.unread {
+          border-left: 3px solid var(--primary);
+          background: rgba(102, 126, 234, 0.05);
+        }
+        .message-subject {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: 8px;
+          font-size: 0.85rem;
+        }
+        .message-text {
+          margin: 0;
+          color: var(--gray-700);
+          line-height: 1.5;
+        }
+        .message-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 8px;
+          margin-top: 8px;
+        }
+        .btn-delete-message {
+          background: none;
+          border: none;
+          cursor: pointer;
+          font-size: 1rem;
+          opacity: 0.6;
+          transition: 0.2s;
+        }
+        .btn-delete-message:hover {
+          opacity: 1;
+        }
+        .unread-badge {
+          background: var(--primary);
+          color: white;
+          padding: 2px 8px;
+          border-radius: 12px;
+          font-size: 0.7rem;
+          font-weight: 600;
+        }
+        .reply-section {
+          margin-top: 16px;
+          padding-top: 16px;
+          border-top: 1px solid var(--gray-200);
+          display: flex;
+          gap: 10px;
+          flex-direction: column;
+        }
+        .reply-input {
+          width: 100%;
+          padding: 12px;
+          border: 2px solid var(--gray-200);
+          border-radius: var(--radius-lg);
+          resize: vertical;
+          font-family: inherit;
+        }
+        .reply-input:focus {
+          outline: none;
+          border-color: var(--primary);
+        }
+        @media (max-width: 768px) {
+          .message-bubble.sent {
+            margin-left: 10px;
+          }
+          .message-bubble.received {
+            margin-right: 10px;
+          }
+        }
+      `}</style>
     </div>
   );
 }
 
 // ============================================
-// PROFILE COMPONENT
+// PROFILE COMPONENT with Avatar Upload
 // ============================================
 function Profile() {
-  const { state } = useAppContext();
-  
+  const { state, dispatch } = useAppContext();
+  const [uploading, setUploading] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: '',
+    bio: '',
+    website: '',
+    github: '',
+    twitter: ''
+  });
+
+  useEffect(() => {
+    if (state.profile) {
+      setEditForm({
+        name: state.profile.name || '',
+        bio: state.profile.bio || '',
+        website: state.profile.website || '',
+        github: state.profile.github || '',
+        twitter: state.profile.twitter || ''
+      });
+    }
+  }, [state.profile]);
+
   if (!state.currentUser) {
     return (
       <div className="profile-page">
@@ -2561,61 +2913,246 @@ function Profile() {
     );
   }
 
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    if (!file.type.startsWith('image/')) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Please upload an image file', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Image must be less than 2MB', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
+    }
+
+    setUploading(true);
+    
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${state.currentUser.id}-${Date.now()}.${fileExt}`;
+      
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(fileName);
+
+      // Update profile in database
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: publicUrl, updated_at: new Date().toISOString() })
+        .eq('id', state.currentUser.id);
+
+      if (updateError) throw updateError;
+
+      // Update local state
+      dispatch({ 
+        type: 'UPDATE_PROFILE', 
+        payload: { avatar_url: publicUrl } 
+      });
+      
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Profile picture updated!', 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    } catch (error) {
+      console.error('Error uploading avatar:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Failed to update profile picture', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    }
+    
+    setUploading(false);
+  };
+
+  const handleProfileUpdate = async () => {
+    setUploading(true);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          name: editForm.name,
+          bio: editForm.bio,
+          website: editForm.website,
+          github: editForm.github,
+          twitter: editForm.twitter,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', state.currentUser.id);
+
+      if (error) throw error;
+
+      dispatch({ type: 'UPDATE_PROFILE', payload: editForm });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Profile updated successfully!', 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      setEditMode(false);
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Failed to update profile', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    }
+    setUploading(false);
+  };
+
   const userName = state.profile?.name || state.currentUser.email;
   const userListings = (state.listings || []).filter(
-    l => l.user_id === state.currentUser.id || l.seller === userName
+    l => l.user_id === state.currentUser.id
   );
   const userApps = (state.apps || []).filter(
-    a => a.user_id === state.currentUser.id || a.developer === userName
+    a => a.user_id === state.currentUser.id
   );
   const userSnippets = (state.codeSnippets || []).filter(
-    s => s.user_id === state.currentUser.id || s.author === userName
+    s => s.user_id === state.currentUser.id
   );
-  const userReceivedMessages = (state.messages || []).filter(
-    m => m.to_user === state.currentUser.id
+  const userMessages = (state.messages || []).filter(
+    m => m.to_user === state.currentUser.id && !m.read
   );
 
   return (
     <div className="profile-page">
-      <div className="profile-header">
-        <img 
-          src={state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=667eea&color=fff`} 
-          alt={userName} 
-          className="profile-avatar" 
-        />
-        <div>
-          <h1>{userName}</h1>
-          <p>{state.currentUser.email}</p>
-          {state.profile?.role && <p>Role: {state.profile.role}</p>}
-          {state.profile?.bio && <p>{state.profile.bio}</p>}
-          {state.profile?.website && (
-            <p>🌐 <a href={state.profile.website} target="_blank" rel="noopener noreferrer">{state.profile.website}</a></p>
+      <div className="profile-header-card">
+        <div className="profile-avatar-section">
+          <img 
+            src={state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=667eea&color=fff`} 
+            alt={userName} 
+            className="profile-avatar-large" 
+          />
+          <label className="avatar-upload-btn">
+            <input 
+              type="file" 
+              accept="image/*" 
+              onChange={handleAvatarUpload} 
+              disabled={uploading}
+              style={{ display: 'none' }}
+            />
+            <span className="upload-icon">📷</span>
+            <span>{uploading ? 'Uploading...' : 'Change Photo'}</span>
+          </label>
+        </div>
+        
+        <div className="profile-info-section">
+          {editMode ? (
+            <>
+              <input
+                type="text"
+                value={editForm.name}
+                onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                className="profile-edit-input"
+                placeholder="Full Name"
+              />
+              <textarea
+                value={editForm.bio}
+                onChange={e => setEditForm({ ...editForm, bio: e.target.value })}
+                className="profile-edit-textarea"
+                placeholder="Tell us about yourself..."
+                rows="3"
+              />
+              <input
+                type="url"
+                value={editForm.website}
+                onChange={e => setEditForm({ ...editForm, website: e.target.value })}
+                className="profile-edit-input"
+                placeholder="Website URL"
+              />
+              <input
+                type="text"
+                value={editForm.github}
+                onChange={e => setEditForm({ ...editForm, github: e.target.value })}
+                className="profile-edit-input"
+                placeholder="GitHub Username"
+              />
+              <input
+                type="text"
+                value={editForm.twitter}
+                onChange={e => setEditForm({ ...editForm, twitter: e.target.value })}
+                className="profile-edit-input"
+                placeholder="Twitter Handle"
+              />
+              <div className="profile-actions">
+                <button onClick={handleProfileUpdate} className="btn-primary" disabled={uploading}>
+                  💾 Save Changes
+                </button>
+                <button onClick={() => setEditMode(false)} className="btn-secondary">
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h1>{state.profile?.name || 'Developer'}</h1>
+              <p className="profile-email">{state.currentUser.email}</p>
+              {state.profile?.bio && <p className="profile-bio">{state.profile.bio}</p>}
+              <div className="profile-links">
+                {state.profile?.website && (
+                  <a href={state.profile.website} target="_blank" rel="noopener noreferrer">🌐 {state.profile.website}</a>
+                )}
+                {state.profile?.github && (
+                  <a href={`https://github.com/${state.profile.github}`} target="_blank" rel="noopener noreferrer">⌨️ GitHub</a>
+                )}
+                {state.profile?.twitter && (
+                  <a href={`https://twitter.com/${state.profile.twitter}`} target="_blank" rel="noopener noreferrer">𝕏 Twitter</a>
+                )}
+              </div>
+              <button onClick={() => setEditMode(true)} className="btn-secondary">
+                ✏️ Edit Profile
+              </button>
+            </>
           )}
         </div>
       </div>
       
-      <div className="profile-stats">
-        <div className="stat-box">
-          <h3>{userListings.length}</h3>
-          <p>Active Listings</p>
+      <div className="profile-stats-grid">
+        <div className="stat-card">
+          <div className="stat-value">{userListings.length}</div>
+          <div className="stat-label">Listings</div>
         </div>
-        <div className="stat-box">
-          <h3>{userApps.length}</h3>
-          <p>Apps Advertised</p>
+        <div className="stat-card">
+          <div className="stat-value">{userApps.length}</div>
+          <div className="stat-label">Apps</div>
         </div>
-        <div className="stat-box">
-          <h3>{userSnippets.length}</h3>
-          <p>Code Snippets</p>
+        <div className="stat-card">
+          <div className="stat-value">{userSnippets.length}</div>
+          <div className="stat-label">Snippets</div>
         </div>
-        <div className="stat-box">
-          <h3>{userReceivedMessages.length}</h3>
-          <p>Messages</p>
+        <div className="stat-card">
+          <div className="stat-value">{userMessages.length}</div>
+          <div className="stat-label">Unread</div>
         </div>
       </div>
       
       {userListings.length > 0 && (
         <div className="profile-section">
-          <h2>Your Listings</h2>
+          <h2>📦 Your Listings</h2>
           <div className="listings-grid">
             {userListings.map(l => (
               <ListingCard key={l.id} listing={l} />
@@ -2626,7 +3163,7 @@ function Profile() {
       
       {userSnippets.length > 0 && (
         <div className="profile-section">
-          <h2>Your Code Snippets</h2>
+          <h2>💻 Your Code Snippets</h2>
           <div className="code-grid">
             {userSnippets.map(s => (
               <CodeCard key={s.id} snippet={s} onLike={() => {}} />
@@ -2634,6 +3171,132 @@ function Profile() {
           </div>
         </div>
       )}
+
+      <style>{`
+        .profile-header-card {
+          display: flex;
+          gap: 32px;
+          background: var(--white);
+          border-radius: var(--radius-xl);
+          padding: 32px;
+          margin-bottom: 32px;
+          box-shadow: var(--shadow);
+          flex-wrap: wrap;
+        }
+        .profile-avatar-section {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 12px;
+        }
+        .profile-avatar-large {
+          width: 120px;
+          height: 120px;
+          border-radius: 50%;
+          object-fit: cover;
+          border: 4px solid var(--primary);
+        }
+        .avatar-upload-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: var(--gray-100);
+          padding: 6px 14px;
+          border-radius: 40px;
+          cursor: pointer;
+          font-size: 0.85rem;
+          transition: 0.2s;
+        }
+        .avatar-upload-btn:hover {
+          background: var(--gray-200);
+        }
+        .profile-info-section {
+          flex: 1;
+        }
+        .profile-info-section h1 {
+          font-size: 1.8rem;
+          margin-bottom: 4px;
+        }
+        .profile-email {
+          color: var(--gray-500);
+          margin-bottom: 12px;
+        }
+        .profile-bio {
+          color: var(--gray-600);
+          margin-bottom: 16px;
+          line-height: 1.6;
+        }
+        .profile-links {
+          display: flex;
+          gap: 16px;
+          flex-wrap: wrap;
+          margin-bottom: 20px;
+        }
+        .profile-links a {
+          color: var(--primary);
+          text-decoration: none;
+          font-size: 0.9rem;
+        }
+        .profile-edit-input, .profile-edit-textarea {
+          width: 100%;
+          padding: 10px 14px;
+          border: 2px solid var(--gray-200);
+          border-radius: var(--radius-lg);
+          margin-bottom: 12px;
+          font-family: inherit;
+        }
+        .profile-edit-input:focus, .profile-edit-textarea:focus {
+          outline: none;
+          border-color: var(--primary);
+        }
+        .profile-actions {
+          display: flex;
+          gap: 12px;
+          margin-top: 8px;
+        }
+        .profile-stats-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+          gap: 16px;
+          margin-bottom: 40px;
+        }
+        .stat-card {
+          background: var(--white);
+          text-align: center;
+          padding: 24px;
+          border-radius: var(--radius-lg);
+          box-shadow: var(--shadow);
+        }
+        .stat-value {
+          font-size: 2rem;
+          font-weight: 700;
+          color: var(--primary);
+        }
+        .stat-label {
+          color: var(--gray-500);
+          margin-top: 4px;
+        }
+        .profile-section {
+          margin-top: 32px;
+        }
+        .profile-section h2 {
+          font-size: 1.5rem;
+          margin-bottom: 20px;
+        }
+        @media (max-width: 768px) {
+          .profile-header-card {
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+          }
+          .profile-links {
+            justify-content: center;
+          }
+          .profile-actions {
+            justify-content: center;
+          }
+        }
+      `}</style>
     </div>
   );
 }
@@ -2749,16 +3412,22 @@ function Settings() {
         ...profileForm,
         updated_at: new Date().toISOString()
       });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '✅ Profile updated!', 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     } catch (error) {
       console.error('Could not save to Supabase:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Failed to update profile', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     }
     
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-      message: '✅ Profile updated!', 
-      type: 'success', 
-      time: new Date().toLocaleTimeString(), 
-      read: false 
-    }});
     setSaving(false);
   };
 
@@ -3131,22 +3800,6 @@ function Settings() {
                     style={{ background: 'var(--danger)' }}
                   >
                     🗑️ Delete My Account
-                  </button>
-                </div>
-                
-                <div className="danger-zone-card warning">
-                  <h4 style={{ color: 'var(--warning)' }}>Export Data</h4>
-                  <p>Download all your data including listings, messages, and activity.</p>
-                  <button
-                    className="btn-secondary"
-                    onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-                      message: '📦 Data export started!', 
-                      type: 'info', 
-                      time: new Date().toLocaleTimeString(), 
-                      read: false 
-                    }})}
-                  >
-                    📥 Export My Data
                   </button>
                 </div>
               </div>
