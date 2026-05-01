@@ -1,4 +1,4 @@
-echo 'import { supabase } from "./supabase";
+import { supabase } from './supabase';
 
 export class RealtimeManager {
   constructor() {
@@ -15,7 +15,7 @@ export class RealtimeManager {
     const channel = supabase
       .channel(channelName)
       .on(
-        "postgres_changes",
+        'postgres_changes',
         {
           event: config.event,
           schema: config.schema,
@@ -28,11 +28,11 @@ export class RealtimeManager {
         }
       )
       .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
+        if (status === 'SUBSCRIBED') {
           this.isConnected = true;
           console.log(`✅ Connected to ${channelName}`);
         }
-        if (status === "CLOSED" || status === "CHANNEL_ERROR") {
+        if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           this.isConnected = false;
           console.log(`❌ Disconnected from ${channelName}, attempting reconnect...`);
           setTimeout(() => this.reconnect(channelName, config, onEvent), 3000);
@@ -100,4 +100,4 @@ export class RealtimeManager {
   }
 }
 
-export const realtimeManager = new RealtimeManager();' > src/utils/realtime.js
+export const realtimeManager = new RealtimeManager();
