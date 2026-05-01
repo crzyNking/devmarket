@@ -1,3 +1,5 @@
+echo 'import { supabase } from "./supabase";
+
 export class RealtimeManager {
   constructor() {
     this.channels = {};
@@ -12,16 +14,25 @@ export class RealtimeManager {
 
     const channel = supabase
       .channel(channelName)
-      .on('postgres_changes', config, (payload) => {
-        if (onEvent) onEvent(payload);
-        this.notifyListeners(channelName, payload);
-      })
+      .on(
+        "postgres_changes",
+        {
+          event: config.event,
+          schema: config.schema,
+          table: config.table,
+          filter: config.filter
+        },
+        (payload) => {
+          if (onEvent) onEvent(payload);
+          this.notifyListeners(channelName, payload);
+        }
+      )
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
+        if (status === "SUBSCRIBED") {
           this.isConnected = true;
           console.log(`✅ Connected to ${channelName}`);
         }
-        if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+        if (status === "CLOSED" || status === "CHANNEL_ERROR") {
           this.isConnected = false;
           console.log(`❌ Disconnected from ${channelName}, attempting reconnect...`);
           setTimeout(() => this.reconnect(channelName, config, onEvent), 3000);
@@ -45,7 +56,10 @@ export class RealtimeManager {
   }
 
   unsubscribeAll() {
-    Object.keys(this.channels).forEach(channel => this.unsubscribe(channel));
+    Object.keys(this.channels).forEach(channel => {
+      this.unsubscribe(channel);
+    });
+    this.isConnected = false;
   }
 
   addListener(channelName, id, callback) {
@@ -63,13 +77,27 @@ export class RealtimeManager {
 
   notifyListeners(channelName, payload) {
     if (this.listeners[channelName]) {
-      Object.values(this.listeners[channelName]).forEach(callback => callback(payload));
+      Object.values(this.listeners[channelName]).forEach(callback => {
+        try {
+          callback(payload);
+        } catch (error) {
+          console.error(`Error in listener for ${channelName}:`, error);
+        }
+      });
     }
   }
 
   getConnectionStatus() {
     return this.isConnected;
   }
+
+  getActiveChannels() {
+    return Object.keys(this.channels);
+  }
+
+  isChannelActive(channelName) {
+    return !!this.channels[channelName];
+  }
 }
 
-export const realtimeManager = new RealtimeManager();
+export const realtimeManager = new RealtimeManager();' > src/utils/realtime.js
