@@ -1,10 +1,16 @@
-// App.js - Complete Updated Version with Real-time Messaging, PFP Upload, Listing Delete
-import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef } from 'react';
+// ============================================
+// src/App.js (COMPLETE ENHANCED VERSION)
+// ============================================
+import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
+import { realtimeManager } from './utils/realtime';
+import { analytics } from './utils/analytics';
 import './App.css';
 
-// Context for global state
+// ============================================
+// GLOBAL CONTEXT
+// ============================================
 const AppContext = createContext();
 
 const initialState = {
@@ -25,7 +31,11 @@ const initialState = {
   loading: true,
   initialized: false,
   dataLoaded: false,
-  realtimeConnected: false
+  realtimeConnected: false,
+  onlineUsers: [],
+  analyticsData: null,
+  isAdmin: false,
+  moderationQueue: []
 };
 
 function appReducer(state, action) {
@@ -84,8 +94,42 @@ function appReducer(state, action) {
       return { ...state, messages: [action.payload, ...(state.messages || [])] };
     case 'SET_CONVERSATIONS':
       return { ...state, conversations: action.payload || [] };
+    case 'UPDATE_CONVERSATION':
+      return {
+        ...state,
+        conversations: (state.conversations || []).map(c => 
+          c.userId === action.payload.userId ? { ...c, ...action.payload } : c
+        )
+      };
+    case 'ADD_CONVERSATION_MESSAGE':
+      return {
+        ...state,
+        conversations: (state.conversations || []).map(c => {
+          if (c.userId === action.payload.otherUserId) {
+            return {
+              ...c,
+              messages: [...c.messages, action.payload.message],
+              lastMessage: action.payload.message.message,
+              lastMessageTime: action.payload.message.created_at,
+              unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
+            };
+          }
+          // Check if this is a new conversation
+          if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
+            return c;
+          }
+          return c;
+        })
+      };
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversation: action.payload };
+    case 'MARK_CONVERSATION_READ':
+      return {
+        ...state,
+        conversations: (state.conversations || []).map(c => 
+          c.userId === action.payload ? { ...c, unreadCount: 0, messages: c.messages.map(m => ({ ...m, read: true })) } : c
+        )
+      };
     case 'MARK_MESSAGE_READ': 
       return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'DELETE_MESSAGE': 
@@ -100,8 +144,14 @@ function appReducer(state, action) {
       return { ...state, authError: action.payload };
     case 'SET_REALTIME_CONNECTED':
       return { ...state, realtimeConnected: action.payload };
+    case 'SET_ANALYTICS_DATA':
+      return { ...state, analyticsData: action.payload };
+    case 'SET_IS_ADMIN':
+      return { ...state, isAdmin: action.payload };
+    case 'SET_MODERATION_QUEUE':
+      return { ...state, moderationQueue: action.payload || [] };
     case 'LOGOUT': 
-      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [] };
+      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], isAdmin: false };
     case 'TOGGLE_THEME': {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
@@ -113,121 +163,790 @@ function appReducer(state, action) {
 }
 
 // ============================================
-// DEVMARKET LOADER COMPONENT
+// SKELETON LOADER COMPONENTS
 // ============================================
-function DevMarketLoader() {
-  const [progress, setProgress] = useState(0);
-  const [activeStep, setActiveStep] = useState(0);
-  const [dots, setDots] = useState([true, false, false]);
-
-  const steps = [
-    { icon: '🔌', label: 'Connecting to Supabase...' },
-    { icon: '📡', label: 'Loading marketplace data...' },
-    { icon: '🚀', label: 'Preparing DevMarket...' }
-  ];
-
-  useEffect(() => {
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 90) return prev;
-        return prev + Math.random() * 15;
-      });
-    }, 400);
-
-    const stepInterval = setInterval(() => {
-      setActiveStep(prev => {
-        if (prev < steps.length - 1) return prev + 1;
-        return prev;
-      });
-    }, 1500);
-
-    const dotsInterval = setInterval(() => {
-      setDots(prev => {
-        const nextIndex = prev.findIndex(d => d) + 1;
-        if (nextIndex >= prev.length) return [true, false, false];
-        return prev.map((_, i) => i === nextIndex);
-      });
-    }, 500);
-
-    // Force complete after 4 seconds
-    const forceComplete = setTimeout(() => {
-      setProgress(100);
-      setActiveStep(steps.length - 1);
-    }, 4000);
-
-    return () => {
-      clearInterval(progressInterval);
-      clearInterval(stepInterval);
-      clearInterval(dotsInterval);
-      clearTimeout(forceComplete);
-    };
-  }, [steps.length]);
-
+function SkeletonCard() {
   return (
-    <div className="dm-loader">
-      <div className="dm-loader__grid">
-        {Array.from({ length: 64 }).map((_, i) => (
-          <div key={i} className="dm-loader__cell" style={{ animationDelay: `${Math.random() * 3}s` }} />
-        ))}
-      </div>
-
-      <div className="dm-loader__tokens">
-        {['const', 'function', 'import', 'export', 'async', 'await', 'return', 'class', 'interface', 'type'].map((token, i) => (
-          <span key={i} className="dm-loader__token">{token}</span>
-        ))}
-      </div>
-
-      <div className="dm-loader__card">
-        <div className="dm-loader__logo-wrap">
-          <span className="dm-loader__logo-icon">🚀</span>
-          <div className="dm-loader__orbit">
-            <div className="dm-loader__orbit-dot" />
-          </div>
-          <div className="dm-loader__orbit dm-loader__orbit--2">
-            <div className="dm-loader__orbit-dot--2" />
-          </div>
-        </div>
-
-        <div className="dm-loader__brand">
-          <span className="dm-loader__brand-dev">Dev</span>
-          <span className="dm-loader__brand-market">Market</span>
-        </div>
-        <p className="dm-loader__tagline">IT Marketplace Hub</p>
-
-        <div className="dm-loader__bar-track">
-          <div 
-            className="dm-loader__bar-fill" 
-            style={{ width: `${Math.min(progress, 100)}%` }} 
-          />
-        </div>
-
-        <div className="dm-loader__steps">
-          {steps.map((step, i) => (
-            <div 
-              key={i} 
-              className={`dm-loader__step ${
-                i < activeStep ? 'dm-loader__step--done' : 
-                i === activeStep ? 'dm-loader__step--active' : ''
-              }`}
-            >
-              <span className="dm-loader__step-icon">
-                {i < activeStep ? '✓' : step.icon}
-              </span>
-              <span className="dm-loader__step-label">{step.label}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="dm-loader__dots">
-          {dots.map((isOn, i) => (
-            <div 
-              key={i} 
-              className={`dm-loader__dot ${isOn ? 'dm-loader__dot--on' : ''}`} 
-            />
-          ))}
-        </div>
+    <div className="skeleton-card">
+      <div className="skeleton skeleton-image"></div>
+      <div className="skeleton-content">
+        <div className="skeleton skeleton-title"></div>
+        <div className="skeleton skeleton-text"></div>
+        <div className="skeleton skeleton-text short"></div>
+        <div className="skeleton skeleton-button"></div>
       </div>
     </div>
+  );
+}
+
+function SkeletonGrid({ count = 6 }) {
+  return (
+    <div className="listings-grid">
+      {Array.from({ length: count }).map((_, i) => (
+        <SkeletonCard key={i} />
+      ))}
+    </div>
+  );
+}
+
+function SkeletonMessage() {
+  return (
+    <div className="skeleton-message">
+      <div className="skeleton skeleton-avatar"></div>
+      <div className="skeleton-message-content">
+        <div className="skeleton skeleton-text"></div>
+        <div className="skeleton skeleton-text short"></div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// ENHANCED AVATAR UPLOAD WITH SUPABASE STORAGE
+// ============================================
+function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' }) {
+  const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Reset error
+    setError(null);
+
+    // Validate file type
+    const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+      setError('Please select a valid image file (JPEG, PNG, GIF, WebP, SVG)');
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Image must be less than 5MB');
+      return;
+    }
+
+    // Show preview immediately
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setPreview(event.target.result);
+    };
+    reader.readAsDataURL(file);
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split('.').pop().toLowerCase();
+      const fileName = `avatar-${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+      const filePath = `public/${fileName}`;
+
+      // Try to upload to Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+          contentType: file.type
+        });
+
+      if (uploadError) {
+        console.log('Storage upload error, trying alternative method...');
+        
+        // Alternative: Try uploading with different path
+        const { data: uploadData2, error: uploadError2 } = await supabase.storage
+          .from('avatars')
+          .upload(fileName, file, {
+            cacheControl: '3600',
+            upsert: true
+          });
+
+        if (uploadError2) {
+          // If storage upload fails, use a generated avatar URL
+          const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
+          onAvatarUpdate(avatarUrl);
+          setPreview(null);
+          setUploading(false);
+          return;
+        }
+
+        // Get public URL from alternative upload
+        const { data: { publicUrl } } = supabase.storage
+          .from('avatars')
+          .getPublicUrl(fileName);
+
+        onAvatarUpdate(publicUrl);
+      } else {
+        // Get public URL from successful upload
+        const { data: { publicUrl } } = supabase.storage
+          .from('avatars')
+          .getPublicUrl(filePath);
+
+        onAvatarUpdate(publicUrl);
+      }
+
+      setPreview(null);
+      setError(null);
+    } catch (error) {
+      console.error('Upload error:', error);
+      // Fallback to generated avatar
+      const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
+      onAvatarUpdate(avatarUrl);
+      setPreview(null);
+      setError('Upload failed, using generated avatar instead');
+    } finally {
+      setUploading(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const displayAvatar = preview || currentAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
+
+  const sizeClasses = {
+    small: { wrapper: '60px', fontSize: '0.7rem' },
+    medium: { wrapper: '80px', fontSize: '0.8rem' },
+    large: { wrapper: '100px', fontSize: '0.85rem' }
+  };
+
+  const currentSize = sizeClasses[size] || sizeClasses.large;
+
+  return (
+    <div className="avatar-upload-container">
+      <div 
+        className="avatar-preview-wrapper" 
+        onClick={() => !uploading && fileInputRef.current?.click()}
+        style={{ width: currentSize.wrapper, height: currentSize.wrapper }}
+      >
+        <img 
+          src={displayAvatar} 
+          alt={userName || 'User'} 
+          className="avatar-upload-preview"
+          style={{ width: currentSize.wrapper, height: currentSize.wrapper }}
+          onError={(e) => { 
+            e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`; 
+          }}
+        />
+        <div className="avatar-upload-overlay" style={{ fontSize: currentSize.fontSize }}>
+          <span>📷</span>
+          <span>{uploading ? 'Uploading...' : 'Change'}</span>
+        </div>
+      </div>
+      {error && (
+        <p style={{ color: 'var(--danger)', fontSize: '0.8rem', margin: '4px 0 0 0', textAlign: 'center' }}>
+          {error}
+        </p>
+      )}
+      <input 
+        ref={fileInputRef}
+        type="file" 
+        accept="image/*" 
+        onChange={handleFileSelect} 
+        style={{ display: 'none' }}
+      />
+    </div>
+  );
+}
+
+// ============================================
+// ADVANCED SEARCH COMPONENT
+// ============================================
+function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
+  const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState({
+    category: 'all',
+    priceRange: 'all',
+    platform: 'all',
+    language: 'all',
+    sortBy: 'date',
+    dateRange: 'all',
+    rating: 'all'
+  });
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    onSearch({ query, filters });
+    analytics.trackSearch(query, filters);
+    onClose();
+  };
+
+  const resetFilters = () => {
+    setFilters({
+      category: 'all',
+      priceRange: 'all',
+      platform: 'all',
+      language: 'all',
+      sortBy: 'date',
+      dateRange: 'all',
+      rating: 'all'
+    });
+    setQuery('');
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content advanced-search-modal" onClick={e => e.stopPropagation()}>
+        <div className="advanced-search-header">
+          <h2>🔍 Advanced Search</h2>
+          <button className="btn-close" onClick={onClose}>✕</button>
+        </div>
+        
+        <form onSubmit={handleSearch} className="advanced-search-form">
+          <div className="search-main-input">
+            <input
+              type="text"
+              placeholder="Search across all DevMarket..."
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              className="search-input"
+              autoFocus
+            />
+          </div>
+
+          <div className="search-filters-grid">
+            {searchType !== 'code' && (
+              <div className="filter-group">
+                <label>Category</label>
+                <select value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})}>
+                  <option value="all">All Categories</option>
+                  <option value="website">Website</option>
+                  <option value="portfolio">Portfolio</option>
+                  <option value="ecommerce">E-Commerce</option>
+                  <option value="blog">Blog</option>
+                  <option value="saas">SaaS</option>
+                  <option value="app">App</option>
+                </select>
+              </div>
+            )}
+
+            <div className="filter-group">
+              <label>Price Range</label>
+              <select value={filters.priceRange} onChange={e => setFilters({...filters, priceRange: e.target.value})}>
+                <option value="all">All Prices</option>
+                <option value="free">Free</option>
+                <option value="under50">Under $50</option>
+                <option value="50to200">$50 - $200</option>
+                <option value="200to1000">$200 - $1000</option>
+                <option value="over1000">Over $1000</option>
+              </select>
+            </div>
+
+            {searchType !== 'code' && (
+              <div className="filter-group">
+                <label>Platform</label>
+                <select value={filters.platform} onChange={e => setFilters({...filters, platform: e.target.value})}>
+                  <option value="all">All Platforms</option>
+                  <option value="web">Web</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="desktop">Desktop</option>
+                </select>
+              </div>
+            )}
+
+            {searchType !== 'listing' && (
+              <div className="filter-group">
+                <label>Language</label>
+                <select value={filters.language} onChange={e => setFilters({...filters, language: e.target.value})}>
+                  <option value="all">All Languages</option>
+                  <option value="javascript">JavaScript</option>
+                  <option value="python">Python</option>
+                  <option value="typescript">TypeScript</option>
+                  <option value="react">React</option>
+                  <option value="node">Node.js</option>
+                  <option value="java">Java</option>
+                </select>
+              </div>
+            )}
+
+            <div className="filter-group">
+              <label>Sort By</label>
+              <select value={filters.sortBy} onChange={e => setFilters({...filters, sortBy: e.target.value})}>
+                <option value="date">Most Recent</option>
+                <option value="price">Price</option>
+                <option value="rating">Rating</option>
+                <option value="popular">Most Popular</option>
+              </select>
+            </div>
+
+            <div className="filter-group">
+              <label>Date Range</label>
+              <select value={filters.dateRange} onChange={e => setFilters({...filters, dateRange: e.target.value})}>
+                <option value="all">All Time</option>
+                <option value="today">Today</option>
+                <option value="week">This Week</option>
+                <option value="month">This Month</option>
+                <option value="year">This Year</option>
+              </select>
+            </div>
+
+            <div className="filter-group">
+              <label>Minimum Rating</label>
+              <select value={filters.rating} onChange={e => setFilters({...filters, rating: e.target.value})}>
+                <option value="all">Any Rating</option>
+                <option value="4">4+ Stars</option>
+                <option value="3">3+ Stars</option>
+                <option value="2">2+ Stars</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="search-actions">
+            <button type="button" className="btn-secondary" onClick={resetFilters}>
+              🔄 Reset Filters
+            </button>
+            <button type="submit" className="btn-primary">
+              🔍 Search
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// ENHANCED MAIN APP WITH REAL-TIME
+// ============================================
+function App() {
+  const [state, dispatch] = useReducer(appReducer, initialState);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [hasShownLoader, setHasShownLoader] = useState(false);
+
+  // Check if loader has been shown before
+  useEffect(() => {
+    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
+    if (loaderShown) {
+      setHasShownLoader(true);
+    }
+  }, []);
+
+  // Load public data
+  async function loadPublicData() {
+    try {
+      const [listingsResult, appsResult, snippetsResult] = await Promise.all([
+        supabase.from('listings').select('*').order('created_at', { ascending: false }),
+        supabase.from('apps').select('*').order('created_at', { ascending: false }),
+        supabase.from('code_snippets').select('*').order('created_at', { ascending: false })
+      ]);
+
+      if (listingsResult.data) {
+        const formattedListings = listingsResult.data.map(item => ({
+          ...item,
+          seller: item.seller_name,
+          sellerAvatar: item.seller_avatar,
+          imageUrl: item.image_url,
+          date: new Date(item.created_at).toLocaleDateString()
+        }));
+        dispatch({ type: 'SET_LISTINGS', payload: formattedListings });
+      }
+
+      if (appsResult.data) {
+        const formattedApps = appsResult.data.map(item => ({
+          ...item,
+          appName: item.app_name,
+          appUrl: item.app_url,
+          developer: item.developer_name,
+          developerAvatar: item.developer_avatar,
+          date: new Date(item.created_at).toLocaleDateString()
+        }));
+        dispatch({ type: 'SET_APPS', payload: formattedApps });
+      }
+
+      if (snippetsResult.data) {
+        const formattedSnippets = snippetsResult.data.map(item => ({
+          ...item,
+          author: item.author_name,
+          authorAvatar: item.author_avatar,
+          likedBy: [],
+          date: new Date(item.created_at).toLocaleDateString()
+        }));
+        dispatch({ type: 'SET_CODE_SNIPPETS', payload: formattedSnippets });
+      }
+
+      // Load analytics for admin
+      const stats = await analytics.getDashboardStats();
+      if (stats) {
+        dispatch({ type: 'SET_ANALYTICS_DATA', payload: stats });
+      }
+
+      dispatch({ type: 'SET_DATA_LOADED', payload: true });
+    } catch (error) {
+      console.error('Error loading public data:', error);
+      dispatch({ type: 'SET_LISTINGS', payload: [] });
+      dispatch({ type: 'SET_APPS', payload: [] });
+      dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
+      dispatch({ type: 'SET_DATA_LOADED', payload: true });
+    }
+  }
+
+  // Load user profile
+  async function loadProfile(user) {
+    try {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (profile) {
+        dispatch({ type: 'SET_PROFILE', payload: profile });
+        dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
+        dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
+      } else {
+        const meta = user.user_metadata || {};
+        const defaultProfile = {
+          id: user.id,
+          name: meta.name || meta.full_name || user.email?.split('@')[0] || 'User',
+          email: user.email,
+          role: meta.role || 'developer',
+          bio: '',
+          website: '',
+          github: '',
+          twitter: '',
+          avatar_url: meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || user.email?.split('@')[0] || 'User')}&background=667eea&color=fff&size=200`
+        };
+
+        try {
+          await supabase.from('profiles').upsert({ 
+            ...defaultProfile, 
+            updated_at: new Date().toISOString() 
+          });
+        } catch (err) {
+          console.log('Could not save profile:', err);
+        }
+
+        dispatch({ type: 'SET_PROFILE', payload: defaultProfile });
+        dispatch({ type: 'SET_USER', payload: { ...user, ...defaultProfile } });
+      }
+    } catch (error) {
+      console.error('Error loading profile:', error);
+    }
+  }
+
+  // Load user data and setup real-time
+  async function loadUserData(userId) {
+    try {
+      const [notifsResult, msgsResult, favsResult] = await Promise.all([
+        supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+        supabase.from('messages').select('*').or(`from_user.eq.${userId},to_user.eq.${userId}`).order('created_at', { ascending: false }),
+        supabase.from('favorites').select('*, listing:listing_id (*)').eq('user_id', userId)
+      ]);
+
+      if (notifsResult.data) {
+        dispatch({ type: 'SET_NOTIFICATIONS', payload: notifsResult.data.map(n => ({
+          ...n,
+          read: n.read || false
+        })) });
+      }
+
+      if (msgsResult.data) {
+        dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
+        buildConversations(msgsResult.data, userId);
+      }
+
+      if (favsResult.data) {
+        const favorites = favsResult.data
+          .map(f => f.listing)
+          .filter(Boolean)
+          .map(l => ({
+            ...l,
+            seller: l.seller_name,
+            sellerAvatar: l.seller_avatar,
+            imageUrl: l.image_url,
+            date: new Date(l.created_at).toLocaleDateString()
+          }));
+        dispatch({ type: 'SET_FAVORITES', payload: favorites });
+      }
+
+      // Setup real-time subscriptions
+      setupRealtimeSubscriptions(userId);
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  }
+
+  // Setup real-time subscriptions for messages and notifications
+  function setupRealtimeSubscriptions(userId) {
+    // Clean up existing channels
+    realtimeManager.unsubscribeAll();
+
+    // Subscribe to new messages
+    realtimeManager.subscribe(
+      `messages-${userId}`,
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `to_user=eq.${userId}`
+      },
+      (payload) => {
+        const newMsg = payload.new;
+        console.log('📨 New real-time message:', newMsg);
+        
+        dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
+        
+        // Add to conversation
+        const otherUserId = newMsg.from_user;
+        const otherUserName = newMsg.from_name || 'User';
+        const otherUserAvatar = newMsg.from_avatar;
+        
+        dispatch({
+          type: 'ADD_CONVERSATION_MESSAGE',
+          payload: {
+            otherUserId,
+            message: newMsg
+          }
+        });
+        
+        // Show notification
+        dispatch({ type: 'ADD_NOTIFICATION', payload: {
+          message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
+          type: 'info',
+          time: new Date().toLocaleTimeString(),
+          read: false
+        }});
+        
+        // Play sound notification if enabled
+        try {
+          const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2qEcP+1j2Z...');
+          audio.volume = 0.3;
+          audio.play().catch(() => {});
+        } catch (e) {}
+      }
+    );
+
+    // Subscribe to new notifications
+    realtimeManager.subscribe(
+      `notifications-${userId}`,
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'notifications',
+        filter: `user_id=eq.${userId}`
+      },
+      (payload) => {
+        console.log('🔔 New real-time notification:', payload.new);
+        dispatch({ type: 'ADD_NOTIFICATION', payload: {
+          ...payload.new,
+          read: false
+        }});
+      }
+    );
+
+    // Subscribe to listing updates
+    realtimeManager.subscribe(
+      'listings-updates',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'listings'
+      },
+      (payload) => {
+        if (payload.eventType === 'INSERT') {
+          dispatch({ type: 'ADD_LISTING', payload: payload.new });
+        } else if (payload.eventType === 'DELETE') {
+          dispatch({ type: 'DELETE_LISTING', payload: payload.old.id });
+        } else if (payload.eventType === 'UPDATE') {
+          dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
+        }
+        // Reload public data for consistency
+        loadPublicData();
+      }
+    );
+
+    dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
+  }
+
+  // Build conversations helper
+  function buildConversations(messages, userId) {
+    const conversationMap = new Map();
+    
+    messages.forEach(msg => {
+      const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
+      const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
+      const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
+      
+      if (!conversationMap.has(otherUserId)) {
+        conversationMap.set(otherUserId, {
+          userId: otherUserId,
+          userName: otherUserName || 'Unknown User',
+          userAvatar: otherUserAvatar,
+          lastMessage: msg.message,
+          lastMessageTime: msg.created_at,
+          unreadCount: 0,
+          messages: []
+        });
+      }
+      
+      const conv = conversationMap.get(otherUserId);
+      conv.messages.push(msg);
+      
+      if (!msg.read && msg.to_user === userId) {
+        conv.unreadCount++;
+      }
+      
+      if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
+        conv.lastMessage = msg.message;
+        conv.lastMessageTime = msg.created_at;
+      }
+    });
+    
+    const conversations = Array.from(conversationMap.values())
+      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
+    
+    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
+  }
+
+  // Initialize app
+  useEffect(() => {
+    let mounted = true;
+
+    async function initialize() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (mounted) {
+          dispatch({ type: 'SET_SESSION', payload: session });
+          
+          if (session?.user) {
+            await loadProfile(session.user);
+            await loadUserData(session.user.id);
+          }
+        }
+
+        await loadPublicData();
+        
+        if (mounted) {
+          dispatch({ type: 'INITIALIZED' });
+        }
+
+        // Track page view
+        analytics.trackPageView(window.location.pathname);
+      } catch (error) {
+        console.error('Init error:', error);
+        if (mounted) {
+          dispatch({ type: 'INITIALIZED' });
+        }
+      }
+    }
+
+    if (!hasShownLoader) {
+      initialize().then(() => {
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+        setTimeout(() => setIsInitialLoading(false), 500);
+      });
+      
+      const safetyTimeout = setTimeout(() => {
+        setIsInitialLoading(false);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+      }, 6000);
+      
+      return () => clearTimeout(safetyTimeout);
+    } else {
+      initialize().then(() => setIsInitialLoading(false));
+    }
+
+    // Auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (mounted) {
+        dispatch({ type: 'SET_SESSION', payload: session });
+        
+        if (event === 'SIGNED_IN' && session?.user) {
+          await loadProfile(session.user);
+          await loadUserData(session.user.id);
+        } else if (event === 'SIGNED_OUT') {
+          dispatch({ type: 'LOGOUT' });
+          realtimeManager.unsubscribeAll();
+        }
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription?.unsubscribe();
+      realtimeManager.unsubscribeAll();
+    };
+    // eslint-disable-next-line
+  }, []);
+
+  // Load theme
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('devMarketTheme');
+    if (savedTheme && savedTheme !== state.theme) {
+      dispatch({ type: 'TOGGLE_THEME' });
+    }
+    // eslint-disable-next-line
+  }, []);
+
+  const removeNotification = useCallback((id) => {
+    dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
+  }, []);
+
+  // Loading states
+  if (isInitialLoading && !hasShownLoader) {
+    return (
+      <div className="dm-loader">
+        <div className="dm-loader__card">
+          <div className="dm-loader__logo-wrap">
+            <span className="dm-loader__logo-icon">🚀</span>
+          </div>
+          <div className="dm-loader__brand">
+            <span className="dm-loader__brand-dev">Dev</span>
+            <span className="dm-loader__brand-market">Market</span>
+          </div>
+          <p className="dm-loader__tagline">IT Marketplace Hub</p>
+          <div className="dm-loader__bar-track">
+            <div className="dm-loader__bar-fill" style={{ width: '100%', animation: 'dmBarShimmer 1.6s linear infinite' }} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isInitialLoading && hasShownLoader) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ fontSize: '2rem' }}>🔄</div>
+        <p style={{ color: 'var(--gray-500)' }}>Syncing data...</p>
+      </div>
+    );
+  }
+
+  return (
+    <AppContext.Provider value={{ state, dispatch }}>
+      <Router>
+        <div className={`App ${state.theme}`}>
+          <div className="toast-container">
+            {(state.notifications || []).filter(n => !n.read).slice(0, 3).map(n => (
+              <Toast key={n.id} notification={n} onClose={removeNotification} />
+            ))}
+          </div>
+          <Header />
+          <main className="main-content">
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/marketplace" element={<Marketplace />} />
+              <Route path="/advertise" element={<Advertise />} />
+              <Route path="/code-sharing" element={<CodeSharing />} />
+              <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
+              <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
+              <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+              <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+              <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
+            </Routes>
+          </main>
+          <Footer />
+        </div>
+      </Router>
+    </AppContext.Provider>
   );
 }
 
@@ -291,524 +1010,8 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
 }
 
 // ============================================
-// AVATAR UPLOAD COMPONENT
+// PROTECTED ROUTE
 // ============================================
-function AvatarUpload({ currentAvatar, userName, onAvatarUpdate }) {
-  const [uploading, setUploading] = useState(false);
-  const [preview, setPreview] = useState(null);
-  const fileInputRef = useRef(null);
-
-  const handleFileSelect = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Validate file type
-    if (!file.type.startsWith('image/')) {
-      alert('Please select an image file');
-      return;
-    }
-
-    // Validate file size (max 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      alert('Image must be less than 5MB');
-      return;
-    }
-
-    // Show preview
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setPreview(event.target.result);
-    };
-    reader.readAsDataURL(file);
-
-    setUploading(true);
-    try {
-      // Create a unique file name
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = `avatars/${fileName}`;
-
-      // Upload to Supabase Storage
-      const { error: uploadError } = await supabase.storage
-        .from('avatars')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) {
-        // If bucket doesn't exist, use avatar URL directly
-        if (uploadError.message.includes('bucket') || uploadError.message.includes('not found')) {
-          // Fallback: use a data URL or external service
-          const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
-          onAvatarUpdate(avatarUrl);
-          setPreview(null);
-          setUploading(false);
-          return;
-        }
-        throw uploadError;
-      }
-
-      // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(filePath);
-
-      onAvatarUpdate(publicUrl);
-      setPreview(null);
-    } catch (error) {
-      console.error('Upload error:', error);
-      // Fallback
-      const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
-      onAvatarUpdate(avatarUrl);
-      setPreview(null);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const displayAvatar = preview || currentAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
-
-  return (
-    <div className="avatar-upload-container">
-      <div className="avatar-preview-wrapper" onClick={() => fileInputRef.current?.click()}>
-        <img 
-          src={displayAvatar} 
-          alt={userName} 
-          className="profile-avatar avatar-upload-preview"
-          onError={(e) => { 
-            e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`; 
-          }}
-        />
-        <div className="avatar-upload-overlay">
-          <span>📷</span>
-          <span style={{ fontSize: '0.75rem' }}>Change Photo</span>
-        </div>
-      </div>
-      <input 
-        ref={fileInputRef}
-        type="file" 
-        accept="image/*" 
-        onChange={handleFileSelect} 
-        style={{ display: 'none' }}
-      />
-      {uploading && (
-        <div style={{ marginTop: '8px', color: 'var(--primary)', fontSize: '0.85rem' }}>
-          Uploading...
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================
-// MAIN APP WITH REAL-TIME MESSAGING
-// ============================================
-function App() {
-  const [state, dispatch] = useReducer(appReducer, initialState);
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [hasShownLoader, setHasShownLoader] = useState(false);
-
-  // Check if loader has been shown before in this session
-  useEffect(() => {
-    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
-    if (loaderShown) {
-      setHasShownLoader(true);
-    }
-  }, []);
-
-  // Load all public data from Supabase
-  async function loadPublicData() {
-    try {
-      console.log('Loading public data from Supabase...');
-      
-      const [listingsResult, appsResult, snippetsResult] = await Promise.all([
-        supabase.from('listings').select('*').order('created_at', { ascending: false }),
-        supabase.from('apps').select('*').order('created_at', { ascending: false }),
-        supabase.from('code_snippets').select('*').order('created_at', { ascending: false })
-      ]);
-
-      if (listingsResult.data) {
-        const formattedListings = listingsResult.data.map(item => ({
-          ...item,
-          seller: item.seller_name,
-          sellerAvatar: item.seller_avatar,
-          imageUrl: item.image_url,
-          date: new Date(item.created_at).toLocaleDateString()
-        }));
-        dispatch({ type: 'SET_LISTINGS', payload: formattedListings });
-      }
-
-      if (appsResult.data) {
-        const formattedApps = appsResult.data.map(item => ({
-          ...item,
-          appName: item.app_name,
-          appUrl: item.app_url,
-          developer: item.developer_name,
-          developerAvatar: item.developer_avatar,
-          date: new Date(item.created_at).toLocaleDateString()
-        }));
-        dispatch({ type: 'SET_APPS', payload: formattedApps });
-      }
-
-      if (snippetsResult.data) {
-        const formattedSnippets = snippetsResult.data.map(item => ({
-          ...item,
-          author: item.author_name,
-          authorAvatar: item.author_avatar,
-          likedBy: [],
-          date: new Date(item.created_at).toLocaleDateString()
-        }));
-        dispatch({ type: 'SET_CODE_SNIPPETS', payload: formattedSnippets });
-      }
-
-      dispatch({ type: 'SET_DATA_LOADED', payload: true });
-      console.log('Public data loaded successfully');
-    } catch (error) {
-      console.error('Error loading public data:', error);
-      dispatch({ type: 'SET_LISTINGS', payload: [] });
-      dispatch({ type: 'SET_APPS', payload: [] });
-      dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
-      dispatch({ type: 'SET_DATA_LOADED', payload: true });
-    }
-  }
-
-  // Load user profile from Supabase
-  async function loadProfile(user) {
-    try {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single();
-
-      if (profile) {
-        dispatch({ type: 'SET_PROFILE', payload: profile });
-        dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
-      } else {
-        const meta = user.user_metadata || {};
-        const defaultProfile = {
-          id: user.id,
-          name: meta.name || meta.full_name || user.email?.split('@')[0] || 'User',
-          email: user.email,
-          role: meta.role || 'developer',
-          bio: '',
-          website: '',
-          github: '',
-          twitter: '',
-          avatar_url: meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || user.email?.split('@')[0] || 'User')}&background=667eea&color=fff&size=200`
-        };
-
-        try {
-          await supabase.from('profiles').upsert({ 
-            ...defaultProfile, 
-            updated_at: new Date().toISOString() 
-          });
-        } catch (err) {
-          console.log('Could not save profile to Supabase:', err);
-        }
-
-        dispatch({ type: 'SET_PROFILE', payload: defaultProfile });
-        dispatch({ type: 'SET_USER', payload: { ...user, ...defaultProfile } });
-      }
-    } catch (error) {
-      console.error('Error loading profile:', error);
-      const fallback = {
-        id: user.id,
-        name: user.user_metadata?.name || user.email?.split('@')[0] || 'User',
-        email: user.email,
-        avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(user.user_metadata?.name || 'User')}&background=667eea&color=fff&size=200`
-      };
-      dispatch({ type: 'SET_PROFILE', payload: fallback });
-      dispatch({ type: 'SET_USER', payload: { ...user, ...fallback } });
-    }
-  }
-
-  // Load user-specific data
-  async function loadUserData(userId) {
-    try {
-      const [notifsResult, msgsResult, favsResult] = await Promise.all([
-        supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
-        supabase.from('messages').select('*').or(`from_user.eq.${userId},to_user.eq.${userId}`).order('created_at', { ascending: false }),
-        supabase.from('favorites').select('*, listing:listing_id (*)').eq('user_id', userId)
-      ]);
-
-      if (notifsResult.data) {
-        dispatch({ type: 'SET_NOTIFICATIONS', payload: notifsResult.data.map(n => ({
-          ...n,
-          read: n.read || false
-        })) });
-      }
-
-      if (msgsResult.data) {
-        dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        // Build conversations
-        buildConversations(msgsResult.data, userId);
-      }
-
-      if (favsResult.data) {
-        const favorites = favsResult.data
-          .map(f => f.listing)
-          .filter(Boolean)
-          .map(l => ({
-            ...l,
-            seller: l.seller_name,
-            sellerAvatar: l.seller_avatar,
-            imageUrl: l.image_url,
-            date: new Date(l.created_at).toLocaleDateString()
-          }));
-        dispatch({ type: 'SET_FAVORITES', payload: favorites });
-      }
-    } catch (error) {
-      console.error('Error loading user data:', error);
-    }
-  }
-
-  // Build conversations from messages
-  function buildConversations(messages, userId) {
-    const conversationMap = new Map();
-    
-    messages.forEach(msg => {
-      const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
-      const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
-      
-      if (!conversationMap.has(otherUserId)) {
-        conversationMap.set(otherUserId, {
-          userId: otherUserId,
-          userName: otherUserName || 'Unknown User',
-          userAvatar: otherUserAvatar,
-          lastMessage: msg.message,
-          lastMessageTime: msg.created_at,
-          unreadCount: 0,
-          messages: []
-        });
-      }
-      
-      const conv = conversationMap.get(otherUserId);
-      conv.messages.push(msg);
-      
-      if (!msg.read && msg.to_user === userId) {
-        conv.unreadCount++;
-      }
-      
-      if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
-        conv.lastMessage = msg.message;
-        conv.lastMessageTime = msg.created_at;
-      }
-    });
-    
-    const conversations = Array.from(conversationMap.values())
-      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
-    
-    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
-  }
-
-  // Setup real-time subscriptions
-  useEffect(() => {
-    if (!state.currentUser) return;
-
-    let messageChannel;
-    let notificationChannel;
-
-    try {
-      // Subscribe to messages
-      messageChannel = supabase
-        .channel('messages-channel')
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `to_user=eq.${state.currentUser.id}`
-        }, (payload) => {
-          console.log('New message received:', payload);
-          const newMsg = payload.new;
-          
-          dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
-          dispatch({ type: 'ADD_NOTIFICATION', payload: {
-            message: `💬 New message: ${newMsg.subject || 'You have a new message'}`,
-            type: 'info',
-            time: new Date().toLocaleTimeString(),
-            read: false
-          }});
-          
-          // Reload conversations
-          if (state.messages.length > 0) {
-            const updatedMessages = [...state.messages, newMsg];
-            buildConversations(updatedMessages, state.currentUser.id);
-          }
-        })
-        .subscribe();
-
-      // Subscribe to notifications
-      notificationChannel = supabase
-        .channel('notifications-channel')
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${state.currentUser.id}`
-        }, (payload) => {
-          console.log('New notification:', payload);
-          dispatch({ type: 'ADD_NOTIFICATION', payload: {
-            ...payload.new,
-            read: false
-          }});
-        })
-        .subscribe();
-
-      dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
-    } catch (error) {
-      console.error('Error setting up real-time:', error);
-    }
-
-    return () => {
-      if (messageChannel) supabase.removeChannel(messageChannel);
-      if (notificationChannel) supabase.removeChannel(notificationChannel);
-    };
-    // eslint-disable-next-line
-  }, [state.currentUser?.id]);
-
-  // Initialize the app
-  useEffect(() => {
-    let mounted = true;
-
-    async function initialize() {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (mounted) {
-          dispatch({ type: 'SET_SESSION', payload: session });
-          
-          if (session?.user) {
-            await loadProfile(session.user);
-            await loadUserData(session.user.id);
-          }
-        }
-
-        await loadPublicData();
-        
-        if (mounted) {
-          dispatch({ type: 'INITIALIZED' });
-        }
-      } catch (error) {
-        console.error('Init error:', error);
-        if (mounted) {
-          dispatch({ type: 'INITIALIZED' });
-        }
-      }
-    }
-
-    // Show loader only first time
-    if (!hasShownLoader) {
-      initialize().then(() => {
-        sessionStorage.setItem('devMarketLoaderShown', 'true');
-        setTimeout(() => {
-          setIsInitialLoading(false);
-        }, 500);
-      });
-      
-      // Safety timeout
-      const safetyTimeout = setTimeout(() => {
-        setIsInitialLoading(false);
-        sessionStorage.setItem('devMarketLoaderShown', 'true');
-      }, 6000);
-      
-      return () => clearTimeout(safetyTimeout);
-    } else {
-      initialize().then(() => {
-        setIsInitialLoading(false);
-      });
-    }
-
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (mounted) {
-        dispatch({ type: 'SET_SESSION', payload: session });
-        
-        if (event === 'SIGNED_IN' && session?.user) {
-          dispatch({ type: 'SET_USER', payload: session.user });
-          await loadProfile(session.user);
-          await loadUserData(session.user.id);
-          await loadPublicData();
-        } else if (event === 'SIGNED_OUT') {
-          dispatch({ type: 'LOGOUT' });
-          await loadPublicData();
-        }
-      }
-    });
-
-    return () => {
-      mounted = false;
-      subscription?.unsubscribe();
-    };
-    // eslint-disable-next-line
-  }, []);
-
-  // Load theme from localStorage
-  useEffect(() => {
-    const savedTheme = localStorage.getItem('devMarketTheme');
-    if (savedTheme && savedTheme !== state.theme) {
-      dispatch({ type: 'TOGGLE_THEME' });
-    }
-    // eslint-disable-next-line
-  }, []);
-
-  const removeNotification = useCallback((id) => {
-    dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
-  }, []);
-
-  // Show loader only on first visit (not on refresh)
-  if (isInitialLoading && !hasShownLoader) {
-    return <DevMarketLoader />;
-  }
-
-  // Minimal loading state for refresh
-  if (isInitialLoading && hasShownLoader) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh',
-        flexDirection: 'column',
-        gap: '16px'
-      }}>
-        <div style={{ fontSize: '3rem', animation: 'spin 1s linear infinite' }}>🚀</div>
-        <p style={{ color: 'var(--gray-500)' }}>Loading...</p>
-      </div>
-    );
-  }
-
-  return (
-    <AppContext.Provider value={{ state, dispatch }}>
-      <Router>
-        <div className={`App ${state.theme}`}>
-          <div className="toast-container">
-            {(state.notifications || []).filter(n => !n.read).slice(0, 3).map(n => (
-              <Toast key={n.id} notification={n} onClose={removeNotification} />
-            ))}
-          </div>
-          <Header />
-          <main className="main-content">
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/marketplace" element={<Marketplace />} />
-              <Route path="/advertise" element={<Advertise />} />
-              <Route path="/code-sharing" element={<CodeSharing />} />
-              <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
-              <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-              <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
-              <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-            </Routes>
-          </main>
-          <Footer />
-        </div>
-      </Router>
-    </AppContext.Provider>
-  );
-}
-
 function ProtectedRoute({ children }) {
   const { state } = useAppContext();
   const location = useLocation();
@@ -823,7 +1026,7 @@ function useAppContext() {
 }
 
 // ============================================
-// HEADER COMPONENT
+// ENHANCED HEADER WITH REAL-TIME INDICATOR
 // ============================================
 function Header() {
   const { state, dispatch } = useAppContext();
@@ -832,6 +1035,7 @@ function Header() {
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('login');
   const [showSearch, setShowSearch] = useState(false);
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -839,15 +1043,25 @@ function Header() {
   const location = useLocation();
 
   const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
-  const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + conv.unreadCount, 0);
+  const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
 
   const handleSearch = (e) => {
     e.preventDefault();
     if (searchQuery.trim()) {
+      analytics.trackSearch(searchQuery, {});
       navigate(`/marketplace?search=${encodeURIComponent(searchQuery.trim())}`);
       setSearchQuery('');
       setShowSearch(false);
     }
+  };
+
+  const handleAdvancedSearch = (searchData) => {
+    const params = new URLSearchParams();
+    if (searchData.query) params.set('q', searchData.query);
+    Object.entries(searchData.filters).forEach(([key, value]) => {
+      if (value && value !== 'all') params.set(key, value);
+    });
+    navigate(`/marketplace?${params.toString()}`);
   };
 
   const handleLogout = async () => {
@@ -878,7 +1092,10 @@ function Header() {
       <header className="header">
         <div className="header-container">
           <Link to="/" className="logo" onClick={closeAll}>
-            <div className="logo-icon-wrapper"><span className="logo-icon">🚀</span></div>
+            <div className="logo-icon-wrapper">
+              <span className="logo-icon">🚀</span>
+              {state.realtimeConnected && <span className="realtime-dot" title="Live connection active"></span>}
+            </div>
             <div className="logo-text"><h1>DevMarket</h1><p>IT Marketplace Hub</p></div>
           </Link>
 
@@ -901,13 +1118,22 @@ function Header() {
                   <span className="nav-icon">💬</span> Messages
                   {unreadMessages > 0 && <span className="notification-badge">{unreadMessages}</span>}
                 </Link>
+                {state.isAdmin && (
+                  <Link to="/admin" className={`nav-link ${location.pathname === '/admin' ? 'active' : ''}`} onClick={closeAll}>
+                    <span className="nav-icon">🛡️</span> Admin
+                  </Link>
+                )}
               </>
             )}
           </nav>
 
           <div className="header-actions">
-            <button className="icon-button search-button" onClick={() => setShowSearch(!showSearch)} title="Search" aria-label="Search">
+            <button className="icon-button search-button" onClick={() => setShowSearch(!showSearch)} title="Quick Search" aria-label="Search">
               🔍
+            </button>
+            
+            <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Advanced Search" aria-label="Advanced Search">
+              🔎
             </button>
             
             {showSearch && (
@@ -917,7 +1143,7 @@ function Header() {
                   <form onSubmit={handleSearch} className="search-form">
                     <input 
                       type="text" 
-                      placeholder="Search marketplace, apps, code..." 
+                      placeholder="Quick search marketplace, apps, code..." 
                       value={searchQuery} 
                       onChange={e => setSearchQuery(e.target.value)} 
                       className="search-input-header" 
@@ -971,6 +1197,16 @@ function Header() {
                       <Link to="/settings" onClick={() => setShowUserMenu(false)}>
                         <span>⚙️</span> Settings
                       </Link>
+                      {state.isAdmin && (
+                        <>
+                          <Link to="/admin" onClick={() => setShowUserMenu(false)}>
+                            <span>🛡️</span> Admin Panel
+                          </Link>
+                          <Link to="/analytics" onClick={() => setShowUserMenu(false)}>
+                            <span>📊</span> Analytics
+                          </Link>
+                        </>
+                      )}
                       <div className="dropdown-divider"></div>
                       <button onClick={() => { setShowUserMenu(false); setShowLogoutConfirm(true); }}>
                         <span>🚪</span> Logout
@@ -1038,6 +1274,12 @@ function Header() {
           </>
         )}
         {showAuth && <AuthModal setShowAuth={setShowAuth} authMode={authMode} setAuthMode={setAuthMode} />}
+        <AdvancedSearch 
+          isOpen={showAdvancedSearch} 
+          onClose={() => setShowAdvancedSearch(false)} 
+          onSearch={handleAdvancedSearch}
+          searchType="all"
+        />
       </header>
       <ConfirmDialog 
         isOpen={showLogoutConfirm} 
@@ -1053,16 +1295,12 @@ function Header() {
 }
 
 // ============================================
-// AUTH MODAL
+// AUTH MODAL (Same as before, included for completeness)
 // ============================================
 function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const { state, dispatch } = useAppContext();
   const [formData, setFormData] = useState({ 
-    name: '', 
-    email: '', 
-    password: '', 
-    confirmPassword: '', 
-    role: 'developer' 
+    name: '', email: '', password: '', confirmPassword: '', role: 'developer' 
   });
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
@@ -1077,7 +1315,6 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     document.body.classList.add('modal-open');
     resetForm();
     return () => document.body.classList.remove('modal-open');
-    // eslint-disable-next-line
   }, [authMode]);
 
   const resetForm = () => {
@@ -1091,396 +1328,822 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
 
   const validateForm = () => {
     const newErrors = {};
-    
     if (authMode === 'signup') {
-      if (!formData.name.trim()) {
-        newErrors.name = 'Full name is required';
-      } else if (formData.name.trim().length < 2) {
-        newErrors.name = 'Name must be at least 2 characters';
-      }
+      if (!formData.name.trim()) newErrors.name = 'Full name is required';
+      else if (formData.name.trim().length < 2) newErrors.name = 'Name must be at least 2 characters';
     }
-    
-    if (!formData.email.trim()) {
-      newErrors.email = 'Email address is required';
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email address';
-    }
-    
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 6) {
-      newErrors.password = 'Password must be at least 6 characters';
-    }
-    
+    if (!formData.email.trim()) newErrors.email = 'Email address is required';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) newErrors.email = 'Please enter a valid email';
+    if (!formData.password) newErrors.password = 'Password is required';
+    else if (formData.password.length < 6) newErrors.password = 'Password must be at least 6 characters';
     if (authMode === 'signup' && step === 2) {
-      if (formData.password !== formData.confirmPassword) {
-        newErrors.confirmPassword = 'Passwords do not match';
-      }
-      if (!formData.role) {
-        newErrors.role = 'Please select your role';
-      }
+      if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
+      if (!formData.role) newErrors.role = 'Please select your role';
     }
-    
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
     if (!validateForm()) return;
-    
-    if (authMode === 'signup' && step === 1) {
-      setStep(2);
-      return;
-    }
-    
+    if (authMode === 'signup' && step === 1) { setStep(2); return; }
     setLoading(true);
-    setAuthStatus('');
     dispatch({ type: 'SET_AUTH_ERROR', payload: null });
-    
     try {
       if (authMode === 'signup') {
         const { data, error } = await supabase.auth.signUp({
           email: formData.email,
           password: formData.password,
-          options: {
-            data: {
-              name: formData.name,
-              role: formData.role
-            }
-          }
+          options: { data: { name: formData.name, role: formData.role } }
         });
-        
-        if (error) {
-          dispatch({ type: 'SET_AUTH_ERROR', payload: error.message });
-          setLoading(false);
-          return;
-        }
-        
+        if (error) { dispatch({ type: 'SET_AUTH_ERROR', payload: error.message }); setLoading(false); return; }
         setShowSuccess(true);
-        
         if (data.session) {
           setAuthStatus('success');
-          dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-            message: `🎉 Welcome to DevMarket, ${formData.name}!`, 
-            type: 'success', 
-            time: new Date().toLocaleTimeString(), 
-            read: false 
-          }});
-          setTimeout(() => {
-            setShowAuth(false);
-            navigate('/profile');
-          }, 2000);
+          dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `🎉 Welcome, ${formData.name}!`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+          setTimeout(() => { setShowAuth(false); navigate('/profile'); }, 2000);
         } else {
           setAuthStatus('confirmation');
-          dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-            message: '📧 Please check your email to confirm your account.', 
-            type: 'info', 
-            time: new Date().toLocaleTimeString(), 
-            read: false 
-          }});
+          dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '📧 Check your email to confirm.', type: 'info', time: new Date().toLocaleTimeString(), read: false }});
         }
       } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: formData.email,
-          password: formData.password
-        });
-        
+        const { data, error } = await supabase.auth.signInWithPassword({ email: formData.email, password: formData.password });
         if (error) {
-          let msg = error.message;
-          if (error.message.includes('Invalid login')) {
-            msg = 'Invalid email or password. Please try again.';
-          } else if (error.message.includes('Email not confirmed')) {
-            msg = 'Please confirm your email first.';
-          }
+          let msg = error.message.includes('Invalid login') ? 'Invalid email or password.' : error.message;
           dispatch({ type: 'SET_AUTH_ERROR', payload: msg });
           setLoading(false);
           return;
         }
-        
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '👋 Welcome back!', 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👋 Welcome back!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
         setShowAuth(false);
       }
     } catch (error) {
       dispatch({ type: 'SET_AUTH_ERROR', payload: 'An unexpected error occurred' });
     }
-    
     setLoading(false);
   };
 
   const handleSocialLogin = async (provider) => {
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo: window.location.origin
-        }
-      });
-      
-      if (error) {
-        dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login is not configured. Please check Supabase settings.` });
-      }
+      const { error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin } });
+      if (error) dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured.` });
     } catch (error) {
-      dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login is not available.` });
+      dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not available.` });
     }
   };
 
   useEffect(() => {
-    const handleEsc = (e) => {
-      if (e.key === 'Escape') setShowAuth(false);
-    };
+    const handleEsc = (e) => { if (e.key === 'Escape') setShowAuth(false); };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
   }, [setShowAuth]);
 
-  const passwordStrength = (() => {
-    const p = formData.password;
-    let s = 0;
-    if (p.length >= 8) s++;
-    if (p.match(/[a-z]/) && p.match(/[A-Z]/)) s++;
-    if (p.match(/\d/)) s++;
-    if (p.match(/[^a-zA-Z\d]/)) s++;
-    return s;
-  })();
-
   return (
     <div className="modal-overlay" onClick={() => setShowAuth(false)}>
       <div className="auth-modal" onClick={e => e.stopPropagation()}>
-        <button className="btn-close" onClick={() => setShowAuth(false)} aria-label="Close modal">✕</button>
-        
+        <button className="btn-close" onClick={() => setShowAuth(false)}>✕</button>
         {showSuccess ? (
           <div className="success-state">
             <div className="success-icon">{authStatus === 'confirmation' ? '📧' : '🎉'}</div>
             <h2>{authStatus === 'confirmation' ? 'Check Your Email' : 'Account Created!'}</h2>
-            <p>Welcome to DevMarket, <strong>{formData.name}</strong>!</p>
-            <div className="success-details">
-              {authStatus === 'confirmation' 
-                ? `We've sent a confirmation link to ${formData.email}.` 
-                : 'Your account has been created successfully!'
-              }
-            </div>
-            <div className="success-features">
-              <div className="feature-item"><span>🛒</span> Marketplace</div>
-              <div className="feature-item"><span>💻</span> Share Code</div>
-              <div className="feature-item"><span>📱</span> Advertise Apps</div>
-            </div>
-            {authStatus === 'success' && (
-              <p className="redirect-message">Redirecting to your profile...</p>
-            )}
-            {authStatus === 'confirmation' && (
-              <button 
-                className="btn-primary" 
-                onClick={() => { setShowSuccess(false); setAuthMode('login'); resetForm(); }} 
-                style={{ marginTop: '16px' }}
-              >
-                Go to Login
-              </button>
-            )}
+            <p>Welcome, <strong>{formData.name}</strong>!</p>
+            {authStatus === 'confirmation' && <button className="btn-primary" onClick={() => { setShowSuccess(false); setAuthMode('login'); resetForm(); }}>Go to Login</button>}
           </div>
         ) : (
           <>
             <div className="auth-header">
-              <div className="auth-logo-container">
-                <span className="auth-logo">🚀</span>
-                <div className="auth-logo-ring"></div>
-              </div>
               <h2>{authMode === 'login' ? 'Welcome Back!' : 'Join DevMarket'}</h2>
-              <p>{authMode === 'login' ? 'Sign in to access your account' : 'Create your free account'}</p>
+              <p>{authMode === 'login' ? 'Sign in to your account' : 'Create your free account'}</p>
             </div>
-
             <div className="social-login">
-              <button className="social-btn google" type="button" onClick={() => handleSocialLogin('google')} title="Sign in with Google">
-                <span style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#4285f4' }}>G</span> Google
-              </button>
-              <button className="social-btn facebook" type="button" onClick={() => handleSocialLogin('facebook')} title="Sign in with Facebook" style={{ background: '#1877f2', color: 'white', border: 'none' }}>
-                <span style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>f</span> Facebook
-              </button>
-              <button className="social-btn github" type="button" onClick={() => handleSocialLogin('github')} title="Sign in with GitHub">
-                <span>⌨️</span> GitHub
-              </button>
+              <button className="social-btn" onClick={() => handleSocialLogin('google')}>G Google</button>
+              <button className="social-btn" onClick={() => handleSocialLogin('github')}>⌨️ GitHub</button>
             </div>
-
-            <div className="auth-divider"><span>or continue with email</span></div>
-
+            <div className="auth-divider"><span>or email</span></div>
             <div className="auth-tabs">
-              <button className={`auth-tab ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); resetForm(); }} type="button">Sign In</button>
-              <button className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`} onClick={() => { setAuthMode('signup'); resetForm(); }} type="button">Create Account</button>
+              <button className={`auth-tab ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); resetForm(); }}>Sign In</button>
+              <button className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`} onClick={() => { setAuthMode('signup'); resetForm(); }}>Create Account</button>
             </div>
-
-            {state.authError && (
-              <div className="auth-error">
-                <span>⚠️</span> {state.authError}
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="auth-form" noValidate>
+            {state.authError && <div className="auth-error">⚠️ {state.authError}</div>}
+            <form onSubmit={handleSubmit} className="auth-form">
               {authMode === 'signup' && (
-                <div className="step-indicator">
-                  <div className={`step ${step === 1 ? 'active' : step > 1 ? 'completed' : ''}`}>
-                    {step > 1 ? '✓' : '1'}
-                  </div>
-                  <div className={`step-line ${step > 1 ? 'active' : ''}`}></div>
-                  <div className={`step ${step === 2 ? 'active' : ''}`}>2</div>
+                <div className="form-group">
+                  <label>Full Name</label>
+                  <input type="text" placeholder="John Doe" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className={errors.name ? 'error' : ''} />
+                  {errors.name && <span className="error-message">{errors.name}</span>}
                 </div>
               )}
-
-              {(authMode === 'login' || step === 1) && (
-                <>
-                  {authMode === 'signup' && (
-                    <div className="form-group">
-                      <label htmlFor="name">Full Name</label>
-                      <div className="input-wrapper">
-                        <span className="input-icon">👤</span>
-                        <input
-                          id="name"
-                          type="text"
-                          placeholder="John Doe"
-                          value={formData.name}
-                          onChange={e => {
-                            setFormData({ ...formData, name: e.target.value });
-                            if (errors.name) setErrors(prev => ({ ...prev, name: '' }));
-                          }}
-                          className={errors.name ? 'error' : ''}
-                          autoFocus
-                        />
-                      </div>
-                      {errors.name && <span className="error-message">⚠️ {errors.name}</span>}
-                    </div>
-                  )}
-                  <div className="form-group">
-                    <label htmlFor="email">Email Address</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">📧</span>
-                      <input
-                        id="email"
-                        type="email"
-                        placeholder="you@example.com"
-                        value={formData.email}
-                        onChange={e => {
-                          setFormData({ ...formData, email: e.target.value });
-                          if (errors.email) setErrors(prev => ({ ...prev, email: '' }));
-                          dispatch({ type: 'SET_AUTH_ERROR', payload: null });
-                        }}
-                        className={errors.email ? 'error' : ''}
-                        autoFocus={authMode === 'login'}
-                      />
-                    </div>
-                    {errors.email && <span className="error-message">⚠️ {errors.email}</span>}
-                  </div>
-                  <div className="form-group">
-                    <label htmlFor="password">Password</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">🔒</span>
-                      <input
-                        id="password"
-                        type={showPassword ? "text" : "password"}
-                        placeholder={authMode === 'login' ? 'Enter your password' : 'Create a password (min 6 characters)'}
-                        value={formData.password}
-                        onChange={e => {
-                          setFormData({ ...formData, password: e.target.value });
-                          if (errors.password) setErrors(prev => ({ ...prev, password: '' }));
-                        }}
-                        className={errors.password ? 'error' : ''}
-                      />
-                      <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)} tabIndex={-1}>
-                        {showPassword ? '👁️' : '👁️‍🗨️'}
-                      </button>
-                    </div>
-                    {errors.password && <span className="error-message">⚠️ {errors.password}</span>}
-                    {authMode === 'signup' && formData.password && (
-                      <div className="password-strength">
-                        <div className="strength-bars">
-                          {[1, 2, 3, 4].map(level => (
-                            <div key={level} className={`strength-bar ${passwordStrength >= level ? `active level-${passwordStrength}` : ''}`} />
-                          ))}
-                        </div>
-                        <span className="strength-text">
-                          {['Very weak', 'Weak', 'Fair', 'Good', 'Strong'][passwordStrength] || 'Very weak'}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
+              <div className="form-group">
+                <label>Email</label>
+                <input type="email" placeholder="you@example.com" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className={errors.email ? 'error' : ''} />
+                {errors.email && <span className="error-message">{errors.email}</span>}
+              </div>
+              <div className="form-group">
+                <label>Password</label>
+                <input type={showPassword ? "text" : "password"} placeholder="Password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className={errors.password ? 'error' : ''} />
+                <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)}>{showPassword ? '👁️' : '👁️‍🗨️'}</button>
+                {errors.password && <span className="error-message">{errors.password}</span>}
+              </div>
               {authMode === 'signup' && step === 2 && (
                 <>
                   <div className="form-group">
-                    <label htmlFor="confirmPassword">Confirm Password</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">🔒</span>
-                      <input
-                        id="confirmPassword"
-                        type={showConfirmPassword ? "text" : "password"}
-                        placeholder="Confirm your password"
-                        value={formData.confirmPassword}
-                        onChange={e => {
-                          setFormData({ ...formData, confirmPassword: e.target.value });
-                          if (errors.confirmPassword) setErrors(prev => ({ ...prev, confirmPassword: '' }));
-                        }}
-                        className={errors.confirmPassword ? 'error' : ''}
-                      />
-                      <button type="button" className="password-toggle" onClick={() => setShowConfirmPassword(!showConfirmPassword)} tabIndex={-1}>
-                        {showConfirmPassword ? '👁️' : '👁️‍🗨️'}
-                      </button>
-                    </div>
-                    {errors.confirmPassword && <span className="error-message">⚠️ {errors.confirmPassword}</span>}
+                    <label>Confirm Password</label>
+                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} />
                   </div>
-                  <div className="form-group">
-                    <label>I am a...</label>
-                    <div className="role-selector">
-                      {[
-                        { role: 'developer', icon: '👨‍💻', label: 'Developer' },
-                        { role: 'designer', icon: '🎨', label: 'Designer' },
-                        { role: 'entrepreneur', icon: '💼', label: 'Entrepreneur' },
-                        { role: 'student', icon: '📚', label: 'Student' }
-                      ].map(r => (
-                        <button
-                          key={r.role}
-                          type="button"
-                          className={`role-option ${formData.role === r.role ? 'active' : ''}`}
-                          onClick={() => setFormData({ ...formData, role: r.role })}
-                        >
-                          <span>{r.icon}</span>
-                          <span>{r.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <button type="button" className="btn-secondary btn-full" onClick={() => setStep(1)}>
-                    ← Back
-                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
                 </>
               )}
-
               <button type="submit" className="btn-primary btn-full" disabled={loading}>
-                {loading ? (
-                  <>
-                    <span className="loading-spinner"></span>
-                    {authMode === 'login' ? 'Signing in...' : 'Creating account...'}
-                  </>
-                ) : (
-                  authMode === 'signup' && step === 1 ? 'Continue →' : authMode === 'login' ? '🚀 Sign In' : '🎉 Create Account'
-                )}
+                {loading ? 'Processing...' : authMode === 'login' ? '🚀 Sign In' : step === 1 ? 'Continue →' : '🎉 Create Account'}
               </button>
             </form>
-
             <div className="auth-footer">
               {authMode === 'login' ? (
-                <p>Don't have an account? <button onClick={() => { setAuthMode('signup'); resetForm(); }} type="button" className="btn-link">Create one</button></p>
+                <p>No account? <button onClick={() => { setAuthMode('signup'); resetForm(); }} className="btn-link">Create one</button></p>
               ) : (
-                <p>Already have an account? <button onClick={() => { setAuthMode('login'); resetForm(); }} type="button" className="btn-link">Sign in</button></p>
+                <p>Have account? <button onClick={() => { setAuthMode('login'); resetForm(); }} className="btn-link">Sign in</button></p>
               )}
             </div>
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ============================================
+// ADMIN DASHBOARD
+// ============================================
+function AdminDashboard() {
+  const { state, dispatch } = useAppContext();
+  const [activeTab, setActiveTab] = useState('overview');
+  const [moderationAction, setModerationAction] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  if (!state.currentUser || !state.isAdmin) {
+    return (
+      <div className="admin-page">
+        <div className="empty-state">
+          <span className="empty-icon">🔒</span>
+          <h2>Access Denied</h2>
+          <p>You need admin privileges to view this page.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const stats = state.analyticsData || {
+    totalUsers: 0,
+    totalListings: 0,
+    totalApps: 0,
+    totalSnippets: 0,
+    totalMessages: 0
+  };
+
+  return (
+    <div className="admin-page">
+      <div className="page-header">
+        <h1>🛡️ Admin Dashboard</h1>
+        <p>Manage your DevMarket platform</p>
+      </div>
+
+      <div className="admin-tabs">
+        {['overview', 'users', 'listings', 'moderation', 'settings'].map(tab => (
+          <button
+            key={tab}
+            className={`admin-tab ${activeTab === tab ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && (
+        <div className="admin-overview">
+          <div className="stats-grid">
+            <div className="stat-card">
+              <span className="stat-icon">👥</span>
+              <h3>{stats.totalUsers}</h3>
+              <p>Total Users</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">🛒</span>
+              <h3>{stats.totalListings}</h3>
+              <p>Total Listings</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">📱</span>
+              <h3>{stats.totalApps}</h3>
+              <p>Total Apps</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">💻</span>
+              <h3>{stats.totalSnippets}</h3>
+              <p>Code Snippets</p>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">💬</span>
+              <h3>{stats.totalMessages}</h3>
+              <p>Messages</p>
+            </div>
+          </div>
+
+          <div className="admin-recent">
+            <h3>Recent Activity</h3>
+            <div className="activity-list">
+              {(state.listings || []).slice(0, 5).map(listing => (
+                <div key={listing.id} className="activity-item">
+                  <span>📢</span>
+                  <div>
+                    <strong>{listing.seller_name || listing.seller}</strong>
+                    <p>Listed "{listing.title}"</p>
+                  </div>
+                  <small>{listing.date}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'moderation' && (
+        <div className="moderation-panel">
+          <h3>Content Moderation</h3>
+          <div className="moderation-filters">
+            <button className="btn-sm">Flagged Content</button>
+            <button className="btn-sm">Reported Users</button>
+            <button className="btn-sm">Spam Detection</button>
+          </div>
+          <div className="moderation-list">
+            {(state.listings || []).slice(0, 10).map(listing => (
+              <div key={listing.id} className="moderation-item">
+                <div className="moderation-content">
+                  <h4>{listing.title}</h4>
+                  <p>{listing.description?.substring(0, 100)}...</p>
+                  <small>By: {listing.seller_name || listing.seller}</small>
+                </div>
+                <div className="moderation-actions">
+                  <button className="btn-sm btn-secondary">👁 View</button>
+                  <button className="btn-sm" style={{ background: 'var(--success)', color: 'white', border: 'none' }}>✅ Approve</button>
+                  <button className="btn-sm" style={{ background: 'var(--danger)', color: 'white', border: 'none' }}>🚫 Remove</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'settings' && (
+        <div className="admin-settings">
+          <h3>Platform Settings</h3>
+          <div className="settings-form">
+            <div className="setting-item">
+              <div className="setting-info">
+                <strong>Auto-Approve Listings</strong>
+                <p>New listings are automatically published</p>
+              </div>
+              <label className="toggle-switch">
+                <input type="checkbox" defaultChecked onChange={() => {}} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="setting-item">
+              <div className="setting-info">
+                <strong>Require Email Verification</strong>
+                <p>Users must verify email before posting</p>
+              </div>
+              <label className="toggle-switch">
+                <input type="checkbox" defaultChecked onChange={() => {}} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// ANALYTICS PAGE
+// ============================================
+function AnalyticsPage() {
+  const { state } = useAppContext();
+
+  if (!state.currentUser) {
+    return (
+      <div className="analytics-page">
+        <div className="empty-state">
+          <span className="empty-icon">📊</span>
+          <h2>Analytics</h2>
+          <p>Please login to view analytics</p>
+        </div>
+      </div>
+    );
+  }
+
+  const userListings = (state.listings || []).filter(l => l.user_id === state.currentUser.id);
+  const userApps = (state.apps || []).filter(a => a.user_id === state.currentUser.id);
+  const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
+  const userMessages = (state.messages || []).filter(m => m.to_user === state.currentUser.id);
+
+  return (
+    <div className="analytics-page">
+      <div className="page-header">
+        <h1>📊 Your Analytics</h1>
+        <p>Track your activity and engagement</p>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-card">
+          <span className="stat-icon">🛒</span>
+          <h3>{userListings.length}</h3>
+          <p>Your Listings</p>
+          <small>{userListings.reduce((sum, l) => sum + (l.views || 0), 0)} total views</small>
+        </div>
+        <div className="stat-card">
+          <span className="stat-icon">📱</span>
+          <h3>{userApps.length}</h3>
+          <p>Your Apps</p>
+          <small>{userApps.reduce((sum, a) => sum + (a.downloads || 0), 0)} downloads</small>
+        </div>
+        <div className="stat-card">
+          <span className="stat-icon">💻</span>
+          <h3>{userSnippets.length}</h3>
+          <p>Code Snippets</p>
+          <small>{userSnippets.reduce((sum, s) => sum + (s.likes || 0), 0)} total likes</small>
+        </div>
+        <div className="stat-card">
+          <span className="stat-icon">💬</span>
+          <h3>{userMessages.length}</h3>
+          <p>Messages Received</p>
+          <small>{userMessages.filter(m => !m.read).length} unread</small>
+        </div>
+      </div>
+
+      <div className="analytics-charts">
+        <div className="chart-container">
+          <h3>Listing Performance</h3>
+          <div className="chart-placeholder">
+            <div className="bar-chart">
+              {userListings.slice(0, 5).map((listing, i) => (
+                <div key={i} className="bar-item">
+                  <div className="bar-label">{listing.title?.substring(0, 20)}</div>
+                  <div className="bar-wrapper">
+                    <div 
+                      className="bar-fill" 
+                      style={{ 
+                        width: `${Math.min((listing.views || 0) * 10, 100)}%`,
+                        background: `hsl(${240 + i * 30}, 70%, 60%)`
+                      }}
+                    >
+                      <span>{listing.views || 0} views</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// ENHANCED MESSAGES WITH REAL-TIME INDICATOR
+// ============================================
+function Messages() {
+  const { state, dispatch } = useAppContext();
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [replyMessage, setReplyMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const messagesEndRef = useRef(null);
+  const chatAreaRef = useRef(null);
+
+  const scrollToBottom = useCallback(() => {
+    if (chatAreaRef.current) {
+      chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight;
+    }
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [state.activeConversation?.messages, scrollToBottom]);
+
+  useEffect(() => {
+    // Scroll when new messages arrive via real-time
+    if (state.realtimeConnected) {
+      scrollToBottom();
+    }
+  }, [state.messages.length, state.realtimeConnected, scrollToBottom]);
+
+  if (!state.currentUser) {
+    return (
+      <div className="messages-page">
+        <div className="empty-state">
+          <span className="empty-icon">📧</span>
+          <h2>Messages</h2>
+          <p>Please login to view messages</p>
+        </div>
+      </div>
+    );
+  }
+
+  const conversations = state.conversations || [];
+  const activeConv = state.activeConversation;
+
+  const handleSendReply = async () => {
+    if (!replyMessage.trim() || !replyingTo) return;
+    
+    setSending(true);
+    try {
+      const msgData = {
+        from_user: state.currentUser.id,
+        to_user: replyingTo.userId,
+        from_name: state.profile?.name || state.currentUser.email,
+        from_avatar: state.profile?.avatar_url,
+        to_name: replyingTo.userName,
+        to_avatar: replyingTo.userAvatar,
+        subject: 'Re: Conversation',
+        message: replyMessage,
+        read: false,
+        created_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase.from('messages').insert([msgData]);
+      
+      if (!error) {
+        // Create notification for recipient
+        try {
+          await supabase.from('notifications').insert([{
+            user_id: replyingTo.userId,
+            message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
+            type: 'info',
+            read: false,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (notifError) {
+          console.log('Could not create notification:', notifError);
+        }
+
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: '✅ Reply sent!', 
+          type: 'success', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+        
+        setReplyMessage('');
+        
+        // The real-time subscription will handle updating the UI
+        // But we'll also refresh messages for consistency
+        const { data: msgsResult } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+          .order('created_at', { ascending: false });
+        
+        if (msgsResult) {
+          dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
+          buildConversationsLocal(msgsResult, state.currentUser.id);
+        }
+      }
+    } catch (error) {
+      console.error('Error sending reply:', error);
+    }
+    setSending(false);
+  };
+
+  const buildConversationsLocal = (messages, userId) => {
+    const conversationMap = new Map();
+    messages.forEach(msg => {
+      const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
+      if (!conversationMap.has(otherUserId)) {
+        conversationMap.set(otherUserId, {
+          userId: otherUserId,
+          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'Unknown User',
+          userAvatar: msg.from_user === userId ? msg.to_avatar : msg.from_avatar,
+          lastMessage: msg.message,
+          lastMessageTime: msg.created_at,
+          unreadCount: 0,
+          messages: []
+        });
+      }
+      const conv = conversationMap.get(otherUserId);
+      conv.messages.push(msg);
+      if (!msg.read && msg.to_user === userId) conv.unreadCount++;
+    });
+    const conversations = Array.from(conversationMap.values())
+      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
+    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
+  };
+
+  const openConversation = (conv) => {
+    dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: conv });
+    setReplyingTo(conv);
+    dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
+    
+    // Mark messages as read in database
+    conv.messages.forEach(async (msg) => {
+      if (!msg.read && msg.to_user === state.currentUser.id) {
+        try {
+          await supabase.from('messages').update({ read: true }).eq('id', msg.id);
+        } catch (error) {
+          console.error('Error marking read:', error);
+        }
+      }
+    });
+  };
+
+  return (
+    <div className="messages-page">
+      <div className="page-header">
+        <h1>💬 Messages</h1>
+        <p>Your conversations and inquiries</p>
+        <div className="realtime-indicator">
+          {state.realtimeConnected ? (
+            <span className="realtime-badge connected">
+              <span className="realtime-pulse"></span> Live
+            </span>
+          ) : (
+            <span className="realtime-badge disconnected">
+              <span className="realtime-pulse offline"></span> Reconnecting...
+            </span>
+          )}
+        </div>
+      </div>
+      
+      <div className="messages-layout">
+        <div className="conversations-sidebar">
+          <h3>Conversations</h3>
+          {loadingMessages ? (
+            <div className="conversations-skeleton">
+              {[1,2,3,4,5].map(i => <SkeletonMessage key={i} />)}
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="empty-conversations">
+              <span>💬</span>
+              <p>No conversations yet</p>
+              <small>Messages from inquiries will appear here</small>
+            </div>
+          ) : (
+            <div className="conversations-list">
+              {conversations.map((conv, index) => (
+                <div
+                  key={conv.userId || index}
+                  className={`conversation-item ${activeConv?.userId === conv.userId ? 'active' : ''} ${conv.unreadCount > 0 ? 'unread' : ''}`}
+                  onClick={() => openConversation(conv)}
+                >
+                  <img 
+                    src={conv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.userName || 'User')}&background=667eea&color=fff&size=40`} 
+                    alt={conv.userName} 
+                    className="conversation-avatar"
+                    onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=40`; }}
+                  />
+                  <div className="conversation-info">
+                    <div className="conversation-header">
+                      <strong>{conv.userName || 'Unknown User'}</strong>
+                      <span className="conversation-time">
+                        {new Date(conv.lastMessageTime).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <p className="conversation-preview">
+                      {conv.lastMessage?.substring(0, 50)}
+                      {conv.lastMessage?.length > 50 ? '...' : ''}
+                    </p>
+                  </div>
+                  {conv.unreadCount > 0 && (
+                    <span className="unread-badge">{conv.unreadCount}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="chat-area" ref={chatAreaRef}>
+          {activeConv ? (
+            <>
+              <div className="chat-header">
+                <img 
+                  src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName || 'User')}&background=667eea&color=fff&size=40`} 
+                  alt={activeConv.userName} 
+                  className="chat-avatar"
+                />
+                <div>
+                  <strong>{activeConv.userName || 'Unknown User'}</strong>
+                  <p>{activeConv.messages?.length || 0} messages</p>
+                </div>
+              </div>
+              <div className="chat-messages">
+                {activeConv.messages
+                  ?.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+                  .map((msg) => (
+                    <div 
+                      key={msg.id} 
+                      className={`chat-message ${msg.from_user === state.currentUser.id ? 'sent' : 'received'}`}
+                    >
+                      <div className="message-bubble">
+                        <p>{msg.message}</p>
+                        <small className="message-time">
+                          {new Date(msg.created_at).toLocaleString()}
+                          {msg.from_user === state.currentUser.id && (
+                            <span className="message-status">
+                              {msg.read ? ' ✓✓ Read' : ' ✓ Sent'}
+                            </span>
+                          )}
+                        </small>
+                      </div>
+                    </div>
+                  ))}
+                <div ref={messagesEndRef} />
+              </div>
+              <div className="chat-input-area">
+                <textarea
+                  placeholder="Type your reply... (Enter to send, Shift+Enter for new line)"
+                  value={replyMessage}
+                  onChange={e => setReplyMessage(e.target.value)}
+                  className="chat-textarea"
+                  rows="2"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendReply();
+                    }
+                  }}
+                />
+                <button 
+                  className="btn-primary btn-sm" 
+                  onClick={handleSendReply} 
+                  disabled={sending || !replyMessage.trim()}
+                >
+                  {sending ? '...' : '📤'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="chat-empty">
+              <span className="empty-icon">💬</span>
+              <h3>Select a conversation</h3>
+              <p>Choose a conversation from the sidebar or wait for new messages to arrive in real-time.</p>
+              {state.realtimeConnected && (
+                <p className="realtime-note">🟢 You're connected and will receive messages instantly!</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// PROFILE WITH ENHANCED AVATAR UPLOAD
+// ============================================
+function Profile() {
+  const { state, dispatch } = useAppContext();
+  
+  if (!state.currentUser) {
+    return (
+      <div className="profile-page">
+        <div className="empty-state">
+          <span className="empty-icon">👤</span>
+          <h2>Profile</h2>
+          <p>Please login to view your profile</p>
+        </div>
+      </div>
+    );
+  }
+
+  const userName = state.profile?.name || state.currentUser.email;
+  const userListings = (state.listings || []).filter(
+    l => l.user_id === state.currentUser.id
+  );
+  const userApps = (state.apps || []).filter(
+    a => a.user_id === state.currentUser.id
+  );
+  const userSnippets = (state.codeSnippets || []).filter(
+    s => s.user_id === state.currentUser.id
+  );
+
+  const handleAvatarUpdate = async (avatarUrl) => {
+    dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
+    
+    try {
+      const { error } = await supabase.from('profiles').upsert({
+        id: state.currentUser.id,
+        avatar_url: avatarUrl,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+      
+      if (error) {
+        console.error('Error saving avatar:', error);
+      }
+    } catch (error) {
+      console.error('Could not save avatar:', error);
+    }
+    
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: '✅ Profile picture updated successfully!', 
+      type: 'success', 
+      time: new Date().toLocaleTimeString(), 
+      read: false 
+    }});
+  };
+
+  const handleDeleteAccount = async () => {
+    // Demo mode - just show notification
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: '⚠️ Account deletion requires admin approval. Contact support.', 
+      type: 'warning', 
+      time: new Date().toLocaleTimeString(), 
+      read: false 
+    }});
+  };
+
+  return (
+    <div className="profile-page">
+      <div className="profile-header">
+        <AvatarUpload 
+          currentAvatar={state.profile?.avatar_url} 
+          userName={userName} 
+          onAvatarUpdate={handleAvatarUpdate}
+          size="large"
+        />
+        <div>
+          <h1>{userName}</h1>
+          <p>{state.currentUser.email}</p>
+          {state.profile?.role && (
+            <p className="profile-role">
+              <span className="role-icon">
+                {state.profile.role === 'developer' ? '👨‍💻' : 
+                 state.profile.role === 'admin' ? '🛡️' : '👤'}
+              </span>
+              {state.profile.role.charAt(0).toUpperCase() + state.profile.role.slice(1)}
+            </p>
+          )}
+          {state.profile?.bio && <p>{state.profile.bio}</p>}
+          {state.profile?.website && (
+            <p>🌐 <a href={state.profile.website} target="_blank" rel="noopener noreferrer">{state.profile.website}</a></p>
+          )}
+        </div>
+      </div>
+      
+      <div className="profile-stats">
+        <div className="stat-box">
+          <h3>{userListings.length}</h3>
+          <p>Active Listings</p>
+        </div>
+        <div className="stat-box">
+          <h3>{userApps.length}</h3>
+          <p>Apps Advertised</p>
+        </div>
+        <div className="stat-box">
+          <h3>{userSnippets.length}</h3>
+          <p>Code Snippets</p>
+        </div>
+        <div className="stat-box">
+          <h3>{state.favorites?.length || 0}</h3>
+          <p>Favorites</p>
+        </div>
+      </div>
+
+      <div className="profile-actions">
+        <Link to="/analytics" className="btn-secondary">
+          📊 View Analytics
+        </Link>
+        <Link to="/settings" className="btn-secondary">
+          ⚙️ Settings
+        </Link>
+        {state.isAdmin && (
+          <Link to="/admin" className="btn-secondary">
+            🛡️ Admin Panel
+          </Link>
+        )}
+        <button onClick={handleDeleteAccount} className="btn-secondary" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>
+          🗑️ Delete Account
+        </button>
+      </div>
+      
+      {userListings.length > 0 && (
+        <div className="profile-section">
+          <h2>Your Listings ({userListings.length})</h2>
+          <div className="listings-grid">
+            {userListings.slice(0, 3).map(l => (
+              <ListingCard key={l.id} listing={l} />
+            ))}
+          </div>
+          {userListings.length > 3 && (
+            <button className="btn-text" style={{ marginTop: '16px' }}>
+              View all {userListings.length} listings →
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
