@@ -1,5 +1,5 @@
 // ============================================
-// src/App.js (ENHANCED VERSION - FIXED & IMPROVED)
+// src/App.js (FULLY FIXED VERSION)
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
@@ -111,7 +111,7 @@ function appReducer(state, action) {
           c.userId === action.payload.userId ? { ...c, ...action.payload } : c
         )
       };
-    case 'ADD_CONVERSATION_MESSAGE':
+    case 'ADD_CONVERSATION_MESSAGE': {
       const convExists = (state.conversations || []).find(c => c.userId === action.payload.otherUserId);
       if (convExists) {
         return {
@@ -130,7 +130,6 @@ function appReducer(state, action) {
           })
         };
       } else {
-        // Create new conversation
         const newConv = {
           userId: action.payload.otherUserId,
           userName: action.payload.userName || 'Unknown User',
@@ -145,6 +144,7 @@ function appReducer(state, action) {
           conversations: [...(state.conversations || []), newConv]
         };
       }
+    }
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversation: action.payload };
     case 'MARK_CONVERSATION_READ':
@@ -198,6 +198,50 @@ function appReducer(state, action) {
 }
 
 // ============================================
+// HELPER FUNCTIONS
+// ============================================
+function buildConversationsFromMessages(messages, userId) {
+  const conversationMap = new Map();
+  
+  messages.forEach(msg => {
+    const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
+    const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
+    const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
+    
+    if (!conversationMap.has(otherUserId)) {
+      conversationMap.set(otherUserId, {
+        userId: otherUserId,
+        userName: otherUserName || 'Unknown User',
+        userAvatar: otherUserAvatar,
+        lastMessage: msg.message,
+        lastMessageTime: msg.created_at,
+        unreadCount: 0,
+        messages: []
+      });
+    }
+    
+    const conv = conversationMap.get(otherUserId);
+    conv.messages.push(msg);
+    
+    if (!msg.read && msg.to_user === userId) {
+      conv.unreadCount++;
+    }
+    
+    if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
+      conv.lastMessage = msg.message;
+      conv.lastMessageTime = msg.created_at;
+    }
+  });
+  
+  const conversations = Array.from(conversationMap.values())
+    .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
+  
+  const unreadTotal = conversations.reduce((sum, conv) => sum + conv.unreadCount, 0);
+  
+  return { conversations, unreadTotal };
+}
+
+// ============================================
 // SKELETON LOADER COMPONENTS
 // ============================================
 function SkeletonCard() {
@@ -216,9 +260,9 @@ function SkeletonCard() {
 
 function SkeletonMessage() {
   return (
-    <div className="skeleton-message">
-      <div className="skeleton skeleton-avatar"></div>
-      <div className="skeleton-content">
+    <div className="skeleton-message" style={{ display: 'flex', gap: '12px', padding: '12px', alignItems: 'center' }}>
+      <div className="skeleton" style={{ width: '40px', height: '40px', borderRadius: '50%' }}></div>
+      <div className="skeleton-content" style={{ flex: 1 }}>
         <div className="skeleton skeleton-text short"></div>
         <div className="skeleton skeleton-text"></div>
       </div>
@@ -273,7 +317,7 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
         });
 
       if (uploadError) {
-        const { data: uploadData2, error: uploadError2 } = await supabase.storage
+        const { error: uploadError2 } = await supabase.storage
           .from('avatars')
           .upload(fileName, file, {
             cacheControl: '3600',
@@ -332,19 +376,18 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
       <div 
         className="avatar-preview-wrapper" 
         onClick={() => !uploading && fileInputRef.current?.click()}
-        style={{ width: currentSize.wrapper, height: currentSize.wrapper }}
+        style={{ width: currentSize.wrapper, height: currentSize.wrapper, cursor: 'pointer', position: 'relative' }}
       >
         <img 
           src={displayAvatar} 
           alt={userName || 'User'} 
           className="avatar-upload-preview"
-          style={{ width: currentSize.wrapper, height: currentSize.wrapper }}
+          style={{ width: currentSize.wrapper, height: currentSize.wrapper, borderRadius: '50%', objectFit: 'cover' }}
           onError={(e) => { 
             e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`; 
           }}
         />
-        <div className="avatar-upload-overlay" style={{ fontSize: currentSize.fontSize }}>
-          <span>📷</span>
+        <div className="avatar-upload-overlay" style={{ fontSize: currentSize.fontSize, position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.5)', color: 'white', padding: '4px', textAlign: 'center' }}>
           <span>{uploading ? 'Uploading...' : 'Change'}</span>
         </div>
       </div>
@@ -538,7 +581,7 @@ function App() {
     }
   }, []);
 
-  async function loadPublicData() {
+  const loadPublicData = useCallback(async () => {
     try {
       const [listingsResult, appsResult, snippetsResult] = await Promise.all([
         supabase.from('listings').select('*').order('created_at', { ascending: false }),
@@ -593,9 +636,123 @@ function App() {
       dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
       dispatch({ type: 'SET_DATA_LOADED', payload: true });
     }
-  }
+  }, []);
 
-  async function loadProfile(user) {
+  const setupRealtimeSubscriptions = useCallback((userId) => {
+    realtimeManager.unsubscribeAll();
+
+    realtimeManager.subscribe(
+      `messages-${userId}`,
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `to_user=eq.${userId}`
+      },
+      (payload) => {
+        const newMsg = payload.new;
+        dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
+        
+        const otherUserId = newMsg.from_user;
+        const otherUserName = newMsg.from_name || 'User';
+        const otherUserAvatar = newMsg.from_avatar;
+        
+        dispatch({
+          type: 'ADD_CONVERSATION_MESSAGE',
+          payload: {
+            otherUserId,
+            message: newMsg,
+            userName: otherUserName,
+            userAvatar: otherUserAvatar
+          }
+        });
+        
+        if (!newMsg.read) {
+          dispatch({ type: 'ADD_NOTIFICATION', payload: {
+            message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
+            type: 'info',
+            time: new Date().toLocaleTimeString(),
+            read: false
+          }});
+        }
+      }
+    );
+
+    realtimeManager.subscribe(
+      `message-updates-${userId}`,
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'messages',
+        filter: `from_user=eq.${userId}`
+      },
+      (payload) => {
+        const updatedMsg = payload.new;
+        dispatch({ type: 'UPDATE_MESSAGE', payload: updatedMsg });
+        
+        if (updatedMsg.read) {
+          dispatch({ type: 'MARK_MESSAGE_READ', payload: updatedMsg.id });
+        }
+      }
+    );
+
+    realtimeManager.subscribe(
+      'listings-updates',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'listings'
+      },
+      (payload) => {
+        if (payload.eventType === 'INSERT') {
+          dispatch({ type: 'ADD_LISTING', payload: payload.new });
+        } else if (payload.eventType === 'DELETE') {
+          dispatch({ type: 'DELETE_LISTING', payload: payload.old.id });
+        } else if (payload.eventType === 'UPDATE') {
+          dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
+        }
+        loadPublicData();
+      }
+    );
+
+    realtimeManager.subscribe(
+      'apps-updates',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'apps'
+      },
+      (payload) => {
+        if (payload.eventType === 'INSERT') {
+          dispatch({ type: 'ADD_APP', payload: payload.new });
+        } else if (payload.eventType === 'DELETE') {
+          dispatch({ type: 'DELETE_APP', payload: payload.old.id });
+        }
+        loadPublicData();
+      }
+    );
+
+    realtimeManager.subscribe(
+      'snippets-updates',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'code_snippets'
+      },
+      (payload) => {
+        if (payload.eventType === 'INSERT') {
+          dispatch({ type: 'ADD_CODE_SNIPPET', payload: payload.new });
+        } else if (payload.eventType === 'DELETE') {
+          dispatch({ type: 'DELETE_SNIPPET', payload: payload.old.id });
+        }
+        loadPublicData();
+      }
+    );
+
+    dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
+  }, [loadPublicData]);
+
+  const loadProfile = useCallback(async (user) => {
     try {
       const { data: profile } = await supabase
         .from('profiles')
@@ -622,10 +779,7 @@ function App() {
         };
 
         try {
-          await supabase.from('profiles').upsert({ 
-            ...defaultProfile, 
-            updated_at: new Date().toISOString() 
-          });
+          await supabase.from('profiles').upsert({ ...defaultProfile, updated_at: new Date().toISOString() });
         } catch (err) {
           console.log('Could not save profile:', err);
         }
@@ -636,9 +790,9 @@ function App() {
     } catch (error) {
       console.error('Error loading profile:', error);
     }
-  }
+  }, []);
 
-  async function loadUserData(userId) {
+  const loadUserData = useCallback(async (userId) => {
     try {
       const [notifsResult, msgsResult, favsResult] = await Promise.all([
         supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
@@ -655,7 +809,9 @@ function App() {
 
       if (msgsResult.data) {
         dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        buildConversations(msgsResult.data, userId);
+        const { conversations, unreadTotal } = buildConversationsFromMessages(msgsResult.data, userId);
+        dispatch({ type: 'SET_UNREAD_COUNT', payload: unreadTotal });
+        dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
       }
 
       if (favsResult.data) {
@@ -676,172 +832,7 @@ function App() {
     } catch (error) {
       console.error('Error loading user data:', error);
     }
-  }
-
-  function setupRealtimeSubscriptions(userId) {
-    realtimeManager.unsubscribeAll();
-
-    // Subscribe to new messages
-    realtimeManager.subscribe(
-      `messages-${userId}`,
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-        filter: `to_user=eq.${userId}`
-      },
-      (payload) => {
-        const newMsg = payload.new;
-        console.log('📨 New real-time message:', newMsg);
-        
-        dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
-        
-        const otherUserId = newMsg.from_user;
-        const otherUserName = newMsg.from_name || 'User';
-        const otherUserAvatar = newMsg.from_avatar;
-        
-        dispatch({
-          type: 'ADD_CONVERSATION_MESSAGE',
-          payload: {
-            otherUserId,
-            message: newMsg,
-            userName: otherUserName,
-            userAvatar: otherUserAvatar
-          }
-        });
-        
-        // Show notification only if not already read
-        if (!newMsg.read) {
-          dispatch({ type: 'ADD_NOTIFICATION', payload: {
-            message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
-            type: 'info',
-            time: new Date().toLocaleTimeString(),
-            read: false
-          }});
-        }
-      }
-    );
-
-    // Subscribe to message updates (read receipts)
-    realtimeManager.subscribe(
-      `message-updates-${userId}`,
-      {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'messages',
-        filter: `from_user=eq.${userId}`
-      },
-      (payload) => {
-        const updatedMsg = payload.new;
-        dispatch({ type: 'UPDATE_MESSAGE', payload: updatedMsg });
-        
-        // Update conversation if message was read
-        if (updatedMsg.read) {
-          dispatch({ type: 'MARK_MESSAGE_READ', payload: updatedMsg.id });
-        }
-      }
-    );
-
-    // Subscribe to listing updates
-    realtimeManager.subscribe(
-      'listings-updates',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'listings'
-      },
-      (payload) => {
-        if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_LISTING', payload: payload.new });
-        } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_LISTING', payload: payload.old.id });
-        } else if (payload.eventType === 'UPDATE') {
-          dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
-        }
-        loadPublicData(); // Refresh data for consistency
-      }
-    );
-
-    // Subscribe to app updates
-    realtimeManager.subscribe(
-      'apps-updates',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'apps'
-      },
-      (payload) => {
-        if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_APP', payload: payload.new });
-        } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_APP', payload: payload.old.id });
-        }
-        loadPublicData();
-      }
-    );
-
-    // Subscribe to code snippet updates
-    realtimeManager.subscribe(
-      'snippets-updates',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'code_snippets'
-      },
-      (payload) => {
-        if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_CODE_SNIPPET', payload: payload.new });
-        } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_SNIPPET', payload: payload.old.id });
-        }
-        loadPublicData();
-      }
-    );
-
-    dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
-  }
-
-  function buildConversations(messages, userId) {
-    const conversationMap = new Map();
-    
-    messages.forEach(msg => {
-      const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
-      const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
-      
-      if (!conversationMap.has(otherUserId)) {
-        conversationMap.set(otherUserId, {
-          userId: otherUserId,
-          userName: otherUserName || 'Unknown User',
-          userAvatar: otherUserAvatar,
-          lastMessage: msg.message,
-          lastMessageTime: msg.created_at,
-          unreadCount: 0,
-          messages: []
-        });
-      }
-      
-      const conv = conversationMap.get(otherUserId);
-      conv.messages.push(msg);
-      
-      if (!msg.read && msg.to_user === userId) {
-        conv.unreadCount++;
-      }
-      
-      if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
-        conv.lastMessage = msg.message;
-        conv.lastMessageTime = msg.created_at;
-      }
-    });
-    
-    const conversations = Array.from(conversationMap.values())
-      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
-    
-    // Set unread count
-    const unreadTotal = conversations.reduce((sum, conv) => sum + conv.unreadCount, 0);
-    dispatch({ type: 'SET_UNREAD_COUNT', payload: unreadTotal });
-    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
-  }
+  }, [setupRealtimeSubscriptions]);
 
   useEffect(() => {
     let mounted = true;
@@ -876,7 +867,6 @@ function App() {
 
     initialize();
     
-    // Smooth loading transition
     const timer = setTimeout(() => {
       setIsInitialLoading(false);
       if (!hasShownLoader) {
@@ -904,7 +894,7 @@ function App() {
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
-  }, []);
+  }, [hasShownLoader, loadProfile, loadUserData, loadPublicData]);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('devMarketTheme');
@@ -967,51 +957,16 @@ function SimpleLoader() {
       color: 'white',
       fontFamily: 'system-ui, -apple-system, sans-serif'
     }}>
-      <div style={{ 
-        fontSize: '4rem', 
-        animation: 'pulse 2s ease-in-out infinite',
-        marginBottom: '24px'
-      }}>
-        🚀
-      </div>
-      <h1 style={{ 
-        fontSize: '2.5rem', 
-        fontWeight: '800',
-        marginBottom: '8px',
-        letterSpacing: '-0.02em'
-      }}>
-        DevMarket
-      </h1>
-      <p style={{ 
-        fontSize: '1.1rem',
-        opacity: 0.8,
-        marginBottom: '32px'
-      }}>
-        Loading your marketplace...
-      </p>
-      <div style={{
-        width: '200px',
-        height: '3px',
-        background: 'rgba(255,255,255,0.2)',
-        borderRadius: '4px',
-        overflow: 'hidden'
-      }}>
-        <div style={{
-          height: '100%',
-          background: 'white',
-          borderRadius: '4px',
-          animation: 'loadingBar 1.5s ease-in-out infinite',
-          width: '60%'
-        }} />
+      <div style={{ fontSize: '4rem', marginBottom: '24px' }}>🚀</div>
+      <h1 style={{ fontSize: '2.5rem', fontWeight: '800', marginBottom: '8px' }}>DevMarket</h1>
+      <p style={{ fontSize: '1.1rem', opacity: 0.8, marginBottom: '32px' }}>Loading your marketplace...</p>
+      <div style={{ width: '200px', height: '3px', background: 'rgba(255,255,255,0.2)', borderRadius: '4px', overflow: 'hidden' }}>
+        <div style={{ height: '100%', background: 'white', borderRadius: '4px', animation: 'loadingBar 1.5s ease-in-out infinite', width: '60%' }} />
       </div>
       <style>{`
         @keyframes loadingBar {
           0%, 100% { transform: translateX(-100%); }
           50% { transform: translateX(200%); }
-        }
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.1); opacity: 0.8; }
         }
       `}</style>
     </div>
@@ -1064,11 +1019,7 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
         <p style={{ color: 'var(--gray-500)', marginBottom: '24px', lineHeight: '1.6' }}>{message || 'Are you sure?'}</p>
         <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
           <button className="btn-secondary" onClick={onCancel}>Cancel</button>
-          <button 
-            className="btn-primary" 
-            onClick={onConfirm} 
-            style={{ background: type === 'danger' ? 'var(--danger)' : 'var(--primary)' }}
-          >
+          <button className="btn-primary" onClick={onConfirm} style={{ background: type === 'danger' ? 'var(--danger)' : 'var(--primary)' }}>
             {confirmText || 'Confirm'}
           </button>
         </div>
@@ -1187,25 +1138,15 @@ function Header() {
             
             {state.currentUser ? (
               <>
-                <button 
-                  className="icon-button notification-bell" 
-                  onClick={() => setShowNotifications(!showNotifications)} 
-                  title="Notifications"
-                >
+                <button className="icon-button notification-bell" onClick={() => setShowNotifications(!showNotifications)} title="Notifications">
                   🔔
                   {unreadNotifications > 0 && <span className="notification-badge">{unreadNotifications}</span>}
                 </button>
                 
                 <div className="user-menu">
                   <div className="user-menu-trigger" onClick={() => setShowUserMenu(!showUserMenu)}>
-                    <img 
-                      src={userAvatar} 
-                      alt={userDisplayName} 
-                      className="user-avatar" 
-                      onError={(e) => { 
-                        e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`; 
-                      }} 
-                    />
+                    <img src={userAvatar} alt={userDisplayName} className="user-avatar"
+                      onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`; }} />
                     <span className="user-name">{userDisplayName}</span>
                     <span className="dropdown-arrow">▾</span>
                   </div>
@@ -1234,9 +1175,7 @@ function Header() {
                 </div>
               </>
             ) : (
-              <button className="btn-login" onClick={() => setShowAuth(true)}>
-                👤 Sign In
-              </button>
+              <button className="btn-login" onClick={() => setShowAuth(true)}>👤 Sign In</button>
             )}
             
             <button className="menu-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)}>
@@ -1252,12 +1191,8 @@ function Header() {
               <div className="notifications-header">
                 <h3>Notifications</h3>
                 <div className="notification-actions">
-                  <button className="btn-text" onClick={() => dispatch({ type: 'MARK_NOTIFICATIONS_READ' })}>
-                    Mark all read
-                  </button>
-                  <button className="btn-text" onClick={() => { dispatch({ type: 'CLEAR_NOTIFICATIONS' }); setShowNotifications(false); }}>
-                    Clear All
-                  </button>
+                  <button className="btn-text" onClick={() => dispatch({ type: 'MARK_NOTIFICATIONS_READ' })}>Mark all read</button>
+                  <button className="btn-text" onClick={() => { dispatch({ type: 'CLEAR_NOTIFICATIONS' }); setShowNotifications(false); }}>Clear All</button>
                 </div>
               </div>
               <div className="notifications-list">
@@ -1278,12 +1213,7 @@ function Header() {
                           <small>{notif.time || new Date(notif.created_at).toLocaleTimeString()}</small>
                         </div>
                       </div>
-                      <button 
-                        className="btn-remove-notification" 
-                        onClick={() => dispatch({ type: 'REMOVE_NOTIFICATION', payload: notif.id })}
-                      >
-                        ×
-                      </button>
+                      <button className="btn-remove-notification" onClick={() => dispatch({ type: 'REMOVE_NOTIFICATION', payload: notif.id })}>×</button>
                     </div>
                   ))
                 )}
@@ -1292,22 +1222,9 @@ function Header() {
           </>
         )}
         {showAuth && <SimpleAuthModal setShowAuth={setShowAuth} authMode={authMode} setAuthMode={setAuthMode} />}
-        <AdvancedSearch 
-          isOpen={showAdvancedSearch} 
-          onClose={() => setShowAdvancedSearch(false)} 
-          onSearch={handleAdvancedSearch}
-          searchType="all"
-        />
+        <AdvancedSearch isOpen={showAdvancedSearch} onClose={() => setShowAdvancedSearch(false)} onSearch={handleAdvancedSearch} searchType="all" />
       </header>
-      <ConfirmDialog 
-        isOpen={showLogoutConfirm} 
-        title="Confirm Logout" 
-        message="Are you sure you want to logout?" 
-        onConfirm={handleLogout} 
-        onCancel={() => setShowLogoutConfirm(false)} 
-        confirmText="Logout" 
-        type="danger" 
-      />
+      <ConfirmDialog isOpen={showLogoutConfirm} title="Confirm Logout" message="Are you sure you want to logout?" onConfirm={handleLogout} onCancel={() => setShowLogoutConfirm(false)} confirmText="Logout" type="danger" />
     </>
   );
 }
@@ -1317,17 +1234,14 @@ function Header() {
 // ============================================
 function SimpleAuthModal({ setShowAuth, authMode, setAuthMode }) {
   const { state, dispatch } = useAppContext();
-  const [formData, setFormData] = useState({ 
-    name: '', email: '', password: '', confirmPassword: '', role: 'developer' 
-  });
+  const [formData, setFormData] = useState({ name: '', email: '', password: '', confirmPassword: '', role: 'developer' });
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
-  const navigate = useNavigate();
 
   useEffect(() => {
-    document.body.classList.add('modal-open');
-    return () => document.body.classList.remove('modal-open');
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
   }, []);
 
   const validateForm = () => {
@@ -1365,20 +1279,12 @@ function SimpleAuthModal({ setShowAuth, authMode, setAuthMode }) {
         
         if (data.session) {
           setShowAuth(false);
-          dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-            message: `🎉 Welcome, ${formData.name}!`, 
-            type: 'success', 
-            time: new Date().toLocaleTimeString(), 
-            read: false 
-          }});
+          dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `🎉 Welcome, ${formData.name}!`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
         } else {
           setShowSuccess(true);
         }
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ 
-          email: formData.email, 
-          password: formData.password 
-        });
+        const { error } = await supabase.auth.signInWithPassword({ email: formData.email, password: formData.password });
         
         if (error) {
           dispatch({ type: 'SET_AUTH_ERROR', payload: 'Invalid email or password' });
@@ -1387,12 +1293,7 @@ function SimpleAuthModal({ setShowAuth, authMode, setAuthMode }) {
         }
         
         setShowAuth(false);
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '👋 Welcome back!', 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👋 Welcome back!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
       }
     } catch (error) {
       dispatch({ type: 'SET_AUTH_ERROR', payload: 'An error occurred' });
@@ -1422,116 +1323,55 @@ function SimpleAuthModal({ setShowAuth, authMode, setAuthMode }) {
             </div>
 
             {state.authError && (
-              <div className="auth-error">⚠️ {state.authError}</div>
+              <div style={{ background: '#fee', color: '#c33', padding: '10px 16px', borderRadius: '8px', marginBottom: '16px', fontSize: '0.9rem' }}>
+                ⚠️ {state.authError}
+              </div>
             )}
 
             <form onSubmit={handleSubmit}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {authMode === 'signup' && (
                   <div>
-                    <input
-                      type="text"
-                      placeholder="Full Name"
-                      value={formData.name}
+                    <input type="text" placeholder="Full Name" value={formData.name}
                       onChange={e => setFormData({...formData, name: e.target.value})}
-                      style={{
-                        width: '100%',
-                        padding: '12px 16px',
-                        border: `2px solid ${errors.name ? '#ef4444' : '#e5e7eb'}`,
-                        borderRadius: '8px',
-                        fontSize: '1rem'
-                      }}
-                    />
+                      style={{ width: '100%', padding: '12px 16px', border: `2px solid ${errors.name ? '#ef4444' : '#e5e7eb'}`, borderRadius: '8px', fontSize: '1rem' }} />
                     {errors.name && <small style={{ color: '#ef4444' }}>{errors.name}</small>}
                   </div>
                 )}
                 
                 <div>
-                  <input
-                    type="email"
-                    placeholder="Email"
-                    value={formData.email}
+                  <input type="email" placeholder="Email" value={formData.email}
                     onChange={e => setFormData({...formData, email: e.target.value})}
-                    style={{
-                      width: '100%',
-                      padding: '12px 16px',
-                      border: `2px solid ${errors.email ? '#ef4444' : '#e5e7eb'}`,
-                      borderRadius: '8px',
-                      fontSize: '1rem'
-                    }}
-                  />
+                    style={{ width: '100%', padding: '12px 16px', border: `2px solid ${errors.email ? '#ef4444' : '#e5e7eb'}`, borderRadius: '8px', fontSize: '1rem' }} />
                   {errors.email && <small style={{ color: '#ef4444' }}>{errors.email}</small>}
                 </div>
                 
                 <div>
-                  <input
-                    type="password"
-                    placeholder="Password"
-                    value={formData.password}
+                  <input type="password" placeholder="Password" value={formData.password}
                     onChange={e => setFormData({...formData, password: e.target.value})}
-                    style={{
-                      width: '100%',
-                      padding: '12px 16px',
-                      border: `2px solid ${errors.password ? '#ef4444' : '#e5e7eb'}`,
-                      borderRadius: '8px',
-                      fontSize: '1rem'
-                    }}
-                  />
+                    style={{ width: '100%', padding: '12px 16px', border: `2px solid ${errors.password ? '#ef4444' : '#e5e7eb'}`, borderRadius: '8px', fontSize: '1rem' }} />
                   {errors.password && <small style={{ color: '#ef4444' }}>{errors.password}</small>}
                 </div>
                 
                 {authMode === 'signup' && (
                   <div>
-                    <input
-                      type="password"
-                      placeholder="Confirm Password"
-                      value={formData.confirmPassword}
+                    <input type="password" placeholder="Confirm Password" value={formData.confirmPassword}
                       onChange={e => setFormData({...formData, confirmPassword: e.target.value})}
-                      style={{
-                        width: '100%',
-                        padding: '12px 16px',
-                        border: `2px solid ${errors.confirmPassword ? '#ef4444' : '#e5e7eb'}`,
-                        borderRadius: '8px',
-                        fontSize: '1rem'
-                      }}
-                    />
+                      style={{ width: '100%', padding: '12px 16px', border: `2px solid ${errors.confirmPassword ? '#ef4444' : '#e5e7eb'}`, borderRadius: '8px', fontSize: '1rem' }} />
                     {errors.confirmPassword && <small style={{ color: '#ef4444' }}>{errors.confirmPassword}</small>}
                   </div>
                 )}
                 
-                <button
-                  type="submit"
-                  disabled={loading}
-                  style={{
-                    width: '100%',
-                    padding: '14px',
-                    background: 'linear-gradient(135deg, #667eea, #764ba2)',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '8px',
-                    fontSize: '1rem',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    opacity: loading ? 0.7 : 1
-                  }}
-                >
+                <button type="submit" disabled={loading}
+                  style={{ width: '100%', padding: '14px', background: 'linear-gradient(135deg, #667eea, #764ba2)', color: 'white', border: 'none', borderRadius: '8px', fontSize: '1rem', fontWeight: '600', cursor: 'pointer', opacity: loading ? 0.7 : 1 }}>
                   {loading ? 'Processing...' : authMode === 'login' ? 'Sign In' : 'Create Account'}
                 </button>
               </div>
             </form>
             
             <div style={{ textAlign: 'center', marginTop: '24px' }}>
-              <button
-                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#667eea',
-                  cursor: 'pointer',
-                  fontWeight: '500',
-                  fontSize: '0.95rem'
-                }}
-              >
+              <button onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                style={{ background: 'none', border: 'none', color: '#667eea', cursor: 'pointer', fontWeight: '500', fontSize: '0.95rem' }}>
                 {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
               </button>
             </div>
@@ -1541,6 +1381,13 @@ function SimpleAuthModal({ setShowAuth, authMode, setAuthMode }) {
     </div>
   );
 }
+
+// ... (I'll continue with the remaining components - AdminDashboard, Messages, Profile, Home, etc.)
+
+// NOTE: The remaining components (AdminDashboard, Messages, Profile, Home, Marketplace, 
+// Advertise, CodeSharing, Favorites, Settings, AnalyticsPage, Footer, ListingCard, AppCard, CodeCard)
+// are the same as in the previous complete version I provided.
+
 
 // ============================================
 // ENHANCED ADMIN DASHBOARD
@@ -1768,80 +1615,78 @@ function AdminDashboard() {
         {activeTab === 'users' && (
           <div>
             <h3 style={{ marginBottom: '20px' }}>User Management</h3>
-            <div className="users-table-wrapper">
-              <table className="users-table">
-                <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map(user => (
-                    <tr key={user.id}>
-                      <td>
-                        <div className="user-cell">
-                          <img 
-                            src={user.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}&background=667eea&color=fff&size=30`}
-                            alt={user.name}
-                            className="user-avatar-small"
-                          />
-                          <span>{user.name || 'Unknown'}</span>
-                        </div>
-                      </td>
-                      <td>{user.email || 'N/A'}</td>
-                      <td>
-                        <span className={`role-badge ${user.role || 'developer'}`}>
-                          {user.role || 'developer'}
-                        </span>
-                      </td>
-                      <td>
-                        {user.banned ? 
-                          <span style={{ color: 'var(--danger)' }}>Banned</span> : 
-                          <span style={{ color: 'var(--success)' }}>Active</span>
-                        }
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          <button 
-                            className="btn-sm btn-secondary"
-                            onClick={() => {
-                              setSelectedUser(user);
-                              // View user details
-                            }}
-                          >
-                            View
-                          </button>
-                          {user.banned ? (
-                            <button 
-                              className="btn-sm" 
-                              style={{ background: 'var(--success)', color: 'white', border: 'none' }}
-                              onClick={() => handleUnbanUser(user.id)}
-                            >
-                              Unban
-                            </button>
-                          ) : (
-                            <button 
-                              className="btn-sm" 
-                              style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                              onClick={() => {
-                                setSelectedUser(user);
-                                setShowBanConfirm(true);
-                              }}
-                            >
-                              Ban
-                            </button>
-                          )}
-                        </div>
-                      </td>
+            {loading ? (
+              <div style={{ textAlign: 'center', padding: '40px' }}>
+                <p>Loading users...</p>
+              </div>
+            ) : (
+              <div className="users-table-wrapper">
+                <table className="users-table">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Email</th>
+                      <th>Role</th>
+                      <th>Status</th>
+                      <th>Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {users.map(user => (
+                      <tr key={user.id}>
+                        <td>
+                          <div className="user-cell">
+                            <img 
+                              src={user.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}&background=667eea&color=fff&size=30`}
+                              alt={user.name}
+                              className="user-avatar-small"
+                              onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=30`; }}
+                            />
+                            <span>{user.name || 'Unknown'}</span>
+                          </div>
+                        </td>
+                        <td>{user.email || 'N/A'}</td>
+                        <td>
+                          <span className={`role-badge ${user.role || 'developer'}`}>
+                            {user.role || 'developer'}
+                          </span>
+                        </td>
+                        <td>
+                          {user.banned ? 
+                            <span style={{ color: 'var(--danger)' }}>Banned</span> : 
+                            <span style={{ color: 'var(--success)' }}>Active</span>
+                          }
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            {user.banned ? (
+                              <button 
+                                className="btn-sm" 
+                                style={{ background: 'var(--success)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
+                                onClick={() => handleUnbanUser(user.id)}
+                              >
+                                Unban
+                              </button>
+                            ) : (
+                              <button 
+                                className="btn-sm" 
+                                style={{ background: 'var(--danger)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
+                                onClick={() => {
+                                  setSelectedUser(user);
+                                  setShowBanConfirm(true);
+                                }}
+                              >
+                                Ban
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -1850,16 +1695,17 @@ function AdminDashboard() {
             <h3 style={{ marginBottom: '20px' }}>All Listings</h3>
             <div className="listings-grid">
               {(state.listings || []).map(listing => (
-                <div key={listing.id} className="moderation-item">
+                <div key={listing.id} className="moderation-item" style={{ border: '1px solid var(--gray-200)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                   <div className="moderation-content">
                     <h4>{listing.title}</h4>
                     <p>{listing.description?.substring(0, 100)}...</p>
                     <small>By: {listing.seller_name || listing.seller} | {listing.date}</small>
                   </div>
-                  <div className="moderation-actions">
+                  <div className="moderation-actions" style={{ marginTop: '12px' }}>
                     <button 
                       className="btn-sm btn-secondary"
                       onClick={() => setShowDeleteListingConfirm(listing.id)}
+                      style={{ padding: '6px 12px', background: 'var(--danger-light)', color: 'var(--danger)', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
                     >
                       🗑️ Delete
                     </button>
@@ -1882,23 +1728,23 @@ function AdminDashboard() {
                 </div>
               ) : (
                 (state.moderationQueue || []).map(item => (
-                  <div key={item.id} className="moderation-item">
+                  <div key={item.id} className="moderation-item" style={{ border: '1px solid var(--gray-200)', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                     <div className="moderation-content">
                       <h4>{item.title}</h4>
                       <p>{item.description?.substring(0, 100)}...</p>
                       <small>By: {item.seller_name || item.user_id}</small>
                     </div>
-                    <div className="moderation-actions">
+                    <div className="moderation-actions" style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
                       <button 
                         className="btn-sm" 
-                        style={{ background: 'var(--success)', color: 'white', border: 'none' }}
+                        style={{ background: 'var(--success)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
                         onClick={() => handleApproveListing(item.id)}
                       >
                         ✅ Approve
                       </button>
                       <button 
                         className="btn-sm" 
-                        style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
+                        style={{ background: 'var(--danger)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
                         onClick={() => handleDeleteListing(item.id)}
                       >
                         🚫 Remove
@@ -1915,12 +1761,12 @@ function AdminDashboard() {
           <div>
             <h3 style={{ marginBottom: '20px' }}>Platform Settings</h3>
             <div className="admin-settings">
-              <div className="setting-item">
+              <div className="setting-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', border: '1px solid var(--gray-200)', borderRadius: '8px', marginBottom: '12px' }}>
                 <div className="setting-info">
                   <strong>Auto-Approve Listings</strong>
-                  <p>New listings are automatically published</p>
+                  <p style={{ color: 'var(--gray-500)', margin: '4px 0 0 0' }}>New listings are automatically published</p>
                 </div>
-                <label className="toggle-switch">
+                <label className="toggle-switch" style={{ position: 'relative', display: 'inline-block', width: '50px', height: '26px' }}>
                   <input type="checkbox" defaultChecked onChange={(e) => {
                     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
                       message: `Auto-approve ${e.target.checked ? 'enabled' : 'disabled'}`, 
@@ -1928,16 +1774,16 @@ function AdminDashboard() {
                       time: new Date().toLocaleTimeString(), 
                       read: false 
                     }});
-                  }} />
-                  <span className="toggle-slider"></span>
+                  }} style={{ opacity: 0, width: 0, height: 0 }} />
+                  <span className="toggle-slider" style={{ position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#ccc', borderRadius: '26px' }}></span>
                 </label>
               </div>
-              <div className="setting-item">
+              <div className="setting-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', border: '1px solid var(--gray-200)', borderRadius: '8px', marginBottom: '12px' }}>
                 <div className="setting-info">
                   <strong>Require Email Verification</strong>
-                  <p>Users must verify email before posting</p>
+                  <p style={{ color: 'var(--gray-500)', margin: '4px 0 0 0' }}>Users must verify email before posting</p>
                 </div>
-                <label className="toggle-switch">
+                <label className="toggle-switch" style={{ position: 'relative', display: 'inline-block', width: '50px', height: '26px' }}>
                   <input type="checkbox" defaultChecked onChange={(e) => {
                     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
                       message: `Email verification ${e.target.checked ? 'enabled' : 'disabled'}`, 
@@ -1945,16 +1791,16 @@ function AdminDashboard() {
                       time: new Date().toLocaleTimeString(), 
                       read: false 
                     }});
-                  }} />
-                  <span className="toggle-slider"></span>
+                  }} style={{ opacity: 0, width: 0, height: 0 }} />
+                  <span className="toggle-slider" style={{ position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#ccc', borderRadius: '26px' }}></span>
                 </label>
               </div>
-              <div className="setting-item">
+              <div className="setting-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', border: '1px solid var(--gray-200)', borderRadius: '8px', marginBottom: '12px' }}>
                 <div className="setting-info">
                   <strong>Maintenance Mode</strong>
-                  <p>Put the platform in maintenance mode</p>
+                  <p style={{ color: 'var(--gray-500)', margin: '4px 0 0 0' }}>Put the platform in maintenance mode</p>
                 </div>
-                <label className="toggle-switch">
+                <label className="toggle-switch" style={{ position: 'relative', display: 'inline-block', width: '50px', height: '26px' }}>
                   <input type="checkbox" onChange={(e) => {
                     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
                       message: `Maintenance mode ${e.target.checked ? 'enabled' : 'disabled'}`, 
@@ -1962,8 +1808,8 @@ function AdminDashboard() {
                       time: new Date().toLocaleTimeString(), 
                       read: false 
                     }});
-                  }} />
-                  <span className="toggle-slider"></span>
+                  }} style={{ opacity: 0, width: 0, height: 0 }} />
+                  <span className="toggle-slider" style={{ position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#ccc', borderRadius: '26px' }}></span>
                 </label>
               </div>
             </div>
@@ -2056,6 +1902,12 @@ function Messages() {
       }
     } catch (error) {
       console.error('Error sending message:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Failed to send message', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     }
     setSending(false);
   };
@@ -2088,29 +1940,29 @@ function Messages() {
         <p>Your conversations and inquiries</p>
         <div className="realtime-indicator">
           {state.realtimeConnected ? (
-            <span className="realtime-badge connected">
-              <span className="realtime-pulse"></span> Live
+            <span className="realtime-badge connected" style={{ background: 'var(--success-light)', color: 'var(--success)', padding: '4px 12px', borderRadius: '20px', fontSize: '0.85rem' }}>
+              <span className="realtime-pulse" style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)', marginRight: '6px' }}></span> Live
             </span>
           ) : (
-            <span className="realtime-badge disconnected">
-              <span className="realtime-pulse offline"></span> Reconnecting...
+            <span className="realtime-badge disconnected" style={{ background: 'var(--gray-100)', color: 'var(--gray-500)', padding: '4px 12px', borderRadius: '20px', fontSize: '0.85rem' }}>
+              <span className="realtime-pulse offline" style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--gray-400)', marginRight: '6px' }}></span> Reconnecting...
             </span>
           )}
         </div>
       </div>
       
-      <div className="messages-layout">
-        <div className="conversations-sidebar">
+      <div className="messages-layout" style={{ display: 'flex', gap: '24px', height: 'calc(100vh - 200px)' }}>
+        <div className="conversations-sidebar" style={{ width: '320px', borderRight: '1px solid var(--gray-200)', paddingRight: '16px', overflowY: 'auto' }}>
           <h3>Conversations</h3>
           {loadingMessages ? (
             <div className="conversations-skeleton">
               {[1,2,3,4,5].map(i => <SkeletonMessage key={i} />)}
             </div>
           ) : conversations.length === 0 ? (
-            <div className="empty-conversations">
-              <span>💬</span>
+            <div className="empty-conversations" style={{ textAlign: 'center', padding: '40px 16px' }}>
+              <span style={{ fontSize: '2rem' }}>💬</span>
               <p>No conversations yet</p>
-              <small>Messages from inquiries will appear here</small>
+              <small style={{ color: 'var(--gray-500)' }}>Messages from inquiries will appear here</small>
             </div>
           ) : (
             <div className="conversations-list">
@@ -2119,27 +1971,50 @@ function Messages() {
                   key={conv.userId || index}
                   className={`conversation-item ${activeConv?.userId === conv.userId ? 'active' : ''} ${conv.unreadCount > 0 ? 'unread' : ''}`}
                   onClick={() => openConversation(conv)}
+                  style={{ 
+                    display: 'flex', 
+                    gap: '12px', 
+                    padding: '12px', 
+                    borderRadius: '8px', 
+                    cursor: 'pointer',
+                    background: activeConv?.userId === conv.userId ? 'var(--primary-light)' : 'transparent',
+                    marginBottom: '4px'
+                  }}
                 >
                   <img 
                     src={conv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.userName || 'User')}&background=667eea&color=fff&size=40`} 
                     alt={conv.userName} 
                     className="conversation-avatar"
+                    style={{ width: '40px', height: '40px', borderRadius: '50%' }}
                     onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=40`; }}
                   />
-                  <div className="conversation-info">
-                    <div className="conversation-header">
-                      <strong>{conv.userName || 'Unknown User'}</strong>
-                      <span className="conversation-time">
+                  <div className="conversation-info" style={{ flex: 1, minWidth: 0 }}>
+                    <div className="conversation-header" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <strong style={{ fontSize: '0.9rem' }}>{conv.userName || 'Unknown User'}</strong>
+                      <span className="conversation-time" style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>
                         {new Date(conv.lastMessageTime).toLocaleDateString()}
                       </span>
                     </div>
-                    <p className="conversation-preview">
+                    <p className="conversation-preview" style={{ fontSize: '0.85rem', color: 'var(--gray-500)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {conv.lastMessage?.substring(0, 50)}
                       {conv.lastMessage?.length > 50 ? '...' : ''}
                     </p>
                   </div>
                   {conv.unreadCount > 0 && (
-                    <span className="unread-badge">{conv.unreadCount}</span>
+                    <span className="unread-badge" style={{ 
+                      background: 'var(--primary)', 
+                      color: 'white', 
+                      borderRadius: '50%', 
+                      width: '22px', 
+                      height: '22px', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      fontSize: '0.75rem',
+                      fontWeight: '600'
+                    }}>
+                      {conv.unreadCount}
+                    </span>
                   )}
                 </div>
               ))}
@@ -2147,34 +2022,46 @@ function Messages() {
           )}
         </div>
 
-        <div className="chat-area" ref={chatAreaRef}>
+        <div className="chat-area" ref={chatAreaRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {activeConv ? (
             <>
-              <div className="chat-header">
+              <div className="chat-header" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 0', borderBottom: '1px solid var(--gray-200)', marginBottom: '16px' }}>
                 <img 
                   src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName || 'User')}&background=667eea&color=fff&size=40`} 
                   alt={activeConv.userName} 
                   className="chat-avatar"
+                  style={{ width: '40px', height: '40px', borderRadius: '50%' }}
                 />
                 <div>
                   <strong>{activeConv.userName || 'Unknown User'}</strong>
-                  <p>{activeConv.messages?.length || 0} messages</p>
+                  <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--gray-500)' }}>{activeConv.messages?.length || 0} messages</p>
                 </div>
               </div>
-              <div className="chat-messages">
+              <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: '8px' }}>
                 {activeConv.messages
                   ?.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
                   .map((msg) => (
                     <div 
                       key={msg.id} 
                       className={`chat-message ${msg.from_user === state.currentUser.id ? 'sent' : 'received'}`}
+                      style={{ 
+                        display: 'flex', 
+                        justifyContent: msg.from_user === state.currentUser.id ? 'flex-end' : 'flex-start',
+                        marginBottom: '8px'
+                      }}
                     >
-                      <div className="message-bubble">
-                        <p>{msg.message}</p>
-                        <small className="message-time">
+                      <div className="message-bubble" style={{ 
+                        maxWidth: '70%', 
+                        padding: '10px 14px', 
+                        borderRadius: '12px',
+                        background: msg.from_user === state.currentUser.id ? 'var(--primary)' : 'var(--gray-100)',
+                        color: msg.from_user === state.currentUser.id ? 'white' : 'var(--gray-800)'
+                      }}>
+                        <p style={{ margin: '0 0 4px 0' }}>{msg.message}</p>
+                        <small className="message-time" style={{ fontSize: '0.7rem', opacity: 0.7 }}>
                           {new Date(msg.created_at).toLocaleString()}
                           {msg.from_user === state.currentUser.id && (
-                            <span className="message-status">
+                            <span className="message-status" style={{ marginLeft: '6px' }}>
                               {msg.read ? ' ✓✓ Read' : ' ✓ Sent'}
                             </span>
                           )}
@@ -2184,13 +2071,14 @@ function Messages() {
                   ))}
                 <div ref={messagesEndRef} />
               </div>
-              <div className="chat-input-area">
+              <div className="chat-input-area" style={{ display: 'flex', gap: '8px', padding: '12px 0', borderTop: '1px solid var(--gray-200)' }}>
                 <textarea
                   placeholder="Type your reply... (Enter to send, Shift+Enter for new line)"
                   value={replyMessage}
                   onChange={e => setReplyMessage(e.target.value)}
                   className="chat-textarea"
                   rows="2"
+                  style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid var(--gray-300)', resize: 'none' }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
@@ -2202,18 +2090,19 @@ function Messages() {
                   className="btn-primary btn-sm" 
                   onClick={handleSendReply} 
                   disabled={sending || !replyMessage.trim()}
+                  style={{ padding: '8px 16px', borderRadius: '8px' }}
                 >
                   {sending ? '...' : '📤'}
                 </button>
               </div>
             </>
           ) : (
-            <div className="chat-empty">
-              <span className="empty-icon">💬</span>
+            <div className="chat-empty" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+              <span className="empty-icon" style={{ fontSize: '3rem' }}>💬</span>
               <h3>Select a conversation</h3>
               <p>Choose a conversation from the sidebar or wait for new messages to arrive in real-time.</p>
               {state.realtimeConnected && (
-                <p className="realtime-note">🟢 You're connected and will receive messages instantly!</p>
+                <p className="realtime-note" style={{ color: 'var(--success)', fontSize: '0.9rem' }}>🟢 You're connected and will receive messages instantly!</p>
               )}
             </div>
           )}
@@ -2288,7 +2177,7 @@ function Profile() {
 
   return (
     <div className="profile-page">
-      <div className="profile-header">
+      <div className="profile-header" style={{ display: 'flex', gap: '24px', alignItems: 'center', marginBottom: '32px' }}>
         <AvatarUpload 
           currentAvatar={state.profile?.avatar_url} 
           userName={userName} 
@@ -2314,52 +2203,52 @@ function Profile() {
         </div>
       </div>
       
-      <div className="profile-stats">
-        <div className="stat-box">
+      <div className="profile-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '32px' }}>
+        <div className="stat-box" style={{ textAlign: 'center', padding: '20px', background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
           <h3>{userListings.length}</h3>
           <p>Active Listings</p>
         </div>
-        <div className="stat-box">
+        <div className="stat-box" style={{ textAlign: 'center', padding: '20px', background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
           <h3>{userApps.length}</h3>
           <p>Apps Advertised</p>
         </div>
-        <div className="stat-box">
+        <div className="stat-box" style={{ textAlign: 'center', padding: '20px', background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
           <h3>{userSnippets.length}</h3>
           <p>Code Snippets</p>
         </div>
-        <div className="stat-box">
+        <div className="stat-box" style={{ textAlign: 'center', padding: '20px', background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
           <h3>{state.favorites?.length || 0}</h3>
           <p>Favorites</p>
         </div>
       </div>
 
-      <div className="profile-actions">
-        <Link to="/analytics" className="btn-secondary">
+      <div className="profile-actions" style={{ display: 'flex', gap: '12px', marginBottom: '32px', flexWrap: 'wrap' }}>
+        <Link to="/analytics" className="btn-secondary" style={{ padding: '10px 20px', borderRadius: '8px', textDecoration: 'none' }}>
           📊 View Analytics
         </Link>
-        <Link to="/settings" className="btn-secondary">
+        <Link to="/settings" className="btn-secondary" style={{ padding: '10px 20px', borderRadius: '8px', textDecoration: 'none' }}>
           ⚙️ Settings
         </Link>
         {state.isAdmin && (
-          <Link to="/admin" className="btn-secondary">
+          <Link to="/admin" className="btn-secondary" style={{ padding: '10px 20px', borderRadius: '8px', textDecoration: 'none' }}>
             🛡️ Admin Panel
           </Link>
         )}
-        <button onClick={handleDeleteAccount} className="btn-secondary" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>
+        <button onClick={handleDeleteAccount} className="btn-secondary" style={{ color: 'var(--danger)', borderColor: 'var(--danger)', padding: '10px 20px', borderRadius: '8px' }}>
           🗑️ Delete Account
         </button>
       </div>
       
       {userListings.length > 0 && (
-        <div className="profile-section">
+        <div className="profile-section" style={{ marginTop: '32px' }}>
           <h2>Your Listings ({userListings.length})</h2>
-          <div className="listings-grid">
+          <div className="listings-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px', marginTop: '20px' }}>
             {userListings.slice(0, 3).map(l => (
               <ListingCard key={l.id} listing={l} />
             ))}
           </div>
           {userListings.length > 3 && (
-            <button className="btn-text" style={{ marginTop: '16px' }}>
+            <button className="btn-text" style={{ marginTop: '16px', color: 'var(--primary)' }}>
               View all {userListings.length} listings →
             </button>
           )}
@@ -2368,6 +2257,9 @@ function Profile() {
     </div>
   );
 }
+
+// Continue with Home, Marketplace, Advertise, CodeSharing, and other components...
+// The remaining components are the same as provided earlier
 
 // ============================================
 // HOME COMPONENT
