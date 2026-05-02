@@ -6167,3 +6167,698 @@ input:checked + .toggle-slider:before {
   -webkit-background-clip: text;
   background-clip: text;
 }
+/* ============================================
+   NEW COMPONENT STYLES - ADD TO App.css
+   ============================================ */
+
+/* ============================================
+   DELETE BUTTONS ON CARDS
+   ============================================ */
+.delete-button {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 255, 255, 0.95);
+  border: none;
+  border-radius: 50%;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-sm);
+  z-index: 2;
+}
+
+.delete-button:hover {
+  background: var(--danger-light);
+  transform: scale(1.1);
+}
+
+/* ============================================
+   CONVERSATION DELETE BUTTONS
+   ============================================ */
+.conv-delete-btn {
+  display: none;
+  background: none;
+  border: none;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--gray-400);
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+  z-index: 5;
+}
+
+.conversation-item:hover .conv-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conv-delete-btn:hover {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
+/* ============================================
+   CHAT DELETE BUTTON
+   ============================================ */
+.chat-delete-btn {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  padding: 6px 12px;
+}
+
+/* ============================================
+   OPTIMISTIC MESSAGES
+   ============================================ */
+.chat-message.optimistic .message-bubble {
+  opacity: 0.7;
+  position: relative;
+}
+
+.chat-message.optimistic .message-bubble::after {
+  content: '⏳';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 0.75rem;
+}
+
+/* ============================================
+   MESSAGE STATUS INDICATORS
+   ============================================ */
+.message-status {
+  font-size: 0.65rem;
+  margin-left: 4px;
+}
+
+/* ============================================
+   REAL-TIME CONNECTION INDICATOR
+   ============================================ */
+.realtime-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  background: var(--success);
+  border-radius: 50%;
+  border: 2px solid var(--white);
+  animation: realtimePulse 2s infinite;
+}
+
+@keyframes realtimePulse {
+  0%, 100% { 
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+  }
+  50% { 
+    opacity: 0.5;
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+}
+
+.realtime-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.realtime-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.realtime-badge.connected {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.realtime-badge.disconnected {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+.realtime-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.realtime-pulse:not(.offline) {
+  background: var(--success);
+  animation: realtimePulse 1.5s infinite;
+}
+
+.realtime-pulse.offline {
+  background: var(--warning);
+}
+
+.realtime-note {
+  color: var(--success);
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+
+/* ============================================
+   CONVERSATION COUNT BADGE
+   ============================================ */
+.conv-count {
+  background: var(--gray-200);
+  color: var(--gray-600);
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  margin-left: 6px;
+}
+
+/* ============================================
+   PROFILE ROLE BADGE
+   ============================================ */
+.profile-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--gray-100);
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.85rem;
+  color: var(--gray-700);
+  font-weight: 500;
+}
+
+.role-icon {
+  font-size: 1rem;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 32px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.profile-actions .btn-secondary {
+  flex: 0 1 auto;
+}
+
+.profile-actions .btn-secondary:last-child {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.profile-actions .btn-secondary:last-child:hover {
+  background: var(--danger-light);
+}
+
+/* ============================================
+   CHART STYLES FOR ANALYTICS
+   ============================================ */
+.chart-container {
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--gray-100);
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.chart-container h3 {
+  margin-bottom: 20px;
+  color: var(--gray-800);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.chart-placeholder {
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bar-chart {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bar-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.bar-label {
+  width: 120px;
+  font-size: 0.85rem;
+  color: var(--gray-600);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bar-wrapper {
+  flex: 1;
+  background: var(--gray-100);
+  border-radius: var(--radius);
+  height: 32px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: width 1s ease;
+  min-width: 60px;
+}
+
+/* ============================================
+   DANGER ZONE STYLES
+   ============================================ */
+.danger-zone-card {
+  background: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-xl);
+  padding: 24px;
+  margin-bottom: 16px;
+}
+
+.danger-zone-card h4 {
+  font-size: 1.1rem;
+  margin-bottom: 8px;
+}
+
+.danger-zone-card p {
+  color: var(--gray-500);
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.danger-zone-card.warning h4 {
+  color: var(--warning);
+}
+
+/* ============================================
+   SETTINGS FORM ENHANCEMENTS
+   ============================================ */
+.settings-textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 2px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  background: var(--white);
+  color: var(--gray-800);
+  resize: vertical;
+  min-height: 100px;
+}
+
+.settings-textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.notification-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.theme-toggle-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  background: var(--gray-50);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--gray-100);
+  margin-bottom: 16px;
+}
+
+.theme-info strong {
+  display: block;
+  color: var(--gray-800);
+  margin-bottom: 4px;
+}
+
+.theme-info p {
+  color: var(--gray-500);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.theme-toggle {
+  padding: 10px 20px;
+  background: var(--gray-200);
+  border: 2px solid var(--gray-300);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-size: 0.95rem;
+  font-weight: 500;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.theme-toggle:hover {
+  background: var(--gray-300);
+  transform: translateY(-1px);
+}
+
+/* ============================================
+   ADMIN LISTINGS ENHANCEMENTS
+   ============================================ */
+.admin-listings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-listing-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius-lg);
+  gap: 16px;
+  transition: background var(--transition-fast);
+}
+
+.admin-listing-item:hover {
+  background: var(--gray-50);
+}
+
+.admin-listing-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-listing-info h4 {
+  font-size: 0.95rem;
+  color: var(--gray-800);
+  margin-bottom: 4px;
+}
+
+.admin-listing-info p {
+  color: var(--gray-500);
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+
+.admin-listing-info small {
+  color: var(--gray-400);
+  font-size: 0.75rem;
+}
+
+.admin-listing-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ============================================
+   ADMIN USERS TABLE
+   ============================================ */
+.admin-users-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.admin-table-header {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr 1fr;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--gray-50);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.admin-table-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr 1fr;
+  gap: 12px;
+  padding: 12px 16px;
+  align-items: center;
+  border-top: 1px solid var(--gray-100);
+  transition: background var(--transition-fast);
+  font-size: 0.9rem;
+}
+
+.admin-table-row:hover {
+  background: var(--gray-50);
+}
+
+.admin-user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.admin-user-email {
+  color: var(--gray-500);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* ============================================
+   ROLE BADGES
+   ============================================ */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.role-admin {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+  color: var(--primary);
+}
+
+.role-developer, 
+.role-user {
+  background: var(--gray-100);
+  color: var(--gray-600);
+}
+
+/* ============================================
+   PLATFORM BADGE ENHANCEMENTS
+   ============================================ */
+.platform-badge.web { 
+  background: #dbeafe; 
+  color: #1e40af; 
+}
+
+.platform-badge.ios { 
+  background: #fce7f3; 
+  color: #9d174d; 
+}
+
+.platform-badge.android { 
+  background: #d1fae5; 
+  color: #065f46; 
+}
+
+.platform-badge.desktop { 
+  background: #fed7aa; 
+  color: #9a3412; 
+}
+
+.platform-badge.cross-platform,
+.platform-badge.cross-platform { 
+  background: #e0e7ff; 
+  color: #3730a3; 
+}
+
+/* ============================================
+   RESPONSIVE IMPROVEMENTS FOR NEW COMPONENTS
+   ============================================ */
+@media (max-width: 768px) {
+  .admin-table-header {
+    display: none;
+  }
+  
+  .admin-table-row {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 8px;
+  }
+  
+  .admin-user-email {
+    display: none;
+  }
+  
+  .admin-listing-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .admin-listing-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  
+  .profile-actions {
+    flex-direction: column;
+  }
+  
+  .profile-actions .btn-secondary {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+  }
+  
+  .bar-label {
+    width: 80px;
+    font-size: 0.75rem;
+  }
+  
+  .conv-delete-btn {
+    display: flex;
+  }
+}
+
+@media (max-width: 480px) {
+  .chat-delete-btn {
+    font-size: 0.75rem;
+    padding: 6px 10px;
+  }
+  
+  .theme-toggle-section {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
+
+/* ============================================
+   DARK THEME OVERRIDES FOR NEW COMPONENTS
+   ============================================ */
+.App.dark .delete-button {
+  background: rgba(55, 65, 81, 0.95);
+}
+
+.App.dark .delete-button:hover {
+  background: var(--danger-light);
+}
+
+.App.dark .conv-delete-btn:hover {
+  background: var(--danger-light);
+}
+
+.App.dark .profile-role {
+  background: var(--gray-700);
+  color: var(--gray-300);
+}
+
+.App.dark .chart-container {
+  background: var(--gray-800);
+  border-color: var(--gray-700);
+}
+
+.App.dark .bar-wrapper {
+  background: var(--gray-700);
+}
+
+.App.dark .danger-zone-card {
+  background: var(--gray-800);
+  border-color: var(--gray-700);
+}
+
+.App.dark .settings-textarea {
+  background: var(--gray-700);
+  border-color: var(--gray-600);
+  color: var(--gray-100);
+}
+
+.App.dark .theme-toggle-section {
+  background: var(--gray-700);
+  border-color: var(--gray-600);
+}
+
+.App.dark .theme-toggle {
+  background: var(--gray-600);
+  border-color: var(--gray-500);
+  color: var(--gray-100);
+}
+
+.App.dark .theme-toggle:hover {
+  background: var(--gray-500);
+}
+
+.App.dark .role-developer,
+.App.dark .role-user {
+  background: var(--gray-700);
+  color: var(--gray-300);
+}
+
+/* ============================================
+   SAFE AREA SUPPORT FOR MOBILE
+   ============================================ */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .chat-input-area {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  
+  .header {
+    padding-top: env(safe-area-inset-top);
+  }
+  
+  .footer {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+}
