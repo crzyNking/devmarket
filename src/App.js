@@ -9,6 +9,101 @@ import { analytics } from './utils/analytics';
 import './App.css';
 
 // ============================================
+// LOCAL STORAGE HELPERS (conversations / admin moderation)
+// ============================================
+function safeReadJson(key, fallback) {
+  try {
+    if (typeof localStorage === 'undefined') return fallback;
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const v = JSON.parse(raw);
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function getDeletedConversationPeers(userId) {
+  const arr = safeReadJson(`devMarketDeletedPeers:${userId}`, []);
+  return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+
+function persistDeletedConversationPeer(userId, otherUserId) {
+  if (!userId || !otherUserId || userId === otherUserId) return;
+  const s = new Set(getDeletedConversationPeers(userId));
+  s.add(otherUserId);
+  localStorage.setItem(`devMarketDeletedPeers:${userId}`, JSON.stringify([...s]));
+}
+
+function clearDeletedConversationPeer(userId, otherUserId) {
+  if (!userId || !otherUserId) return;
+  const next = getDeletedConversationPeers(userId).filter((id) => id !== otherUserId);
+  localStorage.setItem(`devMarketDeletedPeers:${userId}`, JSON.stringify(next));
+}
+
+function readHiddenListingIds() {
+  const arr = safeReadJson('devMarketHiddenListingIds', []);
+  return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+
+/** Build conversation list; skips pairs the user chose to hide / delete-from-inbox */
+function sortMessagesIntoConversations(messages, userId, deletedPeersSet) {
+  const conversationMap = new Map();
+
+  messages.forEach((msg) => {
+    const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
+    if (deletedPeersSet?.has(otherUserId)) return;
+    const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
+    const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
+
+    if (!conversationMap.has(otherUserId)) {
+      conversationMap.set(otherUserId, {
+        userId: otherUserId,
+        userName: otherUserName || 'Unknown User',
+        userAvatar: otherUserAvatar,
+        lastMessage: msg.message,
+        lastMessageTime: msg.created_at,
+        unreadCount: 0,
+        messages: []
+      });
+    }
+
+    const conv = conversationMap.get(otherUserId);
+    conv.messages.push(msg);
+
+    if (!msg.read && msg.to_user === userId) {
+      conv.unreadCount++;
+    }
+
+    if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
+      conv.lastMessage = msg.message;
+      conv.lastMessageTime = msg.created_at;
+    }
+  });
+
+  return Array.from(conversationMap.values()).sort(
+    (a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime)
+  );
+}
+
+function buildAndDispatchConversations(messages, userId, dispatch, options = {}) {
+  const deleted = new Set(getDeletedConversationPeers(userId));
+  const conversations = sortMessagesIntoConversations(messages, userId, deleted);
+  dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
+  const keepUserId = options.activeUserId;
+  if (keepUserId) {
+    const updated = conversations.find((c) => c.userId === keepUserId);
+    if (updated) dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: updated });
+  }
+}
+
+function messageProfileFields(state) {
+  const name = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
+  const avatar = state.profile?.avatar_url || null;
+  return { from_name: name, from_avatar: avatar };
+}
+
+// ============================================
 // GLOBAL CONTEXT
 // ============================================
 const AppContext = createContext();
@@ -35,7 +130,10 @@ const initialState = {
   onlineUsers: [],
   analyticsData: null,
   isAdmin: false,
-  moderationQueue: []
+  moderationQueue: [],
+  maintenanceMode: typeof localStorage !== 'undefined' && localStorage.getItem('devMarketMaintenance') === 'true',
+  hiddenListingIds: typeof localStorage !== 'undefined' ? readHiddenListingIds() : [],
+  avatarCacheKey: 0
 };
 
 function appReducer(state, action) {
@@ -54,8 +152,18 @@ function appReducer(state, action) {
       return { ...state, profile: action.payload };
     case 'UPDATE_PROFILE': 
       return { ...state, profile: { ...state.profile, ...action.payload } };
-    case 'UPDATE_AVATAR':
-      return { ...state, profile: { ...state.profile, avatar_url: action.payload } };
+    case 'UPDATE_AVATAR': {
+      const url = action.payload;
+      return {
+        ...state,
+        profile: state.profile ? { ...state.profile, avatar_url: url } : { avatar_url: url },
+        currentUser:
+          state.currentUser && typeof state.currentUser === 'object'
+            ? { ...state.currentUser, avatar_url: url }
+            : state.currentUser,
+        avatarCacheKey: Date.now()
+      };
+    }
     case 'SET_LISTINGS': 
       return { ...state, listings: action.payload || [] };
     case 'ADD_LISTING': 
@@ -90,8 +198,12 @@ function appReducer(state, action) {
       return { ...state, notifications: (state.notifications || []).map(n => ({ ...n, read: true })) };
     case 'SET_MESSAGES': 
       return { ...state, messages: action.payload || [] };
-    case 'ADD_MESSAGE': 
-      return { ...state, messages: [action.payload, ...(state.messages || [])] };
+    case 'ADD_MESSAGE': {
+      const id = action.payload?.id;
+      const list = state.messages || [];
+      if (id != null && list.some((m) => m.id === id)) return state;
+      return { ...state, messages: [action.payload, ...list] };
+    }
     case 'SET_CONVERSATIONS':
       return { ...state, conversations: action.payload || [] };
     case 'UPDATE_CONVERSATION':
@@ -101,25 +213,46 @@ function appReducer(state, action) {
           c.userId === action.payload.userId ? { ...c, ...action.payload } : c
         )
       };
-    case 'ADD_CONVERSATION_MESSAGE':
-      return {
-        ...state,
-        conversations: (state.conversations || []).map(c => {
-          if (c.userId === action.payload.otherUserId) {
-            return {
-              ...c,
-              messages: [...c.messages, action.payload.message],
-              lastMessage: action.payload.message.message,
-              lastMessageTime: action.payload.message.created_at,
-              unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
-            };
-          }
-          if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
-            return c;
-          }
-          return c;
-        })
-      };
+    case 'ADD_CONVERSATION_MESSAGE': {
+      const { otherUserId, message } = action.payload;
+      const uid = state.currentUser?.id;
+      if (!otherUserId || !message || !uid) return state;
+      const conversations = [...(state.conversations || [])];
+      const idx = conversations.findIndex((c) => c.userId === otherUserId);
+      const otherUserName =
+        message.from_user === uid ? message.to_name : message.from_name;
+      const otherUserAvatar =
+        message.from_user === uid ? message.to_avatar : message.from_avatar;
+      const isUnreadInbound = message.to_user === uid;
+
+      if (idx >= 0) {
+        const c = conversations[idx];
+        const already = c.messages?.some((m) => m.id === message.id);
+        const nextMessages = already ? c.messages || [] : [...(c.messages || []), message];
+        const updated = {
+          ...c,
+          userName: otherUserName || c.userName,
+          userAvatar: otherUserAvatar || c.userAvatar,
+          messages: nextMessages,
+          lastMessage: message.message,
+          lastMessageTime: message.created_at,
+          unreadCount: isUnreadInbound && !already ? (c.unreadCount || 0) + 1 : c.unreadCount || 0
+        };
+        conversations.splice(idx, 1);
+        conversations.unshift(updated);
+      } else {
+        conversations.unshift({
+          userId: otherUserId,
+          userName: otherUserName || message.from_name || message.to_name || 'User',
+          userAvatar: otherUserAvatar,
+          lastMessage: message.message,
+          lastMessageTime: message.created_at,
+          unreadCount: isUnreadInbound ? 1 : 0,
+          messages: [message]
+        });
+      }
+      return { ...state, conversations };
+    }
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversation: action.payload };
     case 'MARK_CONVERSATION_READ':
@@ -149,6 +282,29 @@ function appReducer(state, action) {
       return { ...state, isAdmin: action.payload };
     case 'SET_MODERATION_QUEUE':
       return { ...state, moderationQueue: action.payload || [] };
+    case 'SET_MAINTENANCE_MODE': {
+      const on = !!action.payload;
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('devMarketMaintenance', on ? 'true' : 'false');
+      }
+      return { ...state, maintenanceMode: on };
+    }
+    case 'SET_HIDDEN_LISTING_IDS':
+      return { ...state, hiddenListingIds: action.payload || [] };
+    case 'ADD_HIDDEN_LISTING': {
+      const next = [...new Set([...(state.hiddenListingIds || []), action.payload])];
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('devMarketHiddenListingIds', JSON.stringify(next));
+      }
+      return { ...state, hiddenListingIds: next };
+    }
+    case 'REMOVE_HIDDEN_LISTING': {
+      const next = (state.hiddenListingIds || []).filter((id) => id !== action.payload);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('devMarketHiddenListingIds', JSON.stringify(next));
+      }
+      return { ...state, hiddenListingIds: next };
+    }
     case 'LOGOUT': 
       return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], isAdmin: false };
     case 'TOGGLE_THEME': {
@@ -631,7 +787,7 @@ function App() {
 
       if (msgsResult.data) {
         dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        buildConversations(msgsResult.data, userId);
+        buildAndDispatchConversations(msgsResult.data, userId, dispatch);
       }
 
       if (favsResult.data) {
@@ -669,10 +825,15 @@ function App() {
         const newMsg = payload.new;
         console.log('📨 New real-time message:', newMsg);
         
+        const otherUserId = newMsg.from_user === userId ? newMsg.to_user : newMsg.from_user;
+        clearDeletedConversationPeer(userId, otherUserId);
+        
         dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
         
-        const otherUserId = newMsg.from_user;
-        const otherUserName = newMsg.from_name || 'User';
+        const otherUserName =
+          newMsg.from_user === userId
+            ? (newMsg.to_name || 'User')
+            : (newMsg.from_name || 'User');
         
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
@@ -736,45 +897,6 @@ function App() {
     );
 
     dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
-  }
-
-  function buildConversations(messages, userId) {
-    const conversationMap = new Map();
-    
-    messages.forEach(msg => {
-      const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
-      const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
-      
-      if (!conversationMap.has(otherUserId)) {
-        conversationMap.set(otherUserId, {
-          userId: otherUserId,
-          userName: otherUserName || 'Unknown User',
-          userAvatar: otherUserAvatar,
-          lastMessage: msg.message,
-          lastMessageTime: msg.created_at,
-          unreadCount: 0,
-          messages: []
-        });
-      }
-      
-      const conv = conversationMap.get(otherUserId);
-      conv.messages.push(msg);
-      
-      if (!msg.read && msg.to_user === userId) {
-        conv.unreadCount++;
-      }
-      
-      if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
-        conv.lastMessage = msg.message;
-        conv.lastMessageTime = msg.created_at;
-      }
-    });
-    
-    const conversations = Array.from(conversationMap.values())
-      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
-    
-    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
   }
 
   useEffect(() => {
@@ -899,18 +1021,7 @@ function App() {
           </div>
           <Header />
           <main className="main-content">
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/marketplace" element={<Marketplace />} />
-              <Route path="/advertise" element={<Advertise />} />
-              <Route path="/code-sharing" element={<CodeSharing />} />
-              <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
-              <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-              <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
-              <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-              <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
-              <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
-            </Routes>
+            <MainRoutes />
           </main>
           <Footer />
         </div>
@@ -990,6 +1101,42 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+function MaintenanceScreen() {
+  return (
+    <div className="maintenance-screen">
+      <div className="maintenance-screen-inner">
+        <span className="maintenance-icon">🔧</span>
+        <h1>We&apos;ll be back soon</h1>
+        <p>DevMarket is under maintenance while we upgrade the platform.</p>
+        <p className="maintenance-hint">
+          Please check back shortly. Administrators can still sign in and use the dashboard.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function MainRoutes() {
+  const { state } = useAppContext();
+  if (state.maintenanceMode && !state.isAdmin) {
+    return <MaintenanceScreen />;
+  }
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/marketplace" element={<Marketplace />} />
+      <Route path="/advertise" element={<Advertise />} />
+      <Route path="/code-sharing" element={<CodeSharing />} />
+      <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
+      <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+      <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
+      <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+      <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+      <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
+    </Routes>
+  );
+}
+
 function useAppContext() {
   return useContext(AppContext);
 }
@@ -1048,7 +1195,15 @@ function Header() {
   };
 
   const userDisplayName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
-  const userAvatar = state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
+  const baseAvatarUrl =
+    state.profile?.avatar_url ||
+    state.currentUser?.avatar_url ||
+    `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
+  const avatarBust =
+    state.avatarCacheKey > 0
+      ? `${baseAvatarUrl.includes('?') ? '&' : '?'}cb=${state.avatarCacheKey}`
+      : '';
+  const userAvatar = `${baseAvatarUrl}${avatarBust}`;
 
   const closeAll = () => {
     setIsMenuOpen(false);
@@ -1331,8 +1486,17 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
 
   const handleSocialLogin = async (provider) => {
     try {
-      const { error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin } });
-      if (error) dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured.` });
+      dispatch({ type: 'SET_AUTH_ERROR', payload: null });
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: window.location.origin,
+          ...(provider === 'facebook' ? { scopes: 'public_profile email' } : {})
+        }
+      });
+      if (error) {
+        dispatch({ type: 'SET_AUTH_ERROR', payload: error.message || `${provider} sign-in failed.` });
+      }
     } catch (error) {
       dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not available.` });
     }
@@ -1365,12 +1529,15 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
               <h2>{authMode === 'login' ? 'Welcome Back' : 'Join DevMarket'}</h2>
               <p>{authMode === 'login' ? 'Sign in to continue building' : 'Start your developer journey'}</p>
             </div>
-            <div className="social-login">
-              <button className="social-btn social-btn-google" onClick={() => handleSocialLogin('google')}>
+            <div className="social-login social-login-row">
+              <button type="button" className="social-btn social-btn-google" onClick={() => handleSocialLogin('google')}>
                 <span className="social-icon">G</span> Google
               </button>
-              <button className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
+              <button type="button" className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
                 <span className="social-icon">⌨️</span> GitHub
+              </button>
+              <button type="button" className="social-btn social-btn-facebook" onClick={() => handleSocialLogin('facebook')}>
+                <span className="social-icon">f</span> Facebook
               </button>
             </div>
             <div className="auth-divider"><span>or continue with email</span></div>
@@ -1438,6 +1605,11 @@ function AdminDashboard() {
     maintenanceMode: false
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [listingDeleteTarget, setListingDeleteTarget] = useState(null);
+
+  useEffect(() => {
+    setPlatformSettings((p) => ({ ...p, maintenanceMode: !!state.maintenanceMode }));
+  }, [state.maintenanceMode, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'users' && users.length === 0) {
@@ -1472,27 +1644,54 @@ function AdminDashboard() {
 
   const handleDeleteListing = async (listingId, title) => {
     try {
-      await supabase.from('listings').delete().eq('id', listingId);
+      const { error } = await supabase.from('listings').delete().eq('id', listingId);
+      if (error) throw error;
       dispatch({ type: 'DELETE_LISTING', payload: listingId });
+      dispatch({
+        type: 'REMOVE_HIDDEN_LISTING',
+        payload: listingId
+      });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: `🗑️ Listing "${title}" removed`, type: 'success', 
         time: new Date().toLocaleTimeString(), read: false 
       }});
     } catch (e) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Could not remove listing', type: 'error', 
+        message: `❌ Could not remove listing: ${e.message || 'Unknown error'}`, type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
       }});
     }
+    setListingDeleteTarget(null);
   };
 
   const handleSaveSettings = () => {
+    dispatch({ type: 'SET_MAINTENANCE_MODE', payload: platformSettings.maintenanceMode });
     setSettingsSaved(true);
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: '✅ Platform settings saved!', type: 'success', 
       time: new Date().toLocaleTimeString(), read: false 
     }});
     setTimeout(() => setSettingsSaved(false), 3000);
+  };
+
+  const handleHideListingFromPublic = (listingId) => {
+    dispatch({ type: 'ADD_HIDDEN_LISTING', payload: listingId });
+    dispatch({ type: 'ADD_NOTIFICATION', payload: {
+      message: '👁️‍🗨️ Listing hidden from marketplace for visitors.',
+      type: 'info',
+      time: new Date().toLocaleTimeString(),
+      read: false
+    }});
+  };
+
+  const handleUnhideListing = (listingId) => {
+    dispatch({ type: 'REMOVE_HIDDEN_LISTING', payload: listingId });
+    dispatch({ type: 'ADD_NOTIFICATION', payload: {
+      message: '✅ Listing is visible again in the marketplace.',
+      type: 'success',
+      time: new Date().toLocaleTimeString(),
+      read: false
+    }});
   };
 
   const handleBanUser = async (userId, userName) => {
@@ -1521,6 +1720,8 @@ function AdminDashboard() {
   const filteredListings = moderationFilter === 'all' 
     ? (state.listings || []) 
     : (state.listings || []).filter(l => l.category === moderationFilter);
+
+  const isListingHiddenPublic = (id) => (state.hiddenListingIds || []).includes(id);
 
   const tabs = [
     { id: 'overview', label: '📊 Overview' },
@@ -1670,17 +1871,38 @@ function AdminDashboard() {
                     <small>By {listing.seller_name || listing.seller} · {listing.price} · {listing.category}</small>
                   </div>
                   <div className="admin-listing-actions">
+                    {isListingHiddenPublic(listing.id) && (
+                      <span className="admin-badge-hidden">Hidden from public</span>
+                    )}
                     {listing.url && (
                       <a href={listing.url} target="_blank" rel="noopener noreferrer" className="btn-sm btn-secondary">
                         👁 View
                       </a>
                     )}
+                    {!isListingHiddenPublic(listing.id) ? (
+                      <button 
+                        type="button"
+                        className="btn-sm btn-secondary"
+                        onClick={() => handleHideListingFromPublic(listing.id)}
+                      >
+                        👁️‍🗨️ Hide
+                      </button>
+                    ) : (
+                      <button 
+                        type="button"
+                        className="btn-sm btn-secondary"
+                        onClick={() => handleUnhideListing(listing.id)}
+                      >
+                        ✅ Unhide
+                      </button>
+                    )}
                     <button 
+                      type="button"
                       className="btn-sm" 
                       style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                      onClick={() => handleDeleteListing(listing.id, listing.title)}
+                      onClick={() => setListingDeleteTarget(listing)}
                     >
-                      🗑️ Remove
+                      🗑️ Delete
                     </button>
                   </div>
                 </div>
@@ -1730,12 +1952,30 @@ function AdminDashboard() {
                   >
                     ✅ Approve
                   </button>
+                  {!isListingHiddenPublic(listing.id) ? (
+                    <button 
+                      type="button"
+                      className="btn-sm btn-secondary"
+                      onClick={() => handleHideListingFromPublic(listing.id)}
+                    >
+                      👁️‍🗨️ Hide public
+                    </button>
+                  ) : (
+                    <button 
+                      type="button"
+                      className="btn-sm btn-secondary"
+                      onClick={() => handleUnhideListing(listing.id)}
+                    >
+                      Unhide
+                    </button>
+                  )}
                   <button 
+                    type="button"
                     className="btn-sm" 
                     style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                    onClick={() => handleDeleteListing(listing.id, listing.title)}
+                    onClick={() => setListingDeleteTarget(listing)}
                   >
-                    🚫 Remove
+                    🚫 Delete
                   </button>
                 </div>
               </div>
@@ -1786,6 +2026,21 @@ function AdminDashboard() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={!!listingDeleteTarget}
+        title="Delete listing permanently?"
+        message={listingDeleteTarget
+          ? `Are you sure you want to permanently delete "${listingDeleteTarget.title}"? This removes it from the database and cannot be undone.`
+          : ''}
+        onConfirm={() => {
+          if (listingDeleteTarget) {
+            handleDeleteListing(listingDeleteTarget.id, listingDeleteTarget.title);
+          }
+        }}
+        onCancel={() => setListingDeleteTarget(null)}
+        confirmText="Yes, delete listing"
+        type="danger"
+      />
     </div>
   );
 }
@@ -1939,25 +2194,29 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
+    const trimmed = replyMessage.trim();
     const optimisticMsg = {
       id: `temp-${Date.now()}`,
       from_user: state.currentUser.id,
       to_user: replyingTo.userId,
       subject: 'Re: Conversation',
-      message: replyMessage,
+      message: trimmed,
       read: false,
       created_at: new Date().toISOString(),
+      ...messageProfileFields(state),
       _optimistic: true
     };
 
-    // Optimistically update UI
     if (activeConv) {
-      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-        ...activeConv,
-        messages: [...(activeConv.messages || []), optimisticMsg],
-        lastMessage: replyMessage,
-        lastMessageTime: optimisticMsg.created_at
-      }});
+      dispatch({
+        type: 'SET_ACTIVE_CONVERSATION',
+        payload: {
+          ...activeConv,
+          messages: [...(activeConv.messages || []), optimisticMsg],
+          lastMessage: trimmed,
+          lastMessageTime: optimisticMsg.created_at
+        }
+      });
     }
     setReplyMessage('');
 
@@ -1966,42 +2225,62 @@ function Messages() {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
         subject: 'Re: Conversation',
-        message: optimisticMsg.message,
+        message: trimmed,
         read: false,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        ...messageProfileFields(state)
       };
 
-      const { error } = await supabase.from('messages').insert([msgData]);
-      
-      if (!error) {
-        try {
-          await supabase.from('notifications').insert([{
-            user_id: replyingTo.userId,
-            message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
-            type: 'info',
-            read: false,
-            created_at: new Date().toISOString()
-          }]);
-        } catch (notifError) {}
-        
-        // Refresh messages
-        const { data: msgsResult } = await supabase
-          .from('messages')
-          .select('*')
-          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
-          .order('created_at', { ascending: false });
-        
-        if (msgsResult) {
-          dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
-          buildConversationsLocal(msgsResult, state.currentUser.id);
-        }
+      const insertResult = await supabase.from('messages').insert([msgData]).select().maybeSingle();
+
+      if (insertResult.error) {
+        const minimalPayload = {
+          from_user: msgData.from_user,
+          to_user: msgData.to_user,
+          subject: msgData.subject,
+          message: msgData.message,
+          read: msgData.read,
+          created_at: msgData.created_at
+        };
+        const retry = await supabase.from('messages').insert([minimalPayload]).select().maybeSingle();
+        if (retry.error) throw retry.error;
+      }
+
+      clearDeletedConversationPeer(state.currentUser.id, replyingTo.userId);
+
+      try {
+        await supabase.from('notifications').insert([{
+          user_id: replyingTo.userId,
+          message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
+          type: 'info',
+          read: false,
+          created_at: new Date().toISOString()
+        }]);
+      } catch (notifError) {}
+
+      const { data: msgsResult, error: fetchErr } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+        .order('created_at', { ascending: false });
+
+      if (!fetchErr && msgsResult) {
+        dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
+        buildAndDispatchConversations(msgsResult, state.currentUser.id, dispatch, {
+          activeUserId: replyingTo.userId ?? activeConv?.userId
+        });
       }
     } catch (error) {
       console.error('Error sending reply:', error);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Failed to send message', type: 'error', 
-        time: new Date().toLocaleTimeString(), read: false 
-      }});
+      dispatch({
+        type: 'ADD_NOTIFICATION',
+        payload: {
+          message: '❌ Failed to send message',
+          type: 'error',
+          time: new Date().toLocaleTimeString(),
+          read: false
+        }
+      });
     }
     setSending(false);
     setTimeout(scrollToBottom, 100);
@@ -2010,69 +2289,58 @@ function Messages() {
   const handleDeleteConversation = async () => {
     if (!convToDelete) return;
     setDeletingConv(true);
-    try {
-      // Delete all messages between these two users
-      await supabase.from('messages').delete()
-        .or(
-          `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
-        );
+    persistDeletedConversationPeer(state.currentUser.id, convToDelete.userId);
 
-      // Remove from conversations state
-      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations.filter(c => c.userId !== convToDelete.userId) });
-      dispatch({ type: 'SET_MESSAGES', payload: (state.messages || []).filter(m => 
-        !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
-      )});
-      
-      if (activeConv?.userId === convToDelete.userId) {
-        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: null });
-        setReplyingTo(null);
-      }
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '🗑️ Conversation deleted', type: 'success', 
-        time: new Date().toLocaleTimeString(), read: false 
-      }});
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Could not delete conversation', type: 'error', 
-        time: new Date().toLocaleTimeString(), read: false 
-      }});
+    const { error: delErr } = await supabase
+      .from('messages')
+      .delete()
+      .or(
+        `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
+      );
+
+    dispatch({
+      type: 'SET_CONVERSATIONS',
+      payload: conversations.filter((c) => c.userId !== convToDelete.userId)
+    });
+    dispatch({
+      type: 'SET_MESSAGES',
+      payload: (state.messages || []).filter(
+        (m) => !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
+      )
+    });
+
+    if (activeConv?.userId === convToDelete.userId) {
+      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: null });
+      setReplyingTo(null);
     }
+
+    if (delErr) {
+      console.error('Conversation delete:', delErr);
+      dispatch({
+        type: 'ADD_NOTIFICATION',
+        payload: {
+          message:
+            '🗑️ Conversation removed from your inbox. Messages may still exist on the server if database rules blocked permanent deletion.',
+          type: 'warning',
+          time: new Date().toLocaleTimeString(),
+          read: false
+        }
+      });
+    } else {
+      dispatch({
+        type: 'ADD_NOTIFICATION',
+        payload: {
+          message: '🗑️ Conversation permanently deleted.',
+          type: 'success',
+          time: new Date().toLocaleTimeString(),
+          read: false
+        }
+      });
+    }
+
     setDeletingConv(false);
     setShowDeleteConfirm(false);
     setConvToDelete(null);
-  };
-
-  const buildConversationsLocal = (messages, userId) => {
-    const conversationMap = new Map();
-    messages.forEach(msg => {
-      const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      if (!conversationMap.has(otherUserId)) {
-        conversationMap.set(otherUserId, {
-          userId: otherUserId,
-          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'Unknown User',
-          userAvatar: msg.from_user === userId ? msg.to_avatar : msg.from_avatar,
-          lastMessage: msg.message,
-          lastMessageTime: msg.created_at,
-          unreadCount: 0,
-          messages: []
-        });
-      }
-      const conv = conversationMap.get(otherUserId);
-      conv.messages.push(msg);
-      if (!msg.read && msg.to_user === userId) conv.unreadCount++;
-      if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
-        conv.lastMessage = msg.message;
-        conv.lastMessageTime = msg.created_at;
-      }
-    });
-    const convs = Array.from(conversationMap.values())
-      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
-    dispatch({ type: 'SET_CONVERSATIONS', payload: convs });
-    // Update active conversation if open
-    if (activeConv) {
-      const updated = convs.find(c => c.userId === activeConv.userId);
-      if (updated) dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: updated });
-    }
   };
 
   const openConversation = (conv) => {
@@ -2295,21 +2563,46 @@ function Profile() {
 
   const handleAvatarUpdate = async (avatarUrl) => {
     dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
-    
+
     try {
-      const { error } = await supabase.from('profiles').upsert({
-        id: state.currentUser.id,
+      const patch = {
         avatar_url: avatarUrl,
         updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-      
-      if (error) {
-        console.error('Error saving avatar:', error);
+      };
+      const { error: updateErr } = await supabase
+        .from('profiles')
+        .update(patch)
+        .eq('id', state.currentUser.id);
+
+      if (updateErr) {
+        const { error: upsertErr } = await supabase.from('profiles').upsert({
+          id: state.currentUser.id,
+          name: userName,
+          email: state.currentUser.email,
+          avatar_url: avatarUrl,
+          role: state.profile?.role || 'developer',
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'id' });
+        if (upsertErr) console.error('Error saving avatar:', upsertErr);
+      }
+
+      const { data: refreshed } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', state.currentUser.id)
+        .maybeSingle();
+
+      if (refreshed) {
+        dispatch({ type: 'SET_PROFILE', payload: refreshed });
+        dispatch({
+          type: 'SET_USER',
+          payload: { ...state.currentUser, ...refreshed }
+        });
       }
     } catch (error) {
       console.error('Could not save avatar:', error);
     }
-    
+
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: '✅ Profile picture updated successfully!', 
       type: 'success', 
@@ -2416,15 +2709,18 @@ function Profile() {
 function Home() {
   const { state } = useAppContext();
   const navigate = useNavigate();
+  const visibleListings = (state.listings || []).filter(
+    (l) => !(state.hiddenListingIds || []).includes(l.id)
+  );
   
   const stats = {
-    listings: (state.listings || []).length,
+    listings: visibleListings.length,
     apps: (state.apps || []).length,
     snippets: (state.codeSnippets || []).length,
     users: 1250
   };
   
-  const featuredListings = (state.listings || []).slice(0, 3);
+  const featuredListings = visibleListings.slice(0, 3);
 
   return (
     <div className="home-page">
@@ -2534,7 +2830,7 @@ function ListingCard({ listing }) {
     
     if (showContact && message.trim()) {
       try {
-        const msgData = {
+        const msgBase = {
           from_user: state.currentUser.id,
           to_user: listing.user_id,
           subject: `Inquiry about ${listing.title}`,
@@ -2543,9 +2839,19 @@ function ListingCard({ listing }) {
           read: false,
           created_at: new Date().toISOString()
         };
+        const msgData = {
+          ...msgBase,
+          ...messageProfileFields(state)
+        };
 
-        await supabase.from('messages').insert([msgData]);
-        
+        let ins = await supabase.from('messages').insert([msgData]).select().maybeSingle();
+        if (ins.error) {
+          ins = await supabase.from('messages').insert([msgBase]).select().maybeSingle();
+        }
+        if (ins.error) throw ins.error;
+
+        clearDeletedConversationPeer(state.currentUser.id, listing.user_id);
+
         try {
           await supabase.from('notifications').insert([{
             user_id: listing.user_id,
@@ -2557,7 +2863,17 @@ function ListingCard({ listing }) {
         } catch (notifError) {
           console.log('Could not create notification:', notifError);
         }
-        
+
+        const { data: refreshed } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+          .order('created_at', { ascending: false });
+        if (refreshed) {
+          dispatch({ type: 'SET_MESSAGES', payload: refreshed });
+          buildAndDispatchConversations(refreshed, state.currentUser.id, dispatch);
+        }
+
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: `Message sent about "${listing.title}"`, 
           type: 'success', 
@@ -2851,6 +3167,7 @@ function Marketplace() {
   };
 
   const filteredListings = (state.listings || [])
+    .filter((l) => !(state.hiddenListingIds || []).includes(l.id))
     .filter(l => {
       const matchesSearch = l.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
                            l.description?.toLowerCase().includes(searchTerm.toLowerCase());
@@ -3355,15 +3672,23 @@ function AppCard({ app }) {
     
     if (showContact && message.trim()) {
       try {
-        await supabase.from('messages').insert([{
+        const msgBase = {
           from_user: state.currentUser.id,
           to_user: app.user_id,
           subject: `Inquiry about ${app.appName}`,
           message: message,
           read: false,
           created_at: new Date().toISOString()
-        }]);
-        
+        };
+        const msgPayload = { ...msgBase, ...messageProfileFields(state) };
+        let ins = await supabase.from('messages').insert([msgPayload]).select().maybeSingle();
+        if (ins.error) {
+          ins = await supabase.from('messages').insert([msgBase]).select().maybeSingle();
+        }
+        if (ins.error) throw ins.error;
+
+        clearDeletedConversationPeer(state.currentUser.id, app.user_id);
+
         try {
           await supabase.from('notifications').insert([{
             user_id: app.user_id,
@@ -3375,7 +3700,17 @@ function AppCard({ app }) {
         } catch (notifError) {
           console.log('Could not create notification:', notifError);
         }
-        
+
+        const { data: refreshed } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+          .order('created_at', { ascending: false });
+        if (refreshed) {
+          dispatch({ type: 'SET_MESSAGES', payload: refreshed });
+          buildAndDispatchConversations(refreshed, state.currentUser.id, dispatch);
+        }
+
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: `Inquiry sent about "${app.appName}"`, 
           type: 'success', 
