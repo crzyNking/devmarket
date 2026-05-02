@@ -13,13 +13,6 @@ import './App.css';
 // ============================================
 const AppContext = createContext();
 
-// Preset Avatars for Profile Selection
-const PRESET_AVATARS = [
-  'https://ui-avatars.com/api/?name=Dev&background=667eea&color=fff&size=200',
-  'https://ui-avatars.com/api/?name=Dev&background=10b981&color=fff&size=200',
-  'https://ui-avatars.com/api/?name=Dev&background=f59e0b&color=fff&size=200'
-];
-
 const initialState = {
   listings: [],
   apps: [],
@@ -42,70 +35,8 @@ const initialState = {
   onlineUsers: [],
   analyticsData: null,
   isAdmin: false,
-  moderationQueue: [],
-  maintenanceMode: false,
-  // Notification preferences
-  notificationSettings: {
-    emailNotifications: true,
-    pushNotifications: true,
-    listingUpdates: true,
-    messageAlerts: true,
-    favoritesActivity: true,
-    weeklyDigest: false
-  }
+  moderationQueue: []
 };
-
-const MAINTENANCE_MODE_KEY = 'devMarketMaintenanceMode';
-const HIDDEN_LISTINGS_KEY = 'devMarketHiddenListings';
-const DELETED_CONVERSATIONS_KEY = 'devMarketDeletedConversations';
-
-function getHiddenListingIds() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(HIDDEN_LISTINGS_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function setHiddenListingIds(ids) {
-  localStorage.setItem(HIDDEN_LISTINGS_KEY, JSON.stringify(Array.from(new Set(ids))));
-}
-
-function getDeletedConversationMap(userId) {
-  if (!userId) return {};
-  try {
-    const parsed = JSON.parse(localStorage.getItem(DELETED_CONVERSATIONS_KEY) || '{}');
-    return parsed[userId] || {};
-  } catch {
-    return {};
-  }
-}
-
-function setDeletedConversation(userId, otherUserId, deletedAt) {
-  if (!userId || !otherUserId) return;
-  let all = {};
-  try {
-    all = JSON.parse(localStorage.getItem(DELETED_CONVERSATIONS_KEY) || '{}');
-  } catch {
-    all = {};
-  }
-  all[userId] = { ...(all[userId] || {}), [otherUserId]: deletedAt };
-  localStorage.setItem(DELETED_CONVERSATIONS_KEY, JSON.stringify(all));
-}
-
-function clearDeletedConversation(userId, otherUserId) {
-  if (!userId || !otherUserId) return;
-  let all = {};
-  try {
-    all = JSON.parse(localStorage.getItem(DELETED_CONVERSATIONS_KEY) || '{}');
-  } catch {
-    all = {};
-  }
-  if (!all[userId]) return;
-  delete all[userId][otherUserId];
-  localStorage.setItem(DELETED_CONVERSATIONS_KEY, JSON.stringify(all));
-}
 
 function appReducer(state, action) {
   switch (action.type) {
@@ -171,35 +102,23 @@ function appReducer(state, action) {
         )
       };
     case 'ADD_CONVERSATION_MESSAGE':
-      const existingConv = (state.conversations || []).find(c => c.userId === action.payload.otherUserId);
-      if (existingConv) {
-        return {
-          ...state,
-          conversations: (state.conversations || []).map(c => {
-            if (c.userId !== action.payload.otherUserId) return c;
+      return {
+        ...state,
+        conversations: (state.conversations || []).map(c => {
+          if (c.userId === action.payload.otherUserId) {
             return {
               ...c,
-              userName: c.userName || action.payload.otherUserName || 'Unknown User',
-              userAvatar: c.userAvatar || action.payload.otherUserAvatar,
-              messages: [...(c.messages || []), action.payload.message],
+              messages: [...c.messages, action.payload.message],
               lastMessage: action.payload.message.message,
               lastMessageTime: action.payload.message.created_at,
               unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
             };
-          }).sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime))
-        };
-      }
-      return {
-        ...state,
-        conversations: [{
-          userId: action.payload.otherUserId,
-          userName: action.payload.otherUserName || 'Unknown User',
-          userAvatar: action.payload.otherUserAvatar || null,
-          lastMessage: action.payload.message.message,
-          lastMessageTime: action.payload.message.created_at,
-          unreadCount: action.payload.message.to_user === state.currentUser?.id ? 1 : 0,
-          messages: [action.payload.message]
-        }, ...(state.conversations || [])]
+          }
+          if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
+            return c;
+          }
+          return c;
+        })
       };
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversation: action.payload };
@@ -230,8 +149,6 @@ function appReducer(state, action) {
       return { ...state, isAdmin: action.payload };
     case 'SET_MODERATION_QUEUE':
       return { ...state, moderationQueue: action.payload || [] };
-    case 'SET_MAINTENANCE_MODE':
-      return { ...state, maintenanceMode: !!action.payload };
     case 'LOGOUT': 
       return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], isAdmin: false };
     case 'TOGGLE_THEME': {
@@ -351,13 +268,13 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
           .from('avatars')
           .getPublicUrl(fileName);
 
-        onAvatarUpdate(`${publicUrl}?v=${Date.now()}`);
+        onAvatarUpdate(publicUrl);
       } else {
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
           .getPublicUrl(filePath);
 
-        onAvatarUpdate(`${publicUrl}?v=${Date.now()}`);
+        onAvatarUpdate(publicUrl);
       }
 
       setPreview(null);
@@ -606,10 +523,7 @@ function App() {
       ]);
 
       if (listingsResult.data) {
-        const hiddenListingIds = getHiddenListingIds();
-        const formattedListings = listingsResult.data
-          .filter(item => !hiddenListingIds.includes(item.id))
-          .map(item => ({
+        const formattedListings = listingsResult.data.map(item => ({
           ...item,
           seller: item.seller_name,
           sellerAvatar: item.seller_avatar,
@@ -716,14 +630,8 @@ function App() {
       }
 
       if (msgsResult.data) {
-        const deletedMap = getDeletedConversationMap(userId);
-        const filteredMessages = msgsResult.data.filter(msg => {
-          const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-          const deletedAt = deletedMap[otherUserId];
-          return !deletedAt || new Date(msg.created_at) > new Date(deletedAt);
-        });
-        dispatch({ type: 'SET_MESSAGES', payload: filteredMessages });
-        buildConversations(filteredMessages, userId);
+        dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
+        buildConversations(msgsResult.data, userId);
       }
 
       if (favsResult.data) {
@@ -754,27 +662,22 @@ function App() {
       {
         event: 'INSERT',
         schema: 'public',
-        table: 'messages'
+        table: 'messages',
+        filter: `to_user=eq.${userId}`
       },
       (payload) => {
         const newMsg = payload.new;
-        if (newMsg.to_user !== userId && newMsg.from_user !== userId) return;
         console.log('📨 New real-time message:', newMsg);
-
-        const otherUserId = newMsg.from_user === userId ? newMsg.to_user : newMsg.from_user;
-        clearDeletedConversation(userId, otherUserId);
         
         dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
-
-        const otherUserName = (newMsg.from_user === userId ? newMsg.to_name : newMsg.from_name) || 'User';
-        const otherUserAvatar = newMsg.from_user === userId ? newMsg.to_avatar : newMsg.from_avatar;
-
+        
+        const otherUserId = newMsg.from_user;
+        const otherUserName = newMsg.from_name || 'User';
+        
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
           payload: {
             otherUserId,
-            otherUserName,
-            otherUserAvatar,
             message: newMsg
           }
         });
@@ -783,7 +686,7 @@ function App() {
         const currentState = (() => { try { return null; } catch(e) { return null; } })();
         // We use a workaround: check via sessionStorage flag set by Messages component
         const activeConvId = sessionStorage.getItem('activeConversationId');
-        const isConversationOpen = activeConvId === otherUserId && newMsg.to_user === userId;
+        const isConversationOpen = activeConvId === otherUserId;
         
         if (!isConversationOpen) {
           dispatch({ type: 'ADD_NOTIFICATION', payload: {
@@ -947,8 +850,6 @@ function App() {
     if (savedTheme && savedTheme !== state.theme) {
       dispatch({ type: 'TOGGLE_THEME' });
     }
-    const maintenanceEnabled = localStorage.getItem(MAINTENANCE_MODE_KEY) === 'true';
-    dispatch({ type: 'SET_MAINTENANCE_MODE', payload: maintenanceEnabled });
   }, []);
 
   const removeNotification = useCallback((id) => {
@@ -998,22 +899,18 @@ function App() {
           </div>
           <Header />
           <main className="main-content">
-            {state.maintenanceMode && !state.isAdmin ? (
-              <MaintenancePage />
-            ) : (
-              <Routes>
-                <Route path="/" element={<Home />} />
-                <Route path="/marketplace" element={<Marketplace />} />
-                <Route path="/advertise" element={<Advertise />} />
-                <Route path="/code-sharing" element={<CodeSharing />} />
-                <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
-                <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-                <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
-                <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-                <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
-                <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
-              </Routes>
-            )}
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/marketplace" element={<Marketplace />} />
+              <Route path="/advertise" element={<Advertise />} />
+              <Route path="/code-sharing" element={<CodeSharing />} />
+              <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
+              <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
+              <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+              <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+              <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
+            </Routes>
           </main>
           <Footer />
         </div>
@@ -1077,16 +974,6 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmTex
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function MaintenancePage() {
-  return (
-    <div className="empty-state" style={{ marginTop: '60px' }}>
-      <span className="empty-icon">🛠️</span>
-      <h2>We are under maintenance</h2>
-      <p>The platform is temporarily unavailable. Please check again shortly.</p>
     </div>
   );
 }
@@ -1485,9 +1372,6 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
               <button className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
                 <span className="social-icon">⌨️</span> GitHub
               </button>
-              <button className="social-btn social-btn-facebook" onClick={() => handleSocialLogin('facebook')}>
-                <span className="social-icon">f</span> Facebook
-              </button>
             </div>
             <div className="auth-divider"><span>or continue with email</span></div>
             {state.authError && <div className="auth-error">⚠️ {state.authError}</div>}
@@ -1554,9 +1438,6 @@ function AdminDashboard() {
     maintenanceMode: false
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
-  const [listingToDelete, setListingToDelete] = useState(null);
-  const [showDeleteListingConfirm, setShowDeleteListingConfirm] = useState(false);
-  const [hiddenListingIds, setHiddenListingIdsState] = useState(getHiddenListingIds());
 
   useEffect(() => {
     if (activeTab === 'users' && users.length === 0) {
@@ -1566,11 +1447,6 @@ function AdminDashboard() {
       loadStats();
     }
   }, [activeTab]);
-
-  useEffect(() => {
-    const isMaintenanceOn = localStorage.getItem(MAINTENANCE_MODE_KEY) === 'true';
-    setPlatformSettings(prev => ({ ...prev, maintenanceMode: isMaintenanceOn }));
-  }, []);
 
   const loadStats = async () => {
     try {
@@ -1610,31 +1486,7 @@ function AdminDashboard() {
     }
   };
 
-  const handleHideListing = (listingId, title) => {
-    const updated = hiddenListingIds.includes(listingId)
-      ? hiddenListingIds.filter(id => id !== listingId)
-      : [...hiddenListingIds, listingId];
-    setHiddenListingIdsState(updated);
-    setHiddenListingIds(updated);
-    dispatch({ type: 'SET_LISTINGS', payload: (state.listings || []).filter(l => !updated.includes(l.id)) });
-    dispatch({ type: 'ADD_NOTIFICATION', payload: {
-      message: hiddenListingIds.includes(listingId)
-        ? `👁️ "${title}" is visible again`
-        : `🙈 "${title}" is now hidden`,
-      type: 'success',
-      time: new Date().toLocaleTimeString(),
-      read: false
-    }});
-  };
-
-  const requestDeleteListing = (listingId, title) => {
-    setListingToDelete({ listingId, title });
-    setShowDeleteListingConfirm(true);
-  };
-
   const handleSaveSettings = () => {
-    localStorage.setItem(MAINTENANCE_MODE_KEY, String(platformSettings.maintenanceMode));
-    dispatch({ type: 'SET_MAINTENANCE_MODE', payload: platformSettings.maintenanceMode });
     setSettingsSaved(true);
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: '✅ Platform settings saved!', type: 'success', 
@@ -1826,15 +1678,9 @@ function AdminDashboard() {
                     <button 
                       className="btn-sm" 
                       style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                      onClick={() => requestDeleteListing(listing.id, listing.title)}
+                      onClick={() => handleDeleteListing(listing.id, listing.title)}
                     >
                       🗑️ Remove
-                    </button>
-                    <button
-                      className="btn-sm btn-secondary"
-                      onClick={() => handleHideListing(listing.id, listing.title)}
-                    >
-                      {hiddenListingIds.includes(listing.id) ? '👁️ Unhide' : '🙈 Hide'}
                     </button>
                   </div>
                 </div>
@@ -1887,15 +1733,9 @@ function AdminDashboard() {
                   <button 
                     className="btn-sm" 
                     style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                    onClick={() => requestDeleteListing(listing.id, listing.title)}
+                    onClick={() => handleDeleteListing(listing.id, listing.title)}
                   >
                     🚫 Remove
-                  </button>
-                  <button
-                    className="btn-sm btn-secondary"
-                    onClick={() => handleHideListing(listing.id, listing.title)}
-                  >
-                    {hiddenListingIds.includes(listing.id) ? '👁️ Unhide' : '🙈 Hide'}
                   </button>
                 </div>
               </div>
@@ -1946,24 +1786,6 @@ function AdminDashboard() {
           </div>
         </div>
       )}
-      <ConfirmDialog
-        isOpen={showDeleteListingConfirm}
-        title="Delete listing?"
-        message={`Are you sure you want to delete "${listingToDelete?.title || 'this listing'}"? This action cannot be undone.`}
-        onConfirm={async () => {
-          if (listingToDelete) {
-            await handleDeleteListing(listingToDelete.listingId, listingToDelete.title);
-          }
-          setShowDeleteListingConfirm(false);
-          setListingToDelete(null);
-        }}
-        onCancel={() => {
-          setShowDeleteListingConfirm(false);
-          setListingToDelete(null);
-        }}
-        confirmText="Delete listing"
-        type="danger"
-      />
     </div>
   );
 }
@@ -2140,14 +1962,9 @@ function Messages() {
     setReplyMessage('');
 
     try {
-      clearDeletedConversation(state.currentUser.id, replyingTo.userId);
       const msgData = {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
-        from_name: state.profile?.name || state.currentUser.email?.split('@')[0] || 'User',
-        from_avatar: state.profile?.avatar_url || '',
-        to_name: replyingTo.userName || 'User',
-        to_avatar: replyingTo.userAvatar || '',
         subject: 'Re: Conversation',
         message: optimisticMsg.message,
         read: false,
@@ -2194,26 +2011,16 @@ function Messages() {
     if (!convToDelete) return;
     setDeletingConv(true);
     try {
-      const deletedAt = new Date().toISOString();
-      setDeletedConversation(state.currentUser.id, convToDelete.userId, deletedAt);
-      sessionStorage.removeItem('activeConversationId');
-
-      // Try server-side delete; local deletion still proceeds even if this fails due RLS.
-      const { error: deleteError } = await supabase.from('messages').delete()
+      // Delete all messages between these two users
+      await supabase.from('messages').delete()
         .or(
           `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
         );
-      if (deleteError) {
-        console.warn('Conversation delete fallback to local-only:', deleteError.message);
-      }
 
       // Remove from conversations state
       dispatch({ type: 'SET_CONVERSATIONS', payload: conversations.filter(c => c.userId !== convToDelete.userId) });
       dispatch({ type: 'SET_MESSAGES', payload: (state.messages || []).filter(m => 
-        !(
-          (m.from_user === state.currentUser.id && m.to_user === convToDelete.userId) ||
-          (m.from_user === convToDelete.userId && m.to_user === state.currentUser.id)
-        )
+        !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
       )});
       
       if (activeConv?.userId === convToDelete.userId) {
@@ -2269,7 +2076,6 @@ function Messages() {
   };
 
   const openConversation = (conv) => {
-    clearDeletedConversation(state.currentUser.id, conv.userId);
     dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: conv });
     setReplyingTo(conv);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
@@ -2459,11 +2265,10 @@ function Messages() {
 }
 
 // ============================================
-// PROFILE WITH ENHANCED AVATAR UPLOAD & PRESET SELECTION
+// PROFILE WITH ENHANCED AVATAR UPLOAD
 // ============================================
 function Profile() {
   const { state, dispatch } = useAppContext();
-  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   
   if (!state.currentUser) {
     return (
@@ -2490,16 +2295,13 @@ function Profile() {
 
   const handleAvatarUpdate = async (avatarUrl) => {
     dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
-    dispatch({ type: 'SET_USER', payload: { ...state.currentUser, avatar_url: avatarUrl } });
     
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({
-          avatar_url: avatarUrl,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', state.currentUser.id);
+      const { error } = await supabase.from('profiles').upsert({
+        id: state.currentUser.id,
+        avatar_url: avatarUrl,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
       
       if (error) {
         console.error('Error saving avatar:', error);
@@ -2525,51 +2327,15 @@ function Profile() {
     }});
   };
 
-  const selectPresetAvatar = (presetUrl) => {
-    handleAvatarUpdate(presetUrl);
-    setShowAvatarPicker(false);
-  };
-
   return (
     <div className="profile-page">
       <div className="profile-header">
-        <div className="avatar-section-wrapper">
-          <AvatarUpload 
-            currentAvatar={state.profile?.avatar_url} 
-            userName={userName} 
-            onAvatarUpdate={handleAvatarUpdate}
-            size="large"
-          />
-          <button 
-            className="btn-secondary btn-sm avatar-preset-btn" 
-            onClick={() => setShowAvatarPicker(!showAvatarPicker)}
-            style={{ marginTop: '8px' }}
-          >
-            🎨 Choose Avatar
-          </button>
-          
-          {showAvatarPicker && (
-            <div className="avatar-preset-picker">
-              <h4>Choose an Avatar</h4>
-              <div className="preset-avatars-grid">
-                {PRESET_AVATARS.map((preset, index) => (
-                  <button
-                    key={index}
-                    className={`preset-avatar-btn ${state.profile?.avatar_url === preset ? 'selected' : ''}`}
-                    onClick={() => selectPresetAvatar(preset)}
-                  >
-                    <img 
-                      src={preset} 
-                      alt={`Preset ${index + 1}`}
-                      className="preset-avatar-img"
-                    />
-                  </button>
-                ))}
-              </div>
-              <p className="preset-note">Or upload your own photo above</p>
-            </div>
-          )}
-        </div>
+        <AvatarUpload 
+          currentAvatar={state.profile?.avatar_url} 
+          userName={userName} 
+          onAvatarUpdate={handleAvatarUpdate}
+          size="large"
+        />
         <div>
           <h1>{userName}</h1>
           <p>{state.currentUser.email}</p>
