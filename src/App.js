@@ -2,6 +2,7 @@
 // src/App.js (COMPLETE ENHANCED VERSION - FIXED)
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
 import { realtimeManager } from './utils/realtime';
@@ -1410,21 +1411,30 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const [showSuccess, setShowSuccess] = useState(false);
   const [authStatus, setAuthStatus] = useState('');
   const navigate = useNavigate();
+  const emailInputRef = useRef(null);
 
-  useEffect(() => {
-    document.body.classList.add('modal-open');
-    resetForm();
-    return () => document.body.classList.remove('modal-open');
-  }, [authMode]);
-
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'developer' });
     setErrors({});
     setStep(1);
     setShowSuccess(false);
     setAuthStatus('');
     dispatch({ type: 'SET_AUTH_ERROR', payload: null });
-  };
+  }, [dispatch]);
+
+  useEffect(() => {
+    document.body.classList.add('modal-open');
+    resetForm();
+    const focusId = window.requestAnimationFrame(() => {
+      if (emailInputRef.current) {
+        emailInputRef.current.focus({ preventScroll: true });
+      }
+    });
+    return () => {
+      window.cancelAnimationFrame(focusId);
+      document.body.classList.remove('modal-open');
+    };
+  }, [authMode, resetForm]);
 
   const validateForm = () => {
     const newErrors = {};
@@ -1503,82 +1513,185 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   };
 
   useEffect(() => {
-    const handleEsc = (e) => { if (e.key === 'Escape') setShowAuth(false); };
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') setShowAuth(false);
+    };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
   }, [setShowAuth]);
 
-  return (
-    <div className="modal-overlay" onClick={() => setShowAuth(false)}>
-      <div className="auth-modal" onClick={e => e.stopPropagation()}>
-        <button className="btn-close" onClick={() => setShowAuth(false)}>✕</button>
+  const isDark = state.theme === 'dark';
+
+  const modalContent = (
+    <div
+      className={`auth-portal-backdrop${isDark ? ' auth-portal-backdrop--dark' : ''}`}
+      role="presentation"
+      onClick={() => setShowAuth(false)}
+    >
+      <div
+        className={`auth-modal auth-modal-enhanced${isDark ? ' auth-modal-enhanced--dark' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={showSuccess ? 'auth-success-title' : 'auth-modal-title'}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="btn-close auth-modal-close"
+          onClick={() => setShowAuth(false)}
+          aria-label="Close sign in"
+        >
+          ✕
+        </button>
         {showSuccess ? (
-          <div className="success-state">
+          <div className="success-state auth-success-state">
             <div className="auth-success-icon">{authStatus === 'confirmation' ? '📧' : '🎉'}</div>
-            <h2>{authStatus === 'confirmation' ? 'Check Your Email' : 'Account Created!'}</h2>
+            <h2 id="auth-success-title">{authStatus === 'confirmation' ? 'Check Your Email' : 'Account Created!'}</h2>
             <p>Welcome, <strong>{formData.name}</strong>!</p>
-            {authStatus === 'confirmation' && <button className="btn-primary" onClick={() => { setShowSuccess(false); setAuthMode('login'); resetForm(); }}>Go to Login</button>}
+            {authStatus === 'confirmation' && (
+              <button
+                type="button"
+                className="btn-primary btn-full"
+                onClick={() => {
+                  setShowSuccess(false);
+                  setAuthMode('login');
+                  resetForm();
+                }}
+              >
+                Go to Login
+              </button>
+            )}
           </div>
         ) : (
           <>
             <div className="auth-header-new">
               <div className="auth-brand-mark">
-                <span className="auth-brand-icon">🚀</span>
-                <span className="auth-brand-glow"></span>
+                <span className="auth-brand-icon" aria-hidden>🚀</span>
+                <span className="auth-brand-glow" aria-hidden />
               </div>
-              <h2>{authMode === 'login' ? 'Welcome Back' : 'Join DevMarket'}</h2>
+              <h2 id="auth-modal-title">{authMode === 'login' ? 'Welcome Back' : 'Join DevMarket'}</h2>
               <p>{authMode === 'login' ? 'Sign in to continue building' : 'Start your developer journey'}</p>
             </div>
-            <div className="social-login social-login-row">
+            <div className="social-login social-login-row auth-social-grid">
               <button type="button" className="social-btn social-btn-google" onClick={() => handleSocialLogin('google')}>
-                <span className="social-icon">G</span> Google
+                <span className="social-icon" aria-hidden>G</span> Google
               </button>
               <button type="button" className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
-                <span className="social-icon">⌨️</span> GitHub
+                <span className="social-icon" aria-hidden>⌨️</span> GitHub
               </button>
               <button type="button" className="social-btn social-btn-facebook" onClick={() => handleSocialLogin('facebook')}>
-                <span className="social-icon">f</span> Facebook
+                <span className="social-icon" aria-hidden>f</span> Facebook
               </button>
             </div>
             <div className="auth-divider"><span>or continue with email</span></div>
-            {state.authError && <div className="auth-error">⚠️ {state.authError}</div>}
-            <form onSubmit={handleSubmit} className="auth-form">
+            {state.authError && (
+              <div className="auth-error" role="alert">
+                ⚠️ {state.authError}
+              </div>
+            )}
+            <form onSubmit={handleSubmit} className="auth-form auth-form-enhanced">
               {authMode === 'signup' && (
                 <div className="form-group">
-                  <label>Full Name</label>
-                  <input type="text" placeholder="John Doe" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className={errors.name ? 'error' : ''} />
+                  <label htmlFor="auth-name">Full Name</label>
+                  <input
+                    id="auth-name"
+                    type="text"
+                    placeholder="John Doe"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className={errors.name ? 'error' : ''}
+                    autoComplete="name"
+                  />
                   {errors.name && <span className="error-message">{errors.name}</span>}
                 </div>
               )}
               <div className="form-group">
-                <label>Email</label>
-                <input type="email" placeholder="you@example.com" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className={errors.email ? 'error' : ''} />
+                <label htmlFor="auth-email">Email</label>
+                <input
+                  ref={emailInputRef}
+                  id="auth-email"
+                  type="email"
+                  inputMode="email"
+                  placeholder="you@example.com"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className={errors.email ? 'error' : ''}
+                  autoComplete="email"
+                />
                 {errors.email && <span className="error-message">{errors.email}</span>}
               </div>
-              <div className="form-group">
-                <label>Password</label>
-                <input type={showPassword ? "text" : "password"} placeholder="Password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className={errors.password ? 'error' : ''} />
-                <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)}>{showPassword ? '👁️' : '👁️‍🗨️'}</button>
+              <div className="form-group form-group-auth-password">
+                <label htmlFor="auth-password">Password</label>
+                <input
+                  id="auth-password"
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Password"
+                  value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                  className={errors.password ? 'error' : ''}
+                  autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                />
+                <button
+                  type="button"
+                  className="password-toggle"
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? '👁️' : '👁️‍🗨️'}
+                </button>
                 {errors.password && <span className="error-message">{errors.password}</span>}
               </div>
               {authMode === 'signup' && step === 2 && (
                 <>
                   <div className="form-group">
-                    <label>Confirm Password</label>
-                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} />
+                    <label htmlFor="auth-confirm">Confirm Password</label>
+                    <input
+                      id="auth-confirm"
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      placeholder="Confirm password"
+                      value={formData.confirmPassword}
+                      onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                      autoComplete="new-password"
+                    />
                   </div>
-                  <button type="button" className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
+                  <button type="button" className="btn-secondary btn-full auth-step-back" onClick={() => setStep(1)}>
+                    ← Back
+                  </button>
                 </>
               )}
-              <button type="submit" className="btn-primary btn-full" disabled={loading}>
-                {loading ? 'Processing...' : authMode === 'login' ? '🚀 Sign In' : step === 1 ? 'Continue →' : '🎉 Create Account'}
+              <button type="submit" className="btn-primary btn-full auth-submit-btn" disabled={loading}>
+                {loading ? 'Processing…' : authMode === 'login' ? '🚀 Sign In' : step === 1 ? 'Continue →' : '🎉 Create Account'}
               </button>
             </form>
-            <div className="auth-footer">
+            <div className="auth-footer auth-footer-enhanced">
               {authMode === 'login' ? (
-                <p>No account? <button onClick={() => { setAuthMode('signup'); resetForm(); }} className="btn-link">Create one</button></p>
+                <p>
+                  No account?{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signup');
+                      resetForm();
+                    }}
+                    className="btn-link"
+                  >
+                    Create one
+                  </button>
+                </p>
               ) : (
-                <p>Have account? <button onClick={() => { setAuthMode('login'); resetForm(); }} className="btn-link">Sign in</button></p>
+                <p>
+                  Have account?{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('login');
+                      resetForm();
+                    }}
+                    className="btn-link"
+                  >
+                    Sign in
+                  </button>
+                </p>
               )}
             </div>
           </>
@@ -1586,6 +1699,10 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(modalContent, document.body);
 }
 
 // ============================================
