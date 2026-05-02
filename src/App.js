@@ -1413,8 +1413,18 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const navigate = useNavigate();
   const emailInputRef = useRef(null);
 
-  const resetForm = useCallback(() => {
-    setFormData({ name: '', email: '', password: '', confirmPassword: '', role: 'developer' });
+  const resetForm = useCallback((options = {}) => {
+    const savedEmail =
+      options.prefillEmailFromStorage && typeof localStorage !== 'undefined'
+        ? localStorage.getItem('devMarketRememberedEmail') || ''
+        : '';
+    setFormData({
+      name: '',
+      email: savedEmail,
+      password: '',
+      confirmPassword: '',
+      role: 'developer'
+    });
     setErrors({});
     setStep(1);
     setShowSuccess(false);
@@ -1422,9 +1432,13 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     dispatch({ type: 'SET_AUTH_ERROR', payload: null });
   }, [dispatch]);
 
+  const [rememberEmail, setRememberEmail] = useState(() =>
+    typeof localStorage !== 'undefined' && !!localStorage.getItem('devMarketRememberedEmail')
+  );
+
   useEffect(() => {
     document.body.classList.add('modal-open');
-    resetForm();
+    resetForm({ prefillEmailFromStorage: authMode === 'login' });
     const focusId = window.requestAnimationFrame(() => {
       if (emailInputRef.current) {
         emailInputRef.current.focus({ preventScroll: true });
@@ -1435,6 +1449,20 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
       document.body.classList.remove('modal-open');
     };
   }, [authMode, resetForm]);
+
+  const passwordStrength = useMemo(() => {
+    const pw = formData.password || '';
+    if (!pw) return { level: 0, label: '' };
+    let score = 0;
+    if (pw.length >= 6) score++;
+    if (pw.length >= 10) score++;
+    if (/[0-9]/.test(pw)) score++;
+    if (/[^A-Za-z0-9]/.test(pw)) score++;
+    if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
+    const level = Math.min(4, score);
+    const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+    return { level, label: labels[level] || '' };
+  }, [formData.password]);
 
   const validateForm = () => {
     const newErrors = {};
