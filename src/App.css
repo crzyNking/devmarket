@@ -789,6 +789,7 @@ body.modal-open {
   z-index: 2000;
   animation: fadeIn 0.2s ease;
   padding: 20px;
+  min-height: 100dvh;
 }
 
 /* Auth Modal - perfectly centered */
@@ -827,11 +828,11 @@ body.modal-open {
 @keyframes authModalIn {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.9) translateY(20px);
+    transform: scale(0.94) translateY(20px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1) translateY(0);
+    transform: scale(1) translateY(0);
   }
 }
 
@@ -5810,7 +5811,8 @@ input:checked + .toggle-slider:before {
 }
 
 .social-btn-google,
-.social-btn-github {
+.social-btn-github,
+.social-btn-facebook {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5836,6 +5838,17 @@ input:checked + .toggle-slider:before {
 
 .social-btn-github:hover {
   background: #1a1e21;
+}
+
+.social-btn-facebook {
+  background: #1877f2;
+  border: 2px solid #1877f2;
+  color: #fff;
+}
+
+.social-btn-facebook:hover {
+  background: #1366d6;
+  border-color: #1366d6;
 }
 
 .social-icon {
@@ -6077,6 +6090,12 @@ input:checked + .toggle-slider:before {
    MOBILE RESPONSIVENESS IMPROVEMENTS
    ============================================ */
 @media (max-width: 480px) {
+  .modal-overlay {
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+  }
+
   .page-header h1 {
     font-size: 1.5rem;
   }
@@ -6111,6 +6130,15 @@ input:checked + .toggle-slider:before {
   
   .moderation-actions {
     flex-wrap: wrap;
+  }
+
+  .auth-header-new h2 {
+    font-size: 1.35rem;
+  }
+
+  .social-btn {
+    min-height: 44px;
+    font-size: 0.9rem;
   }
 }
 
