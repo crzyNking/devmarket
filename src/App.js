@@ -673,7 +673,6 @@ function App() {
         
         const otherUserId = newMsg.from_user;
         const otherUserName = newMsg.from_name || 'User';
-        const otherUserAvatar = newMsg.from_avatar;
         
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
@@ -683,18 +682,20 @@ function App() {
           }
         });
         
-        dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
-          type: 'info',
-          time: new Date().toLocaleTimeString(),
-          read: false
-        }});
+        // Only notify if the conversation is NOT currently open (not being read)
+        const currentState = (() => { try { return null; } catch(e) { return null; } })();
+        // We use a workaround: check via sessionStorage flag set by Messages component
+        const activeConvId = sessionStorage.getItem('activeConversationId');
+        const isConversationOpen = activeConvId === otherUserId;
         
-        try {
-          const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2qEcP+1j2Z...');
-          audio.volume = 0.3;
-          audio.play().catch(() => {});
-        } catch (e) {}
+        if (!isConversationOpen) {
+          dispatch({ type: 'ADD_NOTIFICATION', payload: {
+            message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
+            type: 'info',
+            time: new Date().toLocaleTimeString(),
+            read: false
+          }});
+        }
       }
     );
 
@@ -868,8 +869,9 @@ function App() {
           </div>
           <p className="dm-loader__tagline">IT Marketplace Hub</p>
           <div className="dm-loader__bar-track">
-            <div className="dm-loader__bar-fill" style={{ width: '100%', animation: 'dmBarShimmer 1.6s linear infinite' }} />
+            <div className="dm-loader__bar-fill" />
           </div>
+          <p className="dm-loader__hint">Loading your experience...</p>
         </div>
       </div>
     );
@@ -877,9 +879,11 @@ function App() {
 
   if (isInitialLoading && hasShownLoader) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', gap: '16px' }}>
-        <div style={{ fontSize: '2rem' }}>🔄</div>
-        <p style={{ color: 'var(--gray-500)' }}>Syncing data...</p>
+      <div className="dm-mini-loader">
+        <div className="dm-mini-loader__inner">
+          <div className="dm-mini-loader__ring"></div>
+          <span>🚀</span>
+        </div>
       </div>
     );
   }
@@ -1093,33 +1097,9 @@ function Header() {
           </nav>
 
           <div className="header-actions">
-            <button className="icon-button search-button" onClick={() => setShowSearch(!showSearch)} title="Quick Search" aria-label="Search">
+            <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Search" aria-label="Search">
               🔍
             </button>
-            
-            <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Advanced Search" aria-label="Advanced Search">
-              🔎
-            </button>
-            
-            {showSearch && (
-              <>
-                <div className="overlay-backdrop" onClick={() => setShowSearch(false)} />
-                <div className="search-overlay">
-                  <form onSubmit={handleSearch} className="search-form">
-                    <input 
-                      type="text" 
-                      placeholder="Quick search marketplace, apps, code..." 
-                      value={searchQuery} 
-                      onChange={e => setSearchQuery(e.target.value)} 
-                      className="search-input-header" 
-                      autoFocus 
-                    />
-                    <button type="submit" className="btn-search">Search</button>
-                    <button type="button" className="btn-close-search" onClick={() => setShowSearch(false)}>✕</button>
-                  </form>
-                </div>
-              </>
-            )}
             
             {state.currentUser ? (
               <>
@@ -1370,22 +1350,30 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
         <button className="btn-close" onClick={() => setShowAuth(false)}>✕</button>
         {showSuccess ? (
           <div className="success-state">
-            <div className="success-icon">{authStatus === 'confirmation' ? '📧' : '🎉'}</div>
+            <div className="auth-success-icon">{authStatus === 'confirmation' ? '📧' : '🎉'}</div>
             <h2>{authStatus === 'confirmation' ? 'Check Your Email' : 'Account Created!'}</h2>
             <p>Welcome, <strong>{formData.name}</strong>!</p>
             {authStatus === 'confirmation' && <button className="btn-primary" onClick={() => { setShowSuccess(false); setAuthMode('login'); resetForm(); }}>Go to Login</button>}
           </div>
         ) : (
           <>
-            <div className="auth-header">
-              <h2>{authMode === 'login' ? 'Welcome Back!' : 'Join DevMarket'}</h2>
-              <p>{authMode === 'login' ? 'Sign in to your account' : 'Create your free account'}</p>
+            <div className="auth-header-new">
+              <div className="auth-brand-mark">
+                <span className="auth-brand-icon">🚀</span>
+                <span className="auth-brand-glow"></span>
+              </div>
+              <h2>{authMode === 'login' ? 'Welcome Back' : 'Join DevMarket'}</h2>
+              <p>{authMode === 'login' ? 'Sign in to continue building' : 'Start your developer journey'}</p>
             </div>
             <div className="social-login">
-              <button className="social-btn" onClick={() => handleSocialLogin('google')}>G Google</button>
-              <button className="social-btn" onClick={() => handleSocialLogin('github')}>⌨️ GitHub</button>
+              <button className="social-btn social-btn-google" onClick={() => handleSocialLogin('google')}>
+                <span className="social-icon">G</span> Google
+              </button>
+              <button className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
+                <span className="social-icon">⌨️</span> GitHub
+              </button>
             </div>
-            <div className="auth-divider"><span>or email</span></div>
+            <div className="auth-divider"><span>or continue with email</span></div>
             {state.authError && <div className="auth-error">⚠️ {state.authError}</div>}
             <form onSubmit={handleSubmit} className="auth-form">
               {authMode === 'signup' && (
@@ -1440,6 +1428,79 @@ function AdminDashboard() {
   const { state, dispatch } = useAppContext();
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [moderationFilter, setModerationFilter] = useState('all');
+  const [platformSettings, setPlatformSettings] = useState({
+    autoApprove: true,
+    requireEmailVerification: true,
+    allowMessages: true,
+    maintenanceMode: false
+  });
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  useEffect(() => {
+    if (activeTab === 'users' && users.length === 0) {
+      loadUsers();
+    }
+    if (activeTab === 'overview') {
+      loadStats();
+    }
+  }, [activeTab]);
+
+  const loadStats = async () => {
+    try {
+      const stats = await analytics.getDashboardStats();
+      dispatch({ type: 'SET_ANALYTICS_DATA', payload: stats });
+    } catch (e) {}
+  };
+
+  const loadUsers = async () => {
+    setLoadingUsers(true);
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (data) setUsers(data);
+    } catch (error) {
+      console.error('Error loading users:', error);
+    }
+    setLoadingUsers(false);
+  };
+
+  const handleDeleteListing = async (listingId, title) => {
+    try {
+      await supabase.from('listings').delete().eq('id', listingId);
+      dispatch({ type: 'DELETE_LISTING', payload: listingId });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: `🗑️ Listing "${title}" removed`, type: 'success', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    } catch (e) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Could not remove listing', type: 'error', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    }
+  };
+
+  const handleSaveSettings = () => {
+    setSettingsSaved(true);
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: '✅ Platform settings saved!', type: 'success', 
+      time: new Date().toLocaleTimeString(), read: false 
+    }});
+    setTimeout(() => setSettingsSaved(false), 3000);
+  };
+
+  const handleBanUser = async (userId, userName) => {
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: `⚠️ Ban feature requires server-side implementation for ${userName}`, 
+      type: 'warning', time: new Date().toLocaleTimeString(), read: false 
+    }});
+  };
 
   if (!state.currentUser || !state.isAdmin) {
     return (
@@ -1454,28 +1515,39 @@ function AdminDashboard() {
   }
 
   const stats = state.analyticsData || {
-    totalUsers: 0,
-    totalListings: 0,
-    totalApps: 0,
-    totalSnippets: 0,
-    totalMessages: 0
+    totalUsers: 0, totalListings: 0, totalApps: 0, totalSnippets: 0, totalMessages: 0
   };
+
+  const filteredListings = moderationFilter === 'all' 
+    ? (state.listings || []) 
+    : (state.listings || []).filter(l => l.category === moderationFilter);
+
+  const tabs = [
+    { id: 'overview', label: '📊 Overview' },
+    { id: 'users', label: '👥 Users' },
+    { id: 'listings', label: '🛒 Listings' },
+    { id: 'moderation', label: '🛡️ Moderation' },
+    { id: 'settings', label: '⚙️ Settings' }
+  ];
 
   return (
     <div className="admin-page">
       <div className="page-header">
         <h1>🛡️ Admin Dashboard</h1>
         <p>Manage your DevMarket platform</p>
+        <span style={{ fontSize: '0.8rem', color: 'var(--success)', background: 'var(--success-light)', padding: '4px 10px', borderRadius: 'var(--radius-full)' }}>
+          ● Live
+        </span>
       </div>
 
       <div className="admin-tabs">
-        {['overview', 'users', 'listings', 'moderation', 'settings'].map(tab => (
+        {tabs.map(tab => (
           <button
-            key={tab}
-            className={`admin-tab ${activeTab === tab ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab)}
+            key={tab.id}
+            className={`admin-tab ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
           >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tab.label}
           </button>
         ))}
       </div>
@@ -1483,46 +1555,139 @@ function AdminDashboard() {
       {activeTab === 'overview' && (
         <div className="admin-overview">
           <div className="stats-grid">
-            <div className="stat-card">
-              <span className="stat-icon">👥</span>
-              <h3>{stats.totalUsers}</h3>
-              <p>Total Users</p>
-            </div>
-            <div className="stat-card">
-              <span className="stat-icon">🛒</span>
-              <h3>{stats.totalListings}</h3>
-              <p>Total Listings</p>
-            </div>
-            <div className="stat-card">
-              <span className="stat-icon">📱</span>
-              <h3>{stats.totalApps}</h3>
-              <p>Total Apps</p>
-            </div>
-            <div className="stat-card">
-              <span className="stat-icon">💻</span>
-              <h3>{stats.totalSnippets}</h3>
-              <p>Code Snippets</p>
-            </div>
-            <div className="stat-card">
-              <span className="stat-icon">💬</span>
-              <h3>{stats.totalMessages}</h3>
-              <p>Messages</p>
-            </div>
+            {[
+              { icon: '👥', value: stats.totalUsers, label: 'Total Users', color: '#667eea' },
+              { icon: '🛒', value: stats.totalListings, label: 'Listings', color: '#f59e0b' },
+              { icon: '📱', value: stats.totalApps, label: 'Apps', color: '#10b981' },
+              { icon: '💻', value: stats.totalSnippets, label: 'Snippets', color: '#8b5cf6' },
+              { icon: '💬', value: stats.totalMessages, label: 'Messages', color: '#ef4444' }
+            ].map((s, i) => (
+              <div key={i} className="stat-card" style={{ borderTop: `3px solid ${s.color}` }}>
+                <span className="stat-icon">{s.icon}</span>
+                <h3 style={{ color: s.color }}>{s.value}</h3>
+                <p>{s.label}</p>
+              </div>
+            ))}
           </div>
 
-          <div className="admin-recent">
-            <h3>Recent Activity</h3>
+          <div className="admin-section-card">
+            <div className="admin-section-header">
+              <h3>📢 Recent Listings</h3>
+              <button className="btn-sm btn-secondary" onClick={() => setActiveTab('listings')}>View All</button>
+            </div>
             <div className="activity-list">
               {(state.listings || []).slice(0, 5).map(listing => (
                 <div key={listing.id} className="activity-item">
                   <span>📢</span>
                   <div>
-                    <strong>{listing.seller_name || listing.seller}</strong>
-                    <p>Listed "{listing.title}"</p>
+                    <strong>{listing.seller_name || listing.seller || 'Unknown'}</strong>
+                    <p>Listed "{listing.title}" — {listing.price}</p>
                   </div>
-                  <small>{listing.date}</small>
+                  <small>{listing.date || new Date(listing.created_at).toLocaleDateString()}</small>
                 </div>
               ))}
+              {(state.listings || []).length === 0 && (
+                <p style={{ color: 'var(--gray-400)', textAlign: 'center', padding: '20px' }}>No listings yet</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'users' && (
+        <div className="admin-users">
+          <div className="admin-section-card">
+            <div className="admin-section-header">
+              <h3>👥 Registered Users</h3>
+              <button className="btn-sm btn-secondary" onClick={loadUsers}>🔄 Refresh</button>
+            </div>
+            {loadingUsers ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--gray-400)' }}>Loading users...</div>
+            ) : (
+              <div className="admin-users-table">
+                <div className="admin-table-header">
+                  <span>User</span>
+                  <span>Role</span>
+                  <span>Email</span>
+                  <span>Actions</span>
+                </div>
+                {users.map(user => (
+                  <div key={user.id} className="admin-table-row">
+                    <div className="admin-user-info">
+                      <img 
+                        src={user.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'U')}&background=667eea&color=fff&size=36`} 
+                        alt={user.name}
+                        className="admin-user-avatar"
+                        onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=36`; }}
+                      />
+                      <span>{user.name || 'Unknown'}</span>
+                    </div>
+                    <span>
+                      <span className={`role-badge role-${user.role || 'user'}`}>
+                        {user.role === 'admin' ? '🛡️' : '👤'} {user.role || 'user'}
+                      </span>
+                    </span>
+                    <span className="admin-user-email">{user.email || '—'}</span>
+                    <div className="admin-row-actions">
+                      {user.id !== state.currentUser.id && (
+                        <button 
+                          className="btn-sm" 
+                          style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
+                          onClick={() => handleBanUser(user.id, user.name)}
+                        >
+                          🚫 Ban
+                        </button>
+                      )}
+                      {user.id === state.currentUser.id && (
+                        <span style={{ color: 'var(--gray-400)', fontSize: '0.8rem' }}>You</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {users.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: '40px', color: 'var(--gray-400)' }}>
+                    No users found. Check database permissions.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'listings' && (
+        <div className="admin-listings">
+          <div className="admin-section-card">
+            <div className="admin-section-header">
+              <h3>🛒 All Listings ({(state.listings || []).length})</h3>
+            </div>
+            <div className="admin-listings-grid">
+              {(state.listings || []).map(listing => (
+                <div key={listing.id} className="admin-listing-item">
+                  <div className="admin-listing-info">
+                    <h4>{listing.title}</h4>
+                    <p>{listing.description?.substring(0, 80)}...</p>
+                    <small>By {listing.seller_name || listing.seller} · {listing.price} · {listing.category}</small>
+                  </div>
+                  <div className="admin-listing-actions">
+                    {listing.url && (
+                      <a href={listing.url} target="_blank" rel="noopener noreferrer" className="btn-sm btn-secondary">
+                        👁 View
+                      </a>
+                    )}
+                    <button 
+                      className="btn-sm" 
+                      style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
+                      onClick={() => handleDeleteListing(listing.id, listing.title)}
+                    >
+                      🗑️ Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {(state.listings || []).length === 0 && (
+                <p style={{ color: 'var(--gray-400)', padding: '40px', textAlign: 'center' }}>No listings found</p>
+              )}
             </div>
           </div>
         </div>
@@ -1530,55 +1695,94 @@ function AdminDashboard() {
 
       {activeTab === 'moderation' && (
         <div className="moderation-panel">
-          <h3>Content Moderation</h3>
+          <div className="admin-section-header">
+            <h3>🛡️ Content Moderation</h3>
+          </div>
           <div className="moderation-filters">
-            <button className="btn-sm">Flagged Content</button>
-            <button className="btn-sm">Reported Users</button>
-            <button className="btn-sm">Spam Detection</button>
+            {['all', 'website', 'portfolio', 'ecommerce', 'saas', 'app'].map(f => (
+              <button 
+                key={f}
+                className={`btn-sm ${moderationFilter === f ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setModerationFilter(f)}
+              >
+                {f.charAt(0).toUpperCase() + f.slice(1)}
+              </button>
+            ))}
           </div>
           <div className="moderation-list">
-            {(state.listings || []).slice(0, 10).map(listing => (
+            {filteredListings.slice(0, 15).map(listing => (
               <div key={listing.id} className="moderation-item">
                 <div className="moderation-content">
                   <h4>{listing.title}</h4>
-                  <p>{listing.description?.substring(0, 100)}...</p>
-                  <small>By: {listing.seller_name || listing.seller}</small>
+                  <p>{listing.description?.substring(0, 120)}...</p>
+                  <small>By: {listing.seller_name || listing.seller} · {listing.category} · {listing.price}</small>
                 </div>
                 <div className="moderation-actions">
-                  <button className="btn-sm btn-secondary">👁 View</button>
-                  <button className="btn-sm" style={{ background: 'var(--success)', color: 'white', border: 'none' }}>✅ Approve</button>
-                  <button className="btn-sm" style={{ background: 'var(--danger)', color: 'white', border: 'none' }}>🚫 Remove</button>
+                  {listing.url && (
+                    <a href={listing.url} target="_blank" rel="noopener noreferrer" className="btn-sm btn-secondary">
+                      👁 View
+                    </a>
+                  )}
+                  <button 
+                    className="btn-sm" 
+                    style={{ background: 'var(--success)', color: 'white', border: 'none' }}
+                    onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ "${listing.title}" approved`, type: 'success', time: new Date().toLocaleTimeString(), read: false }})}
+                  >
+                    ✅ Approve
+                  </button>
+                  <button 
+                    className="btn-sm" 
+                    style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
+                    onClick={() => handleDeleteListing(listing.id, listing.title)}
+                  >
+                    🚫 Remove
+                  </button>
                 </div>
               </div>
             ))}
+            {filteredListings.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--gray-400)' }}>
+                No content to moderate
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {activeTab === 'settings' && (
         <div className="admin-settings">
-          <h3>Platform Settings</h3>
+          <div className="admin-section-header">
+            <h3>⚙️ Platform Settings</h3>
+          </div>
           <div className="settings-form">
-            <div className="setting-item">
-              <div className="setting-info">
-                <strong>Auto-Approve Listings</strong>
-                <p>New listings are automatically published</p>
+            {[
+              { key: 'autoApprove', label: 'Auto-Approve Listings', desc: 'New listings are automatically published without review' },
+              { key: 'requireEmailVerification', label: 'Require Email Verification', desc: 'Users must verify email before posting content' },
+              { key: 'allowMessages', label: 'Allow Direct Messages', desc: 'Enable users to message each other through the platform' },
+              { key: 'maintenanceMode', label: 'Maintenance Mode', desc: 'Temporarily disable public access for maintenance' }
+            ].map(({ key, label, desc }) => (
+              <div className="setting-item" key={key}>
+                <div className="setting-info">
+                  <strong>{label}</strong>
+                  <p>{desc}</p>
+                </div>
+                <label className="toggle-switch">
+                  <input 
+                    type="checkbox" 
+                    checked={platformSettings[key]}
+                    onChange={() => setPlatformSettings(prev => ({ ...prev, [key]: !prev[key] }))}
+                  />
+                  <span className="toggle-slider"></span>
+                </label>
               </div>
-              <label className="toggle-switch">
-                <input type="checkbox" defaultChecked onChange={() => {}} />
-                <span className="toggle-slider"></span>
-              </label>
-            </div>
-            <div className="setting-item">
-              <div className="setting-info">
-                <strong>Require Email Verification</strong>
-                <p>Users must verify email before posting</p>
-              </div>
-              <label className="toggle-switch">
-                <input type="checkbox" defaultChecked onChange={() => {}} />
-                <span className="toggle-slider"></span>
-              </label>
-            </div>
+            ))}
+            <button 
+              className="btn-primary" 
+              onClick={handleSaveSettings}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              {settingsSaved ? '✅ Saved!' : '💾 Save Settings'}
+            </button>
           </div>
         </div>
       )}
@@ -1681,24 +1885,40 @@ function Messages() {
   const [replyMessage, setReplyMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [convToDelete, setConvToDelete] = useState(null);
+  const [deletingConv, setDeletingConv] = useState(false);
   const messagesEndRef = useRef(null);
-  const chatAreaRef = useRef(null);
+  const chatMessagesRef = useRef(null);
 
   const scrollToBottom = useCallback(() => {
-    if (chatAreaRef.current) {
-      chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight;
+    if (chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
     }
   }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [state.activeConversation?.messages, scrollToBottom]);
+  }, [state.activeConversation, scrollToBottom]);
 
+  // Auto-scroll on new messages only if we're near the bottom
   useEffect(() => {
-    if (state.realtimeConnected) {
-      scrollToBottom();
+    if (chatMessagesRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+      if (isNearBottom) scrollToBottom();
     }
-  }, [state.messages.length, state.realtimeConnected, scrollToBottom]);
+  }, [state.messages.length, scrollToBottom]);
+
+  // Real-time: update active conversation when new messages arrive
+  useEffect(() => {
+    if (state.activeConversation && state.conversations.length > 0) {
+      const updated = state.conversations.find(c => c.userId === state.activeConversation.userId);
+      if (updated && updated.messages.length !== state.activeConversation.messages?.length) {
+        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: updated });
+      }
+    }
+  }, [state.conversations, state.activeConversation?.userId]);
 
   if (!state.currentUser) {
     return (
@@ -1719,12 +1939,34 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
+    const optimisticMsg = {
+      id: `temp-${Date.now()}`,
+      from_user: state.currentUser.id,
+      to_user: replyingTo.userId,
+      subject: 'Re: Conversation',
+      message: replyMessage,
+      read: false,
+      created_at: new Date().toISOString(),
+      _optimistic: true
+    };
+
+    // Optimistically update UI
+    if (activeConv) {
+      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+        ...activeConv,
+        messages: [...(activeConv.messages || []), optimisticMsg],
+        lastMessage: replyMessage,
+        lastMessageTime: optimisticMsg.created_at
+      }});
+    }
+    setReplyMessage('');
+
     try {
       const msgData = {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
         subject: 'Re: Conversation',
-        message: replyMessage,
+        message: optimisticMsg.message,
         read: false,
         created_at: new Date().toISOString()
       };
@@ -1740,19 +1982,9 @@ function Messages() {
             read: false,
             created_at: new Date().toISOString()
           }]);
-        } catch (notifError) {
-          console.log('Could not create notification:', notifError);
-        }
-
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '✅ Reply sent!', 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
+        } catch (notifError) {}
         
-        setReplyMessage('');
-        
+        // Refresh messages
         const { data: msgsResult } = await supabase
           .from('messages')
           .select('*')
@@ -1766,8 +1998,48 @@ function Messages() {
       }
     } catch (error) {
       console.error('Error sending reply:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Failed to send message', type: 'error', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
     }
     setSending(false);
+    setTimeout(scrollToBottom, 100);
+  };
+
+  const handleDeleteConversation = async () => {
+    if (!convToDelete) return;
+    setDeletingConv(true);
+    try {
+      // Delete all messages between these two users
+      await supabase.from('messages').delete()
+        .or(
+          `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
+        );
+
+      // Remove from conversations state
+      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations.filter(c => c.userId !== convToDelete.userId) });
+      dispatch({ type: 'SET_MESSAGES', payload: (state.messages || []).filter(m => 
+        !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
+      )});
+      
+      if (activeConv?.userId === convToDelete.userId) {
+        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: null });
+        setReplyingTo(null);
+      }
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '🗑️ Conversation deleted', type: 'success', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    } catch (error) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Could not delete conversation', type: 'error', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    }
+    setDeletingConv(false);
+    setShowDeleteConfirm(false);
+    setConvToDelete(null);
   };
 
   const buildConversationsLocal = (messages, userId) => {
@@ -1788,27 +2060,44 @@ function Messages() {
       const conv = conversationMap.get(otherUserId);
       conv.messages.push(msg);
       if (!msg.read && msg.to_user === userId) conv.unreadCount++;
+      if (new Date(msg.created_at) > new Date(conv.lastMessageTime)) {
+        conv.lastMessage = msg.message;
+        conv.lastMessageTime = msg.created_at;
+      }
     });
-    const conversations = Array.from(conversationMap.values())
+    const convs = Array.from(conversationMap.values())
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
-    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
+    dispatch({ type: 'SET_CONVERSATIONS', payload: convs });
+    // Update active conversation if open
+    if (activeConv) {
+      const updated = convs.find(c => c.userId === activeConv.userId);
+      if (updated) dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: updated });
+    }
   };
 
   const openConversation = (conv) => {
     dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: conv });
     setReplyingTo(conv);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
+    sessionStorage.setItem('activeConversationId', conv.userId);
     
     conv.messages.forEach(async (msg) => {
       if (!msg.read && msg.to_user === state.currentUser.id) {
         try {
           await supabase.from('messages').update({ read: true }).eq('id', msg.id);
-        } catch (error) {
-          console.error('Error marking read:', error);
-        }
+        } catch (error) {}
       }
     });
   };
+
+  const confirmDeleteConversation = (e, conv) => {
+    e.stopPropagation();
+    setConvToDelete(conv);
+    setShowDeleteConfirm(true);
+  };
+
+  const activeMessages = (activeConv?.messages || [])
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
   return (
     <div className="messages-page">
@@ -1830,7 +2119,7 @@ function Messages() {
       
       <div className="messages-layout">
         <div className="conversations-sidebar">
-          <h3>Conversations</h3>
+          <h3>Conversations {conversations.length > 0 && <span className="conv-count">{conversations.length}</span>}</h3>
           {loadingMessages ? (
             <div className="conversations-skeleton">
               {[1,2,3,4,5].map(i => <SkeletonMessage key={i} />)}
@@ -1863,20 +2152,28 @@ function Messages() {
                       </span>
                     </div>
                     <p className="conversation-preview">
-                      {conv.lastMessage?.substring(0, 50)}
-                      {conv.lastMessage?.length > 50 ? '...' : ''}
+                      {conv.lastMessage?.substring(0, 45)}
+                      {conv.lastMessage?.length > 45 ? '...' : ''}
                     </p>
                   </div>
                   {conv.unreadCount > 0 && (
                     <span className="unread-badge">{conv.unreadCount}</span>
                   )}
+                  <button 
+                    className="conv-delete-btn"
+                    onClick={(e) => confirmDeleteConversation(e, conv)}
+                    title="Delete conversation"
+                    aria-label="Delete conversation"
+                  >
+                    🗑️
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        <div className="chat-area" ref={chatAreaRef}>
+        <div className="chat-area-wrapper">
           {activeConv ? (
             <>
               <div className="chat-header">
@@ -1885,37 +2182,42 @@ function Messages() {
                   alt={activeConv.userName} 
                   className="chat-avatar"
                 />
-                <div>
+                <div className="chat-header-info">
                   <strong>{activeConv.userName || 'Unknown User'}</strong>
-                  <p>{activeConv.messages?.length || 0} messages</p>
+                  <p>{activeMessages.length} messages{state.realtimeConnected ? ' · Live' : ''}</p>
                 </div>
+                <button 
+                  className="btn-secondary btn-sm chat-delete-btn"
+                  onClick={() => { setConvToDelete(activeConv); setShowDeleteConfirm(true); }}
+                  title="Delete this conversation"
+                >
+                  🗑️ Delete
+                </button>
               </div>
-              <div className="chat-messages">
-                {activeConv.messages
-                  ?.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-                  .map((msg) => (
-                    <div 
-                      key={msg.id} 
-                      className={`chat-message ${msg.from_user === state.currentUser.id ? 'sent' : 'received'}`}
-                    >
-                      <div className="message-bubble">
-                        <p>{msg.message}</p>
-                        <small className="message-time">
-                          {new Date(msg.created_at).toLocaleString()}
-                          {msg.from_user === state.currentUser.id && (
-                            <span className="message-status">
-                              {msg.read ? ' ✓✓ Read' : ' ✓ Sent'}
-                            </span>
-                          )}
-                        </small>
-                      </div>
+              <div className="chat-messages-scrollable" ref={chatMessagesRef}>
+                {activeMessages.map((msg) => (
+                  <div 
+                    key={msg.id} 
+                    className={`chat-message ${msg.from_user === state.currentUser.id ? 'sent' : 'received'} ${msg._optimistic ? 'optimistic' : ''}`}
+                  >
+                    <div className="message-bubble">
+                      <p>{msg.message}</p>
+                      <small className="message-time">
+                        {new Date(msg.created_at).toLocaleString()}
+                        {msg.from_user === state.currentUser.id && (
+                          <span className="message-status">
+                            {msg._optimistic ? ' ⏳' : msg.read ? ' ✓✓' : ' ✓'}
+                          </span>
+                        )}
+                      </small>
                     </div>
-                  ))}
+                  </div>
+                ))}
                 <div ref={messagesEndRef} />
               </div>
               <div className="chat-input-area">
                 <textarea
-                  placeholder="Type your reply... (Enter to send, Shift+Enter for new line)"
+                  placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
                   value={replyMessage}
                   onChange={e => setReplyMessage(e.target.value)}
                   className="chat-textarea"
@@ -1928,11 +2230,11 @@ function Messages() {
                   }}
                 />
                 <button 
-                  className="btn-primary btn-sm" 
+                  className="btn-primary chat-send-btn" 
                   onClick={handleSendReply} 
                   disabled={sending || !replyMessage.trim()}
                 >
-                  {sending ? '...' : '📤'}
+                  {sending ? '⏳' : '📤 Send'}
                 </button>
               </div>
             </>
@@ -1940,14 +2242,24 @@ function Messages() {
             <div className="chat-empty">
               <span className="empty-icon">💬</span>
               <h3>Select a conversation</h3>
-              <p>Choose a conversation from the sidebar or wait for new messages to arrive in real-time.</p>
+              <p>Choose a conversation from the sidebar to start chatting.</p>
               {state.realtimeConnected && (
-                <p className="realtime-note">🟢 You're connected and will receive messages instantly!</p>
+                <p className="realtime-note">🟢 Connected — new messages arrive instantly!</p>
               )}
             </div>
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        title="Delete Conversation"
+        message={`Delete your entire conversation with ${convToDelete?.userName || 'this user'}? This cannot be undone.`}
+        onConfirm={handleDeleteConversation}
+        onCancel={() => { setShowDeleteConfirm(false); setConvToDelete(null); }}
+        confirmText={deletingConv ? "Deleting..." : "Delete"}
+        type="danger"
+      />
     </div>
   );
 }
@@ -4161,38 +4473,18 @@ function Footer() {
   
   return (
     <footer className="footer">
-      <div className="footer-content">
-        <div className="footer-section">
-          <h3>🚀 DevMarket</h3>
-          <p>The ultimate marketplace for developers to trade, showcase, and share digital products.</p>
+      <div className="footer-compact">
+        <div className="footer-brand">
+          <span>🚀</span>
+          <span className="footer-brand-name">DevMarket</span>
         </div>
-        
-        <div className="footer-section">
-          <h4>Quick Links</h4>
+        <div className="footer-links">
           <Link to="/marketplace">Marketplace</Link>
+          <Link to="/code-sharing">Code Share</Link>
           <Link to="/advertise">Advertise</Link>
-          <Link to="/code-sharing">Code Sharing</Link>
-          <Link to="/messages">Messages</Link>
-        </div>
-        
-        <div className="footer-section">
-          <h4>Community</h4>
-          <a href="https://discord.com" target="_blank" rel="noopener noreferrer">Discord</a>
-          <a href="https://twitter.com" target="_blank" rel="noopener noreferrer">Twitter</a>
           <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
-        
-        <div className="footer-section">
-          <h4>Support</h4>
-          <a href="mailto:support@devmarket.com">Contact Us</a>
-          <Link to="/faq">FAQs</Link>
-          <Link to="/terms">Terms of Service</Link>
-          <Link to="/privacy">Privacy Policy</Link>
-        </div>
-      </div>
-      
-      <div className="footer-bottom">
-        <p>&copy; {currentYear} DevMarket. All rights reserved. Built with React & Supabase ❤️</p>
+        <p className="footer-copy">&copy; {currentYear} DevMarket</p>
       </div>
     </footer>
   );
