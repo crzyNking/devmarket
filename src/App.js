@@ -13,6 +13,13 @@ import './App.css';
 // ============================================
 const AppContext = createContext();
 
+// Preset Avatars for Profile Selection
+const PRESET_AVATARS = [
+  'https://ui-avatars.com/api/?name=Dev&background=667eea&color=fff&size=200',
+  'https://ui-avatars.com/api/?name=Dev&background=10b981&color=fff&size=200',
+  'https://ui-avatars.com/api/?name=Dev&background=f59e0b&color=fff&size=200'
+];
+
 const initialState = {
   listings: [],
   apps: [],
@@ -36,7 +43,16 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  maintenanceMode: false
+  maintenanceMode: false,
+  // Notification preferences
+  notificationSettings: {
+    emailNotifications: true,
+    pushNotifications: true,
+    listingUpdates: true,
+    messageAlerts: true,
+    favoritesActivity: true,
+    weeklyDigest: false
+  }
 };
 
 const MAINTENANCE_MODE_KEY = 'devMarketMaintenanceMode';
@@ -2443,10 +2459,11 @@ function Messages() {
 }
 
 // ============================================
-// PROFILE WITH ENHANCED AVATAR UPLOAD
+// PROFILE WITH ENHANCED AVATAR UPLOAD & PRESET SELECTION
 // ============================================
 function Profile() {
   const { state, dispatch } = useAppContext();
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   
   if (!state.currentUser) {
     return (
@@ -2508,15 +2525,51 @@ function Profile() {
     }});
   };
 
+  const selectPresetAvatar = (presetUrl) => {
+    handleAvatarUpdate(presetUrl);
+    setShowAvatarPicker(false);
+  };
+
   return (
     <div className="profile-page">
       <div className="profile-header">
-        <AvatarUpload 
-          currentAvatar={state.profile?.avatar_url} 
-          userName={userName} 
-          onAvatarUpdate={handleAvatarUpdate}
-          size="large"
-        />
+        <div className="avatar-section-wrapper">
+          <AvatarUpload 
+            currentAvatar={state.profile?.avatar_url} 
+            userName={userName} 
+            onAvatarUpdate={handleAvatarUpdate}
+            size="large"
+          />
+          <button 
+            className="btn-secondary btn-sm avatar-preset-btn" 
+            onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+            style={{ marginTop: '8px' }}
+          >
+            🎨 Choose Avatar
+          </button>
+          
+          {showAvatarPicker && (
+            <div className="avatar-preset-picker">
+              <h4>Choose an Avatar</h4>
+              <div className="preset-avatars-grid">
+                {PRESET_AVATARS.map((preset, index) => (
+                  <button
+                    key={index}
+                    className={`preset-avatar-btn ${state.profile?.avatar_url === preset ? 'selected' : ''}`}
+                    onClick={() => selectPresetAvatar(preset)}
+                  >
+                    <img 
+                      src={preset} 
+                      alt={`Preset ${index + 1}`}
+                      className="preset-avatar-img"
+                    />
+                  </button>
+                ))}
+              </div>
+              <p className="preset-note">Or upload your own photo above</p>
+            </div>
+          )}
+        </div>
         <div>
           <h1>{userName}</h1>
           <p>{state.currentUser.email}</p>
