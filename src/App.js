@@ -35,7 +35,12 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: true
+  notificationsEnabled: (() => {
+    try {
+      const saved = localStorage.getItem('devMarketNotificationsEnabled');
+      return saved === null ? true : saved === 'true';
+    } catch { return true; }
+  })()
 };
 
 function appReducer(state, action) {
@@ -85,6 +90,7 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
     case 'SET_NOTIFICATIONS_ENABLED':
+      try { localStorage.setItem('devMarketNotificationsEnabled', String(action.payload)); } catch {}
       return { ...state, notificationsEnabled: action.payload };
     case 'ADD_NOTIFICATION': 
       if (!state.notificationsEnabled) return state;
@@ -1010,8 +1016,50 @@ function Header() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [showInstallBtn, setShowInstallBtn] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // PWA Install prompt
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+      setShowInstallBtn(true);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    // Also show if already installed check
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setShowInstallBtn(false);
+    }
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!installPrompt) {
+      // Fallback: show instructions
+      dispatch({ type: 'ADD_NOTIFICATION', payload: {
+        message: '📲 To install: tap the browser menu → "Add to Home Screen"',
+        type: 'info',
+        time: new Date().toLocaleTimeString(),
+        read: false
+      }});
+      return;
+    }
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setShowInstallBtn(false);
+      setInstallPrompt(null);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: {
+        message: '🎉 App installed successfully!',
+        type: 'success',
+        time: new Date().toLocaleTimeString(),
+        read: false
+      }});
+    }
+  };
 
   const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
   const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
@@ -1098,6 +1146,11 @@ function Header() {
           </nav>
 
           <div className="header-actions">
+            {showInstallBtn && (
+              <button className="btn-install" onClick={handleInstallApp} title="Install App">
+                <span>📲</span> <span className="btn-install-label">Install</span>
+              </button>
+            )}
             <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Search" aria-label="Search">
               🔍
             </button>
@@ -1408,6 +1461,9 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
               </button>
               <button className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
                 <span className="social-icon">⌨️</span> GitHub
+              </button>
+              <button className="social-btn social-btn-facebook" onClick={() => handleSocialLogin('facebook')}>
+                <span className="social-icon">f</span> Facebook
               </button>
             </div>
             <div className="auth-divider"><span>or continue with email</span></div>
@@ -2366,7 +2422,80 @@ function Messages() {
 }
 
 // ============================================
-// PROFILE WITH ENHANCED AVATAR UPLOAD
+// AVATAR SELECTOR COMPONENT (3 preset options)
+// ============================================
+const PRESET_AVATARS = [
+  {
+    id: 'avatar1',
+    url: 'https://api.dicebear.com/7.x/adventurer/svg?seed=DevMarket1&backgroundColor=b6e3f4',
+    label: 'Explorer'
+  },
+  {
+    id: 'avatar2',
+    url: 'https://api.dicebear.com/7.x/adventurer/svg?seed=DevMarket2&backgroundColor=c0aede',
+    label: 'Creator'
+  },
+  {
+    id: 'avatar3',
+    url: 'https://api.dicebear.com/7.x/adventurer/svg?seed=DevMarket3&backgroundColor=d1d4f9',
+    label: 'Builder'
+  }
+];
+
+function AvatarSelector({ currentAvatar, userName, onAvatarUpdate }) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleSelect = async (avatar) => {
+    setSaving(true);
+    await onAvatarUpdate(avatar.url);
+    setSaving(false);
+    setShowPicker(false);
+  };
+
+  const displayAvatar = currentAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
+  
+  return (
+    <div className="avatar-selector-container">
+      <div className="avatar-preview-wrapper" onClick={() => setShowPicker(true)} style={{ width: '100px', height: '100px' }}>
+        <img src={displayAvatar} alt={userName || 'User'} className="avatar-upload-preview" style={{ width: '100px', height: '100px' }} onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`; }} />
+        <div className="avatar-upload-overlay" style={{ fontSize: '0.85rem' }}>
+          <span>🎨</span>
+          <span>{saving ? 'Saving...' : 'Change'}</span>
+        </div>
+      </div>
+      
+      {showPicker && (
+        <div className="modal-overlay" onClick={() => setShowPicker(false)}>
+          <div className="avatar-picker-modal" onClick={e => e.stopPropagation()}>
+            <div className="avatar-picker-header">
+              <h3>🎨 Choose Your Avatar</h3>
+              <button className="btn-close" onClick={() => setShowPicker(false)}>✕</button>
+            </div>
+            <p className="avatar-picker-desc">Select one of the preset avatars below</p>
+            <div className="avatar-picker-grid">
+              {PRESET_AVATARS.map(avatar => (
+                <button
+                  key={avatar.id}
+                  className={`avatar-picker-option ${currentAvatar === avatar.url ? 'selected' : ''}`}
+                  onClick={() => handleSelect(avatar)}
+                  disabled={saving}
+                >
+                  <img src={avatar.url} alt={avatar.label} className="avatar-picker-img" />
+                  <span>{avatar.label}</span>
+                  {currentAvatar === avatar.url && <span className="avatar-selected-check">✓</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// PROFILE WITH ENHANCED AVATAR SELECTOR
 // ============================================
 function Profile() {
   const { state, dispatch } = useAppContext();
@@ -2431,11 +2560,10 @@ function Profile() {
   return (
     <div className="profile-page">
       <div className="profile-header">
-        <AvatarUpload 
+        <AvatarSelector 
           currentAvatar={state.profile?.avatar_url} 
           userName={userName} 
           onAvatarUpdate={handleAvatarUpdate}
-          size="large"
         />
         <div>
           <h1>{userName}</h1>
@@ -4262,6 +4390,24 @@ function Settings() {
               <form onSubmit={handleProfileUpdate} className="settings-form">
                 <h3>Profile Information</h3>
                 <p className="settings-description">Update your personal information and public profile</p>
+
+                <div className="form-group" style={{ textAlign: 'center', marginBottom: '24px' }}>
+                  <label style={{ display: 'block', marginBottom: '12px' }}>Profile Picture</label>
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <AvatarSelector
+                      currentAvatar={state.profile?.avatar_url}
+                      userName={state.profile?.name || state.currentUser?.email}
+                      onAvatarUpdate={async (url) => {
+                        dispatch({ type: 'UPDATE_AVATAR', payload: url });
+                        try {
+                          await supabase.from('profiles').upsert({ id: state.currentUser.id, avatar_url: url, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+                        } catch (e) {}
+                        dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Avatar updated!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+                      }}
+                    />
+                  </div>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--gray-400)', marginTop: '8px' }}>Click avatar to choose from 3 preset options</p>
+                </div>
                 
                 <div className="form-group">
                   <label>Full Name</label>
@@ -4410,7 +4556,23 @@ function Settings() {
                     <input
                       type="checkbox"
                       checked={state.notificationsEnabled}
-                      onChange={() => dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: !state.notificationsEnabled })}
+                      onChange={async () => {
+                        const newVal = !state.notificationsEnabled;
+                        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
+                        // Save to supabase profile too
+                        if (state.currentUser) {
+                          try {
+                            await supabase.from('profiles').upsert({
+                              id: state.currentUser.id,
+                              notifications_enabled: newVal,
+                              updated_at: new Date().toISOString()
+                            }, { onConflict: 'id' });
+                          } catch(e) {}
+                        }
+                        if (!newVal) {
+                          dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🔕 Notifications disabled', type: 'info', time: new Date().toLocaleTimeString(), read: false }});
+                        }
+                      }}
                     />
                     <span className="toggle-slider"></span>
                   </label>
