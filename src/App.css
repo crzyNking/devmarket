@@ -918,198 +918,206 @@ body.modal-open {
 /* ============================================
    MODAL STYLES
    ============================================ */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-  animation: fadeIn 0.2s ease;
-  padding: 20px;
+/* ============================================
+   AUTH MODAL RESPONSIVE FIX
+   ============================================ */
+
+/* Ensure the modal overlay properly centers content */
+.modal-overlay.auth-overlay {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 16px !important;
+  overflow-y: auto !important;
 }
 
+/* Auth modal improvements for mobile */
 .auth-modal {
-  background: var(--white);
-  border-radius: var(--radius-2xl);
-  padding: 48px;
+  margin: auto !important;
+  position: relative !important;
   max-width: 460px;
   width: 100%;
-  position: relative;
-  animation: authModalIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  box-shadow: var(--shadow-2xl);
   max-height: 90vh;
   overflow-y: auto;
 }
 
-.auth-overlay {
-  align-items: center !important;
-  justify-content: center !important;
+/* Mobile-specific adjustments */
+@media (max-width: 768px) {
+  .modal-overlay.auth-overlay {
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 20px !important;
+  }
+  
+  .auth-modal {
+    margin: 0 auto !important;
+    padding: 32px 24px !important;
+    max-height: 85vh !important;
+    overflow-y: auto !important;
+  }
+  
+  /* Reduce spacing for smaller screens */
+  .auth-header-new {
+    margin-bottom: 20px !important;
+  }
+  
+  .auth-header-new h2 {
+    font-size: 1.5rem !important;
+  }
+  
+  .auth-form {
+    gap: 14px !important;
+  }
+  
+  /* Make social buttons stack on mobile */
+  .social-login {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
 }
 
-.infinite-loader {
-  text-align: center;
-  color: var(--gray-500);
-  padding: 16px;
-  font-size: 0.9rem;
+@media (max-width: 480px) {
+  .modal-overlay.auth-overlay {
+    padding: 12px !important;
+    align-items: center !important;
+  }
+  
+  .auth-modal {
+    padding: 24px 16px !important;
+    max-height: 88vh !important;
+    border-radius: var(--radius-xl) !important;
+    margin: auto !important;
+  }
+  
+  /* Further reduce spacing */
+  .auth-header-new {
+    margin-bottom: 16px !important;
+  }
+  
+  .auth-brand-icon {
+    font-size: 2.2rem !important;
+  }
+  
+  .auth-header-new h2 {
+    font-size: 1.3rem !important;
+  }
+  
+  .auth-form {
+    gap: 12px !important;
+  }
+  
+  /* Full width inputs */
+  .input-wrapper input,
+  .input-wrapper select,
+  .input-wrapper textarea {
+    padding: 10px 12px 10px 38px !important;
+    font-size: 0.875rem !important;
+  }
+  
+  /* Adjust button sizes */
+  .btn-full {
+    padding: 12px 20px !important;
+    font-size: 0.95rem !important;
+  }
+  
+  /* Social buttons full width on very small screens */
+  .social-login {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+  
+  .social-btn {
+    padding: 10px 12px !important;
+    font-size: 0.85rem !important;
+  }
+  
+  /* Smaller close button */
+  .btn-close {
+    top: 12px !important;
+    right: 12px !important;
+    width: 28px !important;
+    height: 28px !important;
+    font-size: 1rem !important;
+  }
+  
+  /* Adjust success state */
+  .success-state {
+    padding: 12px 0 !important;
+  }
+  
+  .auth-success-icon {
+    font-size: 2.8rem !important;
+    margin-bottom: 12px !important;
+  }
+  
+  .success-state h2 {
+    font-size: 1.3rem !important;
+  }
 }
 
-.snippet-comments {
-  margin-top: 12px;
-  border-top: 1px solid var(--gray-200);
-  padding-top: 12px;
+/* Handle very small screens */
+@media (max-width: 360px) {
+  .auth-modal {
+    padding: 20px 12px !important;
+  }
+  
+  .auth-header-new h2 {
+    font-size: 1.2rem !important;
+  }
+  
+  .input-wrapper input {
+    padding: 8px 10px 8px 34px !important;
+  }
+  
+  .btn-full {
+    padding: 10px 16px !important;
+  }
 }
 
-.snippet-comment-input {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
+/* Handle landscape mode on mobile */
+@media (max-height: 500px) and (orientation: landscape) {
+  .modal-overlay.auth-overlay {
+    align-items: flex-start !important;
+    padding-top: 20px !important;
+  }
+  
+  .auth-modal {
+    max-height: calc(100vh - 40px) !important;
+    padding: 20px 24px !important;
+  }
+  
+  .auth-header-new {
+    margin-bottom: 12px !important;
+  }
+  
+  .auth-brand-icon {
+    margin-bottom: 4px !important;
+  }
+  
+  .auth-form {
+    gap: 10px !important;
+  }
+  
+  .social-login {
+    margin-bottom: 12px !important;
+  }
+  
+  .auth-divider {
+    margin: 12px 0 !important;
+  }
 }
 
-.snippet-comment-input input {
-  flex: 1;
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius);
-  padding: 8px 10px;
+/* Ensure smooth scrolling within modal */
+.auth-modal {
+  -webkit-overflow-scrolling: touch !important;
+  overscroll-behavior: contain !important;
 }
 
-.snippet-comment-list {
-  display: grid;
-  gap: 8px;
-}
-
-.snippet-comment-item {
-  background: var(--gray-50);
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius);
-  padding: 8px 10px;
-}
-
-.snippet-comment-item p {
-  margin: 4px 0 0;
-  color: var(--gray-700);
-  font-size: 0.9rem;
-}
-
-@keyframes authModalIn {
-  from { opacity: 0; transform: scale(0.9) translateY(20px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-/* Auth Header - New Design */
-.auth-header-new {
-  text-align: center;
-  margin-bottom: 24px;
-}
-
-.auth-brand-mark {
-  position: relative;
-  display: inline-block;
-  margin-bottom: 14px;
-}
-
-.auth-brand-icon {
-  font-size: 2.8rem;
-  display: block;
-  position: relative;
-  z-index: 1;
-  animation: authIconFloat 3s ease-in-out infinite;
-}
-
-@keyframes authIconFloat {
-  0%, 100% { transform: translateY(0) rotate(-3deg); }
-  50% { transform: translateY(-6px) rotate(3deg); }
-}
-
-.auth-brand-glow {
-  position: absolute;
-  width: 70px;
-  height: 70px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(circle, rgba(102,126,234,0.25) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: authGlowPulse 2s ease-in-out infinite;
-}
-
-@keyframes authGlowPulse {
-  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-  50% { transform: translate(-50%, -50%) scale(1.3); opacity: 0.6; }
-}
-
-.auth-header-new h2 {
-  font-size: 1.6rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, #1f2937, #667eea);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 6px;
-}
-
-.auth-header-new p {
-  color: var(--gray-500);
-  font-size: 0.9rem;
-}
-
-/* Social Login */
-.social-login {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-.social-btn {
-  padding: 10px 12px;
-  border: 2px solid var(--gray-200);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  font-weight: 500;
-  font-size: 0.85rem;
-  transition: all 0.2s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-family: inherit;
-}
-
-.social-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-
-.social-btn-google {
-  background: #fff;
-  border-color: #e5e7eb;
-  color: #374151;
-}
-
-.social-btn-google:hover {
-  background: #f9fafb;
-  border-color: #667eea;
-}
-
-.social-btn-github {
-  background: #24292e;
-  border-color: #24292e;
-  color: white;
-}
-
-.social-btn-github:hover {
-  background: #1a1e21;
-}
-
-.social-icon {
-  font-size: 1.1rem;
-  font-weight: 700;
+/* Prevent body scrolling when modal is open */
+body.modal-open {
+  overflow: hidden !important;
+  position: fixed !important;
+  width: 100% !important;
 }
 
 /* Auth Divider */
