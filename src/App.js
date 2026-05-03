@@ -226,6 +226,10 @@ function appReducer(state, action) {
       localStorage.setItem('devMarketTheme', newTheme);
       return { ...state, theme: newTheme };
     }
+    case 'SET_THEME': {
+      localStorage.setItem('devMarketTheme', action.payload);
+      return { ...state, theme: action.payload };
+    }
     default: 
       return state;
   }
@@ -908,22 +912,6 @@ function App() {
       }
     }
 
-    if (!hasShownLoader) {
-      initialize().then(() => {
-        sessionStorage.setItem('devMarketLoaderShown', 'true');
-        setTimeout(() => setIsInitialLoading(false), 500);
-      });
-      
-      const safetyTimeout = setTimeout(() => {
-        setIsInitialLoading(false);
-        sessionStorage.setItem('devMarketLoaderShown', 'true');
-      }, 6000);
-      
-      return () => clearTimeout(safetyTimeout);
-    } else {
-      initialize().then(() => setIsInitialLoading(false));
-    }
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (mounted) {
         dispatch({ type: 'SET_SESSION', payload: session });
@@ -939,6 +927,27 @@ function App() {
       }
     });
 
+    if (!hasShownLoader) {
+      initialize().then(() => {
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+        setTimeout(() => setIsInitialLoading(false), 500);
+      });
+      
+      const safetyTimeout = setTimeout(() => {
+        setIsInitialLoading(false);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+      }, 6000);
+      
+      return () => {
+        clearTimeout(safetyTimeout);
+        mounted = false;
+        subscription?.unsubscribe();
+        realtimeManager.unsubscribeAll();
+      };
+    } else {
+      initialize().then(() => setIsInitialLoading(false));
+    }
+
     return () => {
       mounted = false;
       subscription?.unsubscribe();
@@ -948,8 +957,8 @@ function App() {
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('devMarketTheme');
-    if (savedTheme && savedTheme !== state.theme) {
-      dispatch({ type: 'TOGGLE_THEME' });
+    if (savedTheme && (savedTheme === 'light' || savedTheme === 'dark') && savedTheme !== state.theme) {
+      dispatch({ type: 'SET_THEME', payload: savedTheme });
     }
   }, []);
 
@@ -1444,27 +1453,25 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
     setLoading(false);
   };
 
-  // Add Facebook to handleSocialLogin function
-const handleSocialLogin = async (provider) => {
-  try {
-    const { error } = await supabase.auth.signInWithOAuth({ 
-      provider, 
-      options: { 
-        redirectTo: window.location.origin,
-        // For Facebook, you may need to configure these in Supabase dashboard
-        queryParams: provider === 'facebook' ? {
-          access_type: 'offline',
-          prompt: 'consent',
-        } : undefined
-      } 
-    });
-    if (error) {
-      dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured. Please check your Supabase settings.` });
+  const handleSocialLogin = async (provider) => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({ 
+        provider, 
+        options: { 
+          redirectTo: window.location.origin,
+          queryParams: provider === 'facebook' ? {
+            access_type: 'offline',
+            prompt: 'consent',
+          } : undefined
+        } 
+      });
+      if (error) {
+        dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured. Please check your Supabase settings.` });
+      }
+    } catch (error) {
+      dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not available.` });
     }
-  } catch (error) {
-    dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not available.` });
-  }
-};
+  };
 
 
   useEffect(() => {
@@ -1556,7 +1563,9 @@ const handleSocialLogin = async (provider) => {
                 <>
                   <div className="form-group">
                     <label>Confirm Password</label>
-                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} />
+                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} className={errors.confirmPassword ? 'error' : ''} />
+                    <button type="button" className="password-toggle" onClick={() => setShowConfirmPassword(!showConfirmPassword)}>{showConfirmPassword ? '👁️' : '👁️‍🗨️'}</button>
+                    {errors.confirmPassword && <span className="error-message">{errors.confirmPassword}</span>}
                   </div>
                   <button type="button" className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
                 </>
