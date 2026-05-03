@@ -66,7 +66,12 @@ function appReducer(state, action) {
     case 'UPDATE_PROFILE': 
       return { ...state, profile: { ...state.profile, ...action.payload } };
     case 'UPDATE_AVATAR':
-      return { ...state, profile: { ...state.profile, avatar_url: action.payload } };
+      return { 
+        ...state, 
+        profile: { ...state.profile, avatar_url: action.payload },
+        // Also update currentUser so header avatar reflects change immediately
+        currentUser: state.currentUser ? { ...state.currentUser, avatar_url: action.payload } : state.currentUser
+      };
     case 'SET_LISTINGS': 
       return { ...state, listings: action.payload || [] };
     case 'ADD_LISTING': 
@@ -254,6 +259,7 @@ const PRESET_AVATARS = [
 
 function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' }) {
   const [showPicker, setShowPicker] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(''); // '', 'saving', 'saved', 'error'
   // Derive selected from currentAvatar URL so it reflects persisted value after reload
   const selectedAvatarId = PRESET_AVATARS.find(av => av.url === currentAvatar)?.id || 
     (currentAvatar?.includes('ui-avatars') ? 'generated' : null);
@@ -270,10 +276,18 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
   const sizeMap = { small: '60px', medium: '80px', large: '100px' };
   const sz = sizeMap[size] || '100px';
 
-  const handleSelect = (avatar) => {
+  const handleSelect = async (avatar) => {
     setSelected(avatar.id);
-    onAvatarUpdate(avatar.url);
     setShowPicker(false);
+    setSaveStatus('saving');
+    try {
+      await onAvatarUpdate(avatar.url);
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(''), 2500);
+    } catch (_) {
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
   };
 
   return (
@@ -285,6 +299,13 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
         />
         <div className="avatar-upload-overlay"><span>📷</span><span>Change</span></div>
       </div>
+      {saveStatus && (
+        <div className={`avatar-save-status ${saveStatus}`}>
+          {saveStatus === 'saving' && '⏳ Saving...'}
+          {saveStatus === 'saved' && '✅ Saved!'}
+          {saveStatus === 'error' && '❌ Save failed'}
+        </div>
+      )}
 
       {showPicker && (
         <div className="modal-overlay" onClick={() => setShowPicker(false)}>
@@ -549,6 +570,15 @@ function App() {
       dispatch({ type: 'SET_APPS', payload: [] });
       dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
       dispatch({ type: 'SET_DATA_LOADED', payload: true });
+      // Show user-friendly error only if it's a network/config issue
+      if (error?.message?.includes('fetch') || error?.message?.includes('network') || error?.message?.includes('NetworkError')) {
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: '⚠️ Could not load data. Please check your connection.', 
+          type: 'warning', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+      }
     }
   }
 
@@ -562,6 +592,7 @@ function App() {
 
       if (profile) {
         dispatch({ type: 'SET_PROFILE', payload: profile });
+        // Merge DB profile into currentUser so avatar_url is always the DB value
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
         // Load notification preference from Supabase
@@ -596,6 +627,18 @@ function App() {
       }
     } catch (error) {
       console.error('Error loading profile:', error);
+      // Set a minimal fallback profile so the app doesn't break
+      const meta = user.user_metadata || {};
+      const fallbackProfile = {
+        id: user.id,
+        name: meta.name || meta.full_name || user.email?.split('@')[0] || 'User',
+        email: user.email,
+        role: 'developer',
+        bio: '',
+        avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || user.email?.split('@')[0] || 'User')}&background=667eea&color=fff&size=200`
+      };
+      dispatch({ type: 'SET_PROFILE', payload: fallbackProfile });
+      dispatch({ type: 'SET_USER', payload: { ...user, ...fallbackProfile } });
     }
   }
 
@@ -650,6 +693,12 @@ function App() {
       setupRealtimeSubscriptions(userId);
     } catch (error) {
       console.error('Error loading user data:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '⚠️ Some user data could not be loaded. Try refreshing.', 
+        type: 'warning', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     }
   }
 
@@ -1076,7 +1125,8 @@ function Header() {
   };
 
   const userDisplayName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
-  const userAvatar = state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
+  // Use profile.avatar_url as source of truth — it's the value persisted in DB
+  const userAvatar = state.profile?.avatar_url || state.currentUser?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
 
   const closeAll = () => {
     setShowUserMenu(false);
@@ -2468,6 +2518,8 @@ function Profile() {
   const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
 
   const handleAvatarUpdate = async (avatarUrl) => {
+    // Save the previous avatar for rollback on failure
+    const previousAvatar = state.profile?.avatar_url;
     // Optimistically update UI immediately
     dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
     try {
@@ -2483,16 +2535,56 @@ function Profile() {
         avatar_url: avatarUrl,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
-      if (error) console.error('Error saving avatar to DB:', error);
+
+      if (error) {
+        console.error('Error saving avatar to DB:', error);
+        // Rollback optimistic update
+        dispatch({ type: 'UPDATE_AVATAR', payload: previousAvatar });
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: '❌ Could not save avatar. Please try again.', 
+          type: 'error', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+        throw new Error(error.message);
+      }
+
+      // Verify persisted by re-fetching from DB
+      try {
+        const { data: freshProfile } = await supabase
+          .from('profiles')
+          .select('avatar_url')
+          .eq('id', state.currentUser.id)
+          .single();
+        if (freshProfile && freshProfile.avatar_url !== avatarUrl) {
+          // DB didn't save — rollback
+          dispatch({ type: 'UPDATE_AVATAR', payload: previousAvatar });
+          dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+            message: '⚠️ Avatar may not have saved correctly. Try again.', 
+            type: 'warning', 
+            time: new Date().toLocaleTimeString(), 
+            read: false 
+          }});
+          throw new Error('Avatar verification failed');
+        }
+      } catch (_) { /* non-critical: verification failed, optimistic value stays */ }
+
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '✅ Profile picture updated and saved!', 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     } catch (error) {
       console.error('Could not save avatar:', error);
+      dispatch({ type: 'UPDATE_AVATAR', payload: previousAvatar });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Network error. Avatar not saved. Please check your connection.', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     }
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-      message: '✅ Profile picture updated!', 
-      type: 'success', 
-      time: new Date().toLocaleTimeString(), 
-      read: false 
-    }});
   };
 
   return (
