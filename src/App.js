@@ -125,6 +125,10 @@ function appReducer(state, action) {
       return { ...state, listings: (state.listings || []).map(l => l.id === action.payload.id ? { ...l, ...action.payload } : l) };
     case 'DELETE_LISTING': 
       return { ...state, listings: (state.listings || []).filter(l => l.id !== action.payload) };
+    case 'HIDE_LISTING':
+      return { ...state, listings: (state.listings || []).map(l => l.id === action.payload ? { ...l, hidden: true } : l) };
+    case 'UNHIDE_LISTING':
+      return { ...state, listings: (state.listings || []).map(l => l.id === action.payload ? { ...l, hidden: false } : l) };
     case 'SET_APPS': 
       return { ...state, apps: action.payload || [] };
     case 'ADD_APP': 
@@ -912,6 +916,7 @@ function App() {
       }
     }
 
+    // Auth state listener MUST be set up before any early returns
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (mounted) {
         dispatch({ type: 'SET_SESSION', payload: session });
@@ -923,6 +928,8 @@ function App() {
         } else if (event === 'SIGNED_OUT') {
           dispatch({ type: 'LOGOUT' });
           realtimeManager.unsubscribeAll();
+        } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+          dispatch({ type: 'SET_SESSION', payload: session });
         }
       }
     });
@@ -1134,6 +1141,18 @@ function Header() {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const userMenuRef = useRef(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    };
+    if (showUserMenu) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showUserMenu]);
 
   const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
   const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
@@ -1237,7 +1256,7 @@ function Header() {
                   {unreadNotifications > 0 && <span className="notification-badge">{unreadNotifications}</span>}
                 </button>
                 
-                <div className="user-menu">
+                <div className="user-menu" ref={userMenuRef}>
                   <div className="user-menu-trigger" onClick={() => setShowUserMenu(!showUserMenu)}>
                     <img 
                       src={userAvatar} 
@@ -1250,8 +1269,7 @@ function Header() {
                     <span className="user-name">{userDisplayName}</span>
                     <span className="dropdown-arrow">▾</span>
                   </div>
-                  {showUserMenu && (
-                    <div className="dropdown-menu">
+                  <div className={`dropdown-menu ${showUserMenu ? 'open' : ''}`}>
                       <div className="dropdown-header">
                         <img src={userAvatar} alt={userDisplayName} className="dropdown-avatar" />
                         <div>
@@ -1281,7 +1299,6 @@ function Header() {
                         <span>🚪</span> Logout
                       </button>
                     </div>
-                  )}
                 </div>
               </>
             ) : (
