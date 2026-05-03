@@ -233,6 +233,108 @@ body.modal-open {
 }
 
 /* ============================================
+   APP-SPECIFIC HEADER + MOBILE NAV
+   ============================================ */
+.header-content {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.brand-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.brand-dev { color: var(--primary-dark); }
+.brand-market { color: var(--secondary-dark); }
+
+.desktop-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-search {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.header-search-input {
+  width: 100%;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-full);
+  padding: 9px 12px;
+  font-size: 0.9rem;
+}
+
+.header-search-btn {
+  border: 1px solid var(--gray-200);
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.mobile-nav-row {
+  display: none;
+}
+
+.mobile-nav-btn {
+  text-decoration: none;
+}
+
+/* Listing moderation controls */
+.listing-hidden-admin {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.2);
+}
+
+.hidden-badge {
+  margin: 10px 10px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: var(--warning-light);
+  color: #92400e;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.btn-hide,
+.btn-unhide {
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-hide {
+  background: var(--danger-light);
+  color: #991b1b;
+}
+
+.btn-unhide {
+  background: var(--success-light);
+  color: #065f46;
+}
+
+/* ============================================
    HEADER
    ============================================ */
 .header {
@@ -2685,6 +2787,18 @@ body.modal-open {
   margin-bottom: 24px;
 }
 
+.notification-settings.disabled-section {
+  opacity: 0.55;
+}
+
+.notification-settings.disabled-section .setting-item {
+  pointer-events: none;
+}
+
+.master-toggle {
+  margin-bottom: 14px;
+}
+
 .setting-item {
   display: flex;
   justify-content: space-between;
@@ -4167,6 +4281,83 @@ input:checked + .toggle-slider:before {
 }
 
 @media (max-width: 768px) {
+  .header-content {
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .desktop-nav {
+    display: none;
+  }
+
+  .header-search {
+    order: 3;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .header-actions {
+    margin-left: auto;
+  }
+
+  .mobile-nav-row {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    padding: 8px 12px 12px;
+    border-top: 1px solid var(--gray-100);
+    background: rgba(255, 255, 255, 0.98);
+  }
+
+  .mobile-nav-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 52px;
+    border-radius: 12px;
+    color: var(--gray-600);
+    background: var(--gray-50);
+    font-size: 0.72rem;
+    font-weight: 600;
+    position: relative;
+  }
+
+  .mobile-nav-btn.active {
+    background: linear-gradient(135deg, #667eea1f, #764ba21f);
+    color: var(--primary-dark);
+  }
+
+  .mobile-nav-icon {
+    font-size: 1rem;
+    position: relative;
+    line-height: 1;
+  }
+
+  .mobile-nav-label {
+    line-height: 1;
+  }
+
+  .mobile-nav-badge {
+    position: absolute;
+    top: -8px;
+    right: -10px;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--danger);
+    color: var(--white);
+    font-size: 0.62rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    border: 1px solid var(--white);
+  }
+
   .header-container {
     height: 64px;
   }
@@ -4243,6 +4434,32 @@ input:checked + .toggle-slider:before {
     left: 16px;
     right: 16px;
     max-width: none;
+  }
+
+  .toast {
+    padding: 10px 12px;
+    border-radius: 10px;
+    gap: 8px;
+  }
+
+  .toast-icon {
+    font-size: 0.95rem;
+    margin-top: 1px;
+  }
+
+  .toast-message {
+    font-size: 0.82rem;
+    margin-bottom: 2px;
+    line-height: 1.3;
+  }
+
+  .toast-time {
+    font-size: 0.7rem;
+  }
+
+  .toast-close {
+    font-size: 1rem;
+    padding: 2px;
   }
   
   .profile-header {
