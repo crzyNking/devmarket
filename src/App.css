@@ -6732,3 +6732,447 @@ input:checked + .toggle-slider:before {
 .App.dark .avatar-option span {
   color: var(--gray-300);
 }
+/* ============================================
+   FOLLOW / SOCIAL SYSTEM STYLES
+   ============================================ */
+
+/* Follow Button */
+.btn-follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all var(--transition);
+  border: 2px solid var(--primary);
+  background: var(--primary);
+  color: white;
+}
+
+.btn-follow:hover {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+  transform: translateY(-1px);
+}
+
+.btn-follow.following {
+  background: transparent;
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.btn-follow.following:hover {
+  background: var(--danger-light);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-follow:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Enhanced Profile Header */
+.profile-header-card {
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.profile-cover {
+  height: 140px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.profile-header-inner {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 0 28px 20px;
+  margin-top: -50px;
+  flex-wrap: wrap;
+}
+
+.profile-info {
+  flex: 1;
+  min-width: 200px;
+  padding-top: 56px;
+}
+
+.profile-info h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--gray-800);
+  margin-bottom: 4px;
+}
+
+.profile-email {
+  color: var(--gray-500);
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.profile-role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--info-light);
+  color: var(--info);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.profile-bio {
+  color: var(--gray-600);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.profile-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-link {
+  color: var(--primary);
+  font-size: 0.85rem;
+  text-decoration: none;
+  background: var(--gray-100);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  transition: background var(--transition);
+}
+
+.profile-link:hover {
+  background: var(--gray-200);
+}
+
+.profile-header-actions {
+  display: flex;
+  gap: 10px;
+  padding-top: 56px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.avatar-container-static .avatar-large {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: 4px solid var(--white);
+  box-shadow: var(--shadow-md);
+  margin-top: 4px;
+}
+
+/* Profile Stats Row */
+.profile-stats-row {
+  display: flex;
+  gap: 0;
+  border-top: 1px solid var(--gray-100);
+  padding: 0;
+}
+
+.profile-stats-row .stat-box {
+  flex: 1;
+  text-align: center;
+  padding: 16px 8px;
+  border-right: 1px solid var(--gray-100);
+  transition: background var(--transition);
+}
+
+.profile-stats-row .stat-box:last-child {
+  border-right: none;
+}
+
+.profile-stats-row .stat-box.clickable {
+  cursor: pointer;
+}
+
+.profile-stats-row .stat-box.clickable:hover {
+  background: var(--gray-50);
+}
+
+.profile-stats-row .stat-box h3 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--gray-800);
+}
+
+.profile-stats-row .stat-box p {
+  font-size: 0.8rem;
+  color: var(--gray-500);
+}
+
+/* Profile Tabs */
+.profile-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  background: var(--gray-100);
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+}
+
+.profile-tab {
+  flex: 1;
+  padding: 10px 16px;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--gray-500);
+  background: transparent;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.profile-tab.active {
+  background: var(--white);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.profile-content {
+  min-height: 200px;
+}
+
+/* Seller Link */
+.seller-link {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+  transition: color var(--transition);
+}
+
+.seller-link:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+/* ============================================
+   ACTIVITY FEED STYLES
+   ============================================ */
+
+.activity-feed-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.activity-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.filter-chip {
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--gray-200);
+  background: var(--white);
+  color: var(--gray-600);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.filter-chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.filter-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activity-card {
+  background: var(--white);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--gray-100);
+  transition: box-shadow var(--transition);
+}
+
+.activity-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.activity-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.activity-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 2px solid var(--gray-100);
+}
+
+.activity-meta {
+  flex: 1;
+  font-size: 0.93rem;
+  color: var(--gray-600);
+  line-height: 1.5;
+}
+
+.activity-user {
+  font-weight: 700;
+  color: var(--gray-800);
+}
+
+.activity-target {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.activity-time {
+  color: var(--gray-400);
+  font-size: 0.82rem;
+}
+
+.activity-icon-badge {
+  font-size: 1.3rem;
+  flex-shrink: 0;
+}
+
+.activity-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gray-100);
+}
+
+.activity-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--gray-200);
+  background: transparent;
+  color: var(--gray-500);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.activity-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: rgba(102, 126, 234, 0.05);
+}
+
+.activity-btn.liked {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-light);
+}
+
+/* Comments */
+.activity-comments {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gray-100);
+}
+
+.comment-item {
+  padding: 6px 0;
+  font-size: 0.88rem;
+  color: var(--gray-600);
+  border-bottom: 1px solid var(--gray-50);
+}
+
+.comment-user {
+  color: var(--gray-800);
+}
+
+.comment-time {
+  color: var(--gray-400);
+  font-size: 0.8rem;
+}
+
+.comment-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.comment-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: var(--radius-full);
+  font-size: 0.88rem;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.comment-input:focus {
+  border-color: var(--primary);
+}
+
+/* Loading */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 16px;
+  color: var(--gray-500);
+}
+
+.loading-spinner-large {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--gray-200);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Dark mode */
+.App.dark .profile-header-card { background: var(--gray-800); }
+.App.dark .profile-cover { opacity: 0.8; }
+.App.dark .profile-info h1 { color: var(--gray-100); }
+.App.dark .profile-role-badge { background: rgba(59,130,246,0.15); }
+.App.dark .profile-link { background: var(--gray-700); color: var(--primary-light); }
+.App.dark .profile-stats-row { border-color: var(--gray-700); }
+.App.dark .profile-stats-row .stat-box { border-color: var(--gray-700); }
+.App.dark .profile-stats-row .stat-box h3 { color: var(--gray-100); }
+.App.dark .profile-tabs { background: var(--gray-700); }
+.App.dark .profile-tab.active { background: var(--gray-800); color: var(--primary-light); }
+.App.dark .activity-card { background: var(--gray-800); border-color: var(--gray-700); }
+.App.dark .activity-user { color: var(--gray-100); }
+.App.dark .activity-btn { border-color: var(--gray-600); color: var(--gray-400); }
+.App.dark .comment-input { background: var(--gray-700); border-color: var(--gray-600); color: var(--gray-200); }
+.App.dark .filter-chip { background: var(--gray-700); border-color: var(--gray-600); color: var(--gray-300); }

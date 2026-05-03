@@ -34,6 +34,9 @@ const initialState = {
   activeConversation: null,
   favorites: [],
   searchHistory: [],
+  follows: [],        // users the current user follows
+  followers: [],      // users who follow the current user
+  activityFeed: [],
   theme: 'light',
   authError: null,
   loading: true,
@@ -155,6 +158,18 @@ function appReducer(state, action) {
       const favExists = (state.favorites || []).find(f => f.id === action.payload.id);
       return { ...state, favorites: favExists ? (state.favorites || []).filter(f => f.id !== action.payload.id) : [...(state.favorites || []), action.payload] };
     }
+    case 'SET_FOLLOWS':
+      return { ...state, follows: action.payload || [] };
+    case 'SET_FOLLOWERS':
+      return { ...state, followers: action.payload || [] };
+    case 'ADD_FOLLOW':
+      return { ...state, follows: [...(state.follows || []), action.payload] };
+    case 'REMOVE_FOLLOW':
+      return { ...state, follows: (state.follows || []).filter(id => id !== action.payload) };
+    case 'SET_ACTIVITY_FEED':
+      return { ...state, activityFeed: action.payload || [] };
+    case 'ADD_ACTIVITY':
+      return { ...state, activityFeed: [action.payload, ...(state.activityFeed || [])].slice(0, 100) };
     case 'SET_AUTH_ERROR': 
       return { ...state, authError: action.payload };
     case 'SET_REALTIME_CONNECTED':
@@ -166,7 +181,7 @@ function appReducer(state, action) {
     case 'SET_MODERATION_QUEUE':
       return { ...state, moderationQueue: action.payload || [] };
     case 'LOGOUT': 
-      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], isAdmin: false };
+      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], follows: [], followers: [], activityFeed: [], isAdmin: false };
     case 'TOGGLE_THEME': {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
@@ -866,6 +881,8 @@ function App() {
               <Route path="/code-sharing" element={<CodeSharing />} />
               <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="/profile/:userId" element={<UserProfile />} />
+              <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
               <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
@@ -982,6 +999,11 @@ function usePWAInstall() {
 
   return { canInstall: !!installPrompt && !isInstalled, install };
 }
+
+// ============================================
+// HEADER COMPONENT
+// ============================================
+function Header() {
   const { state, dispatch } = useAppContext();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
@@ -1064,6 +1086,9 @@ function usePWAInstall() {
               <>
                 <Link to="/favorites" className={`nav-link ${location.pathname === '/favorites' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">⭐</span> Favorites
+                </Link>
+                <Link to="/activity" className={`nav-link ${location.pathname === '/activity' ? 'active' : ''}`} onClick={closeAll}>
+                  <span className="nav-icon">📣</span> Activity
                 </Link>
                 <Link to="/messages" className={`nav-link ${location.pathname === '/messages' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">💬</span> Messages
@@ -1237,6 +1262,7 @@ function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
     { to: '/code-sharing', icon: '💻', label: 'Code' },
     ...(currentUser ? [
       { to: '/favorites', icon: '⭐', label: 'Favorites' },
+      { to: '/activity', icon: '📣', label: 'Activity' },
       { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
       { to: '/profile', icon: '👤', label: 'Profile' },
     ] : []),
@@ -2371,7 +2397,35 @@ function Messages() {
 // ============================================
 function Profile() {
   const { state, dispatch } = useAppContext();
-  
+  const [activeTab, setActiveTab] = useState('listings');
+  const [followersCount, setFollowersCount] = useState(0);
+  const [followingCount, setFollowingCount] = useState(0);
+
+  useEffect(() => {
+    if (state.currentUser) {
+      loadFollowCounts();
+    }
+  }, [state.currentUser, state.follows, state.followers]);
+
+  const loadFollowCounts = async () => {
+    try {
+      const { count: fCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('follower_id', state.currentUser.id);
+      setFollowingCount(fCount || state.follows?.length || 0);
+
+      const { count: rCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('following_id', state.currentUser.id);
+      setFollowersCount(rCount || state.followers?.length || 0);
+    } catch (e) {
+      setFollowingCount(state.follows?.length || 0);
+      setFollowersCount(state.followers?.length || 0);
+    }
+  };
+
   if (!state.currentUser) {
     return (
       <div className="profile-page">
@@ -2385,45 +2439,24 @@ function Profile() {
   }
 
   const userName = state.profile?.name || state.currentUser.email;
-  const userListings = (state.listings || []).filter(
-    l => l.user_id === state.currentUser.id
-  );
-  const userApps = (state.apps || []).filter(
-    a => a.user_id === state.currentUser.id
-  );
-  const userSnippets = (state.codeSnippets || []).filter(
-    s => s.user_id === state.currentUser.id
-  );
+  const userListings = (state.listings || []).filter(l => l.user_id === state.currentUser.id);
+  const userApps = (state.apps || []).filter(a => a.user_id === state.currentUser.id);
+  const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
 
   const handleAvatarUpdate = async (avatarUrl) => {
     dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
-    
     try {
-      const { error } = await supabase.from('profiles').upsert({
+      await supabase.from('profiles').upsert({
         id: state.currentUser.id,
         avatar_url: avatarUrl,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
-      
-      if (error) {
-        console.error('Error saving avatar:', error);
-      }
     } catch (error) {
       console.error('Could not save avatar:', error);
     }
-    
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-      message: '✅ Profile picture updated successfully!', 
+      message: '✅ Profile picture updated!', 
       type: 'success', 
-      time: new Date().toLocaleTimeString(), 
-      read: false 
-    }});
-  };
-
-  const handleDeleteAccount = async () => {
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-      message: '⚠️ Account deletion requires admin approval. Contact support.', 
-      type: 'warning', 
       time: new Date().toLocaleTimeString(), 
       read: false 
     }});
@@ -2431,80 +2464,672 @@ function Profile() {
 
   return (
     <div className="profile-page">
-      <div className="profile-header">
-        <AvatarUpload 
-          currentAvatar={state.profile?.avatar_url} 
-          userName={userName} 
-          onAvatarUpdate={handleAvatarUpdate}
-          size="large"
-        />
-        <div>
-          <h1>{userName}</h1>
-          <p>{state.currentUser.email}</p>
-          {state.profile?.role && (
-            <p className="profile-role">
-              <span className="role-icon">
-                {state.profile.role === 'developer' ? '👨‍💻' : 
-                 state.profile.role === 'admin' ? '🛡️' : '👤'}
+      <div className="profile-header-card">
+        <div className="profile-cover"></div>
+        <div className="profile-header-inner">
+          <AvatarUpload 
+            currentAvatar={state.profile?.avatar_url} 
+            userName={userName} 
+            onAvatarUpdate={handleAvatarUpdate}
+            size="large"
+          />
+          <div className="profile-info">
+            <h1>{userName}</h1>
+            <p className="profile-email">{state.currentUser.email}</p>
+            {state.profile?.role && (
+              <span className="profile-role-badge">
+                {state.profile.role === 'developer' ? '👨‍💻' : state.profile.role === 'admin' ? '🛡️' : '👤'} {state.profile.role}
               </span>
-              {state.profile.role.charAt(0).toUpperCase() + state.profile.role.slice(1)}
-            </p>
-          )}
-          {state.profile?.bio && <p>{state.profile.bio}</p>}
-          {state.profile?.website && (
-            <p>🌐 <a href={state.profile.website} target="_blank" rel="noopener noreferrer">{state.profile.website}</a></p>
-          )}
+            )}
+            {state.profile?.bio && <p className="profile-bio">{state.profile.bio}</p>}
+            <div className="profile-links">
+              {state.profile?.website && (
+                <a href={state.profile.website} target="_blank" rel="noopener noreferrer" className="profile-link">🌐 Website</a>
+              )}
+              {state.profile?.github && (
+                <a href={`https://github.com/${state.profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">⚡ GitHub</a>
+              )}
+            </div>
+          </div>
+          <div className="profile-header-actions">
+            <Link to="/settings" className="btn-secondary">⚙️ Edit Profile</Link>
+            {state.isAdmin && <Link to="/admin" className="btn-secondary">🛡️ Admin</Link>}
+          </div>
         </div>
-      </div>
-      
-      <div className="profile-stats">
-        <div className="stat-box">
-          <h3>{userListings.length}</h3>
-          <p>Active Listings</p>
-        </div>
-        <div className="stat-box">
-          <h3>{userApps.length}</h3>
-          <p>Apps Advertised</p>
-        </div>
-        <div className="stat-box">
-          <h3>{userSnippets.length}</h3>
-          <p>Code Snippets</p>
-        </div>
-        <div className="stat-box">
-          <h3>{state.favorites?.length || 0}</h3>
-          <p>Favorites</p>
+        <div className="profile-stats-row">
+          <div className="stat-box">
+            <h3>{userListings.length}</h3>
+            <p>Listings</p>
+          </div>
+          <div className="stat-box">
+            <h3>{userSnippets.length}</h3>
+            <p>Snippets</p>
+          </div>
+          <div className="stat-box">
+            <h3>{state.favorites?.length || 0}</h3>
+            <p>Favorites</p>
+          </div>
+          <div className="stat-box clickable">
+            <h3>{followersCount}</h3>
+            <p>Followers</p>
+          </div>
+          <div className="stat-box clickable">
+            <h3>{followingCount}</h3>
+            <p>Following</p>
+          </div>
         </div>
       </div>
 
-      <div className="profile-actions">
-        <Link to="/analytics" className="btn-secondary">
-          📊 View Analytics
-        </Link>
-        <Link to="/settings" className="btn-secondary">
-          ⚙️ Settings
-        </Link>
-        {state.isAdmin && (
-          <Link to="/admin" className="btn-secondary">
-            🛡️ Admin Panel
-          </Link>
+      <div className="profile-tabs">
+        {['listings', 'apps', 'snippets'].map(tab => (
+          <button
+            key={tab}
+            className={`profile-tab ${activeTab === tab ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab === 'listings' ? `🛒 Listings (${userListings.length})` :
+             tab === 'apps' ? `📱 Apps (${userApps.length})` :
+             `💻 Snippets (${userSnippets.length})`}
+          </button>
+        ))}
+      </div>
+
+      <div className="profile-content">
+        {activeTab === 'listings' && (
+          userListings.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">🛒</span>
+              <h3>No listings yet</h3>
+              <Link to="/marketplace" className="btn-primary">Create a Listing</Link>
+            </div>
+          ) : (
+            <div className="listings-grid">
+              {userListings.map(l => <ListingCard key={l.id} listing={l} />)}
+            </div>
+          )
         )}
-        <button onClick={handleDeleteAccount} className="btn-secondary" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>
-          🗑️ Delete Account
+        {activeTab === 'apps' && (
+          userApps.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">📱</span>
+              <h3>No apps advertised yet</h3>
+              <Link to="/advertise" className="btn-primary">Advertise an App</Link>
+            </div>
+          ) : (
+            <div className="app-grid">
+              {userApps.map(a => <AppCard key={a.id} app={a} />)}
+            </div>
+          )
+        )}
+        {activeTab === 'snippets' && (
+          userSnippets.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">💻</span>
+              <h3>No snippets shared yet</h3>
+              <Link to="/code-sharing" className="btn-primary">Share Code</Link>
+            </div>
+          ) : (
+            <div className="snippets-grid">
+              {userSnippets.map(s => (
+                <CodeCard key={s.id} snippet={s} onLike={() => {}} onDelete={() => {}} currentUser={state.currentUser} />
+              ))}
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// USER PROFILE (public view of another user)
+// ============================================
+function UserProfile() {
+  const { state, dispatch } = useAppContext();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const userId = location.pathname.split('/profile/')[1];
+
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [followersCount, setFollowersCount] = useState(0);
+  const [followingCount, setFollowingCount] = useState(0);
+  const [activeTab, setActiveTab] = useState('listings');
+  const [userPosts, setUserPosts] = useState({ listings: [], apps: [], snippets: [] });
+
+  useEffect(() => {
+    if (!userId) return;
+    if (state.currentUser && userId === state.currentUser.id) {
+      navigate('/profile');
+      return;
+    }
+    loadUserProfile();
+  }, [userId, state.currentUser]);
+
+  const loadUserProfile = async () => {
+    setLoading(true);
+    try {
+      // Load profile
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+      setProfile(profileData);
+
+      // Load follow counts
+      const { count: fersCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('following_id', userId);
+      setFollowersCount(fersCount || 0);
+
+      const { count: fingCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('follower_id', userId);
+      setFollowingCount(fingCount || 0);
+
+      // Check if current user follows this user
+      if (state.currentUser) {
+        const { data: followData } = await supabase
+          .from('follows')
+          .select('id')
+          .eq('follower_id', state.currentUser.id)
+          .eq('following_id', userId)
+          .maybeSingle();
+        setIsFollowing(!!followData);
+      }
+
+      // Load user's public content
+      const [listingsRes, appsRes, snippetsRes] = await Promise.all([
+        supabase.from('listings').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('apps').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('code_snippets').select('*').eq('user_id', userId).order('created_at', { ascending: false })
+      ]);
+
+      setUserPosts({
+        listings: listingsRes.data || [],
+        apps: appsRes.data || [],
+        snippets: snippetsRes.data || []
+      });
+    } catch (error) {
+      console.error('Error loading user profile:', error);
+    }
+    setLoading(false);
+  };
+
+  const handleFollowToggle = async () => {
+    if (!state.currentUser) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: 'Please login to follow users', 
+        type: 'warning', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
+    }
+    if (followLoading) return;
+    setFollowLoading(true);
+
+    try {
+      if (isFollowing) {
+        // Unfollow
+        await supabase
+          .from('follows')
+          .delete()
+          .eq('follower_id', state.currentUser.id)
+          .eq('following_id', userId);
+        setIsFollowing(false);
+        setFollowersCount(prev => Math.max(0, prev - 1));
+        dispatch({ type: 'REMOVE_FOLLOW', payload: userId });
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: `Unfollowed ${profile?.name || 'user'}`, 
+          type: 'info', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+      } else {
+        // Follow
+        await supabase
+          .from('follows')
+          .insert([{
+            follower_id: state.currentUser.id,
+            following_id: userId,
+            created_at: new Date().toISOString()
+          }]);
+        setIsFollowing(true);
+        setFollowersCount(prev => prev + 1);
+        dispatch({ type: 'ADD_FOLLOW', payload: userId });
+
+        // Create activity
+        try {
+          await supabase.from('activities').insert([{
+            user_id: state.currentUser.id,
+            type: 'follow',
+            target_user_id: userId,
+            message: `started following ${profile?.name || 'a user'}`,
+            created_at: new Date().toISOString()
+          }]);
+        } catch(e) { /* activities table may not exist yet */ }
+
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: `✅ Now following ${profile?.name || 'user'}!`, 
+          type: 'success', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+      }
+    } catch (error) {
+      console.error('Follow error:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: `❌ Error: ${error.message}`, 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+    }
+    setFollowLoading(false);
+  };
+
+  if (loading) return (
+    <div className="profile-page">
+      <div className="loading-container">
+        <div className="loading-spinner-large"></div>
+        <p>Loading profile...</p>
+      </div>
+    </div>
+  );
+
+  if (!profile) return (
+    <div className="profile-page">
+      <div className="empty-state">
+        <span className="empty-icon">👤</span>
+        <h3>User not found</h3>
+        <button onClick={() => navigate(-1)} className="btn-secondary">← Go Back</button>
+      </div>
+    </div>
+  );
+
+  const displayName = profile.name || 'Anonymous User';
+  const avatarUrl = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`;
+
+  return (
+    <div className="profile-page">
+      <div className="profile-header-card">
+        <div className="profile-cover"></div>
+        <div className="profile-header-inner">
+          <div className="avatar-container-static">
+            <img src={avatarUrl} alt={displayName} className="avatar-large" />
+          </div>
+          <div className="profile-info">
+            <h1>{displayName}</h1>
+            {profile.bio && <p className="profile-bio">{profile.bio}</p>}
+            <div className="profile-links">
+              {profile.website && (
+                <a href={profile.website} target="_blank" rel="noopener noreferrer" className="profile-link">🌐 Website</a>
+              )}
+              {profile.github && (
+                <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">⚡ GitHub</a>
+              )}
+            </div>
+          </div>
+          <div className="profile-header-actions">
+            {state.currentUser && (
+              <>
+                <button
+                  className={`btn-follow ${isFollowing ? 'following' : ''}`}
+                  onClick={handleFollowToggle}
+                  disabled={followLoading}
+                >
+                  {followLoading ? '...' : isFollowing ? '✓ Following' : '+ Follow'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => navigate('/messages')}
+                >
+                  💬 Message
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="profile-stats-row">
+          <div className="stat-box">
+            <h3>{userPosts.listings.length}</h3>
+            <p>Listings</p>
+          </div>
+          <div className="stat-box">
+            <h3>{userPosts.snippets.length}</h3>
+            <p>Snippets</p>
+          </div>
+          <div className="stat-box">
+            <h3>{followersCount}</h3>
+            <p>Followers</p>
+          </div>
+          <div className="stat-box">
+            <h3>{followingCount}</h3>
+            <p>Following</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="profile-tabs">
+        {['listings', 'apps', 'snippets'].map(tab => (
+          <button
+            key={tab}
+            className={`profile-tab ${activeTab === tab ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab === 'listings' ? `🛒 Listings (${userPosts.listings.length})` :
+             tab === 'apps' ? `📱 Apps (${userPosts.apps.length})` :
+             `💻 Snippets (${userPosts.snippets.length})`}
+          </button>
+        ))}
+      </div>
+
+      <div className="profile-content">
+        {activeTab === 'listings' && (
+          userPosts.listings.length === 0 ? (
+            <div className="empty-state"><span className="empty-icon">🛒</span><h3>No listings yet</h3></div>
+          ) : (
+            <div className="listings-grid">
+              {userPosts.listings.map(l => {
+                const mappedListing = { ...l, seller: l.seller_name, sellerAvatar: l.seller_avatar, imageUrl: l.image_url, date: new Date(l.created_at).toLocaleDateString() };
+                return <ListingCard key={l.id} listing={mappedListing} />;
+              })}
+            </div>
+          )
+        )}
+        {activeTab === 'apps' && (
+          userPosts.apps.length === 0 ? (
+            <div className="empty-state"><span className="empty-icon">📱</span><h3>No apps yet</h3></div>
+          ) : (
+            <div className="app-grid">
+              {userPosts.apps.map(a => <AppCard key={a.id} app={a} />)}
+            </div>
+          )
+        )}
+        {activeTab === 'snippets' && (
+          userPosts.snippets.length === 0 ? (
+            <div className="empty-state"><span className="empty-icon">💻</span><h3>No snippets yet</h3></div>
+          ) : (
+            <div className="snippets-grid">
+              {userPosts.snippets.map(s => {
+                const mapped = { ...s, author: s.author_name, authorAvatar: s.author_avatar, likedBy: [], date: new Date(s.created_at).toLocaleDateString() };
+                return <CodeCard key={s.id} snippet={mapped} onLike={() => {}} onDelete={() => {}} currentUser={state.currentUser} />;
+              })}
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// ACTIVITY FEED COMPONENT
+// ============================================
+function ActivityFeed() {
+  const { state, dispatch } = useAppContext();
+  const navigate = useNavigate();
+  const [activities, setActivities] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+
+  useEffect(() => {
+    if (state.currentUser) loadActivities();
+  }, [state.currentUser]);
+
+  const loadActivities = async () => {
+    setLoading(true);
+    try {
+      // Build activity from local state (listings, snippets, etc.)
+      const localActivities = [];
+      
+      // Recent listings
+      (state.listings || []).slice(0, 20).forEach(l => {
+        localActivities.push({
+          id: `listing-${l.id}`,
+          type: 'listing',
+          icon: '🛒',
+          user: l.seller || l.seller_name || 'Someone',
+          userId: l.user_id,
+          userAvatar: l.sellerAvatar || l.seller_avatar,
+          action: 'posted a new listing',
+          target: l.title,
+          targetId: l.id,
+          time: l.created_at || l.date,
+          likes: 0,
+          comments: [],
+          likedBy: []
+        });
+      });
+
+      // Recent snippets with likes
+      (state.codeSnippets || []).slice(0, 20).forEach(s => {
+        localActivities.push({
+          id: `snippet-${s.id}`,
+          type: 'snippet',
+          icon: '💻',
+          user: s.author || s.author_name || 'Someone',
+          userId: s.user_id,
+          userAvatar: s.authorAvatar || s.author_avatar,
+          action: 'shared a code snippet',
+          target: s.title,
+          targetId: s.id,
+          time: s.created_at || s.date,
+          likes: s.likes || 0,
+          comments: [],
+          likedBy: s.likedBy || []
+        });
+      });
+
+      // Try to load from DB activities table
+      try {
+        const { data: dbActivities } = await supabase
+          .from('activities')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(30);
+        
+        if (dbActivities && dbActivities.length > 0) {
+          dbActivities.forEach(a => {
+            localActivities.unshift({
+              id: `act-${a.id}`,
+              type: a.type,
+              icon: a.type === 'follow' ? '👤' : a.type === 'like' ? '❤️' : a.type === 'comment' ? '💬' : '📣',
+              user: a.user_name || 'User',
+              userId: a.user_id,
+              action: a.message || 'did something',
+              target: a.target || '',
+              time: a.created_at,
+              likes: 0,
+              comments: [],
+              likedBy: []
+            });
+          });
+        }
+      } catch(e) { /* activities table may not exist */ }
+
+      // Sort by time
+      localActivities.sort((a, b) => new Date(b.time) - new Date(a.time));
+      setActivities(localActivities.slice(0, 50));
+    } catch (error) {
+      console.error('Error loading activities:', error);
+    }
+    setLoading(false);
+  };
+
+  const handleLikeActivity = (activityId) => {
+    if (!state.currentUser) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to like', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
+      return;
+    }
+    const userId = state.currentUser.id;
+    setActivities(prev => prev.map(a => {
+      if (a.id !== activityId) return a;
+      const liked = a.likedBy?.includes(userId);
+      return {
+        ...a,
+        likes: liked ? a.likes - 1 : a.likes + 1,
+        likedBy: liked ? a.likedBy.filter(id => id !== userId) : [...(a.likedBy || []), userId]
+      };
+    }));
+  };
+
+  const handleComment = (activityId, comment) => {
+    if (!comment.trim()) return;
+    const userName = state.profile?.name || state.currentUser?.email || 'User';
+    setActivities(prev => prev.map(a => {
+      if (a.id !== activityId) return a;
+      return {
+        ...a,
+        comments: [...(a.comments || []), {
+          id: Date.now(),
+          user: userName,
+          text: comment,
+          time: new Date().toISOString()
+        }]
+      };
+    }));
+  };
+
+  const filtered = filter === 'all' ? activities : activities.filter(a => a.type === filter);
+
+  const formatTime = (time) => {
+    if (!time) return '';
+    const d = new Date(time);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+    return `${Math.floor(diff/86400)}d ago`;
+  };
+
+  return (
+    <div className="activity-feed-page">
+      <div className="page-header">
+        <h1>📣 Activity Feed</h1>
+        <p>See what's happening in the DevMarket community</p>
+      </div>
+
+      <div className="activity-filters">
+        {['all', 'listing', 'snippet', 'follow', 'like'].map(f => (
+          <button
+            key={f}
+            className={`filter-chip ${filter === f ? 'active' : ''}`}
+            onClick={() => setFilter(f)}
+          >
+            {f === 'all' ? '🌐 All' : f === 'listing' ? '🛒 Listings' : f === 'snippet' ? '💻 Code' : f === 'follow' ? '👤 Follows' : '❤️ Likes'}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="loading-container"><div className="loading-spinner-large"></div><p>Loading feed...</p></div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state">
+          <span className="empty-icon">📣</span>
+          <h3>No activity yet</h3>
+          <p>Start exploring and activities will appear here!</p>
+        </div>
+      ) : (
+        <div className="activity-list">
+          {filtered.map(activity => (
+            <ActivityCard
+              key={activity.id}
+              activity={activity}
+              currentUser={state.currentUser}
+              onLike={handleLikeActivity}
+              onComment={handleComment}
+              formatTime={formatTime}
+              onViewProfile={(uid) => navigate(`/profile/${uid}`)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityCard({ activity, currentUser, onLike, onComment, formatTime, onViewProfile }) {
+  const [showComments, setShowComments] = useState(false);
+  const [commentText, setCommentText] = useState('');
+  const isLiked = activity.likedBy?.includes(currentUser?.id);
+
+  const handleSubmitComment = (e) => {
+    e.preventDefault();
+    if (!commentText.trim()) return;
+    onComment(activity.id, commentText);
+    setCommentText('');
+  };
+
+  const avatarUrl = activity.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activity.user || 'U')}&background=667eea&color=fff&size=40`;
+
+  return (
+    <div className="activity-card">
+      <div className="activity-header">
+        <img
+          src={avatarUrl}
+          alt={activity.user}
+          className="activity-avatar"
+          onClick={() => activity.userId && onViewProfile(activity.userId)}
+          style={{ cursor: activity.userId ? 'pointer' : 'default' }}
+        />
+        <div className="activity-meta">
+          <span
+            className="activity-user"
+            onClick={() => activity.userId && onViewProfile(activity.userId)}
+            style={{ cursor: activity.userId ? 'pointer' : 'default' }}
+          >
+            {activity.user}
+          </span>
+          <span className="activity-action"> {activity.action} </span>
+          {activity.target && <span className="activity-target">"{activity.target}"</span>}
+          <span className="activity-time"> · {formatTime(activity.time)}</span>
+        </div>
+        <span className="activity-icon-badge">{activity.icon}</span>
+      </div>
+
+      <div className="activity-actions">
+        <button
+          className={`activity-btn ${isLiked ? 'liked' : ''}`}
+          onClick={() => onLike(activity.id)}
+        >
+          {isLiked ? '❤️' : '🤍'} {activity.likes || 0}
+        </button>
+        <button
+          className="activity-btn"
+          onClick={() => setShowComments(!showComments)}
+        >
+          💬 {activity.comments?.length || 0}
         </button>
       </div>
-      
-      {userListings.length > 0 && (
-        <div className="profile-section">
-          <h2>Your Listings ({userListings.length})</h2>
-          <div className="listings-grid">
-            {userListings.slice(0, 3).map(l => (
-              <ListingCard key={l.id} listing={l} />
-            ))}
-          </div>
-          {userListings.length > 3 && (
-            <button className="btn-text" style={{ marginTop: '16px' }}>
-              View all {userListings.length} listings →
-            </button>
+
+      {showComments && (
+        <div className="activity-comments">
+          {(activity.comments || []).map(c => (
+            <div key={c.id} className="comment-item">
+              <strong className="comment-user">{c.user}</strong>
+              <span className="comment-text"> {c.text}</span>
+              <span className="comment-time"> · {formatTime(c.time)}</span>
+            </div>
+          ))}
+          {currentUser && (
+            <form onSubmit={handleSubmitComment} className="comment-form">
+              <input
+                type="text"
+                placeholder="Add a comment..."
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+                className="comment-input"
+              />
+              <button type="submit" className="btn-primary btn-sm">Post</button>
+            </form>
           )}
         </div>
       )}
@@ -2512,8 +3137,6 @@ function Profile() {
   );
 }
 
-// ============================================
-// HOME COMPONENT
 // ============================================
 function Home() {
   const { state } = useAppContext();
@@ -2789,7 +3412,9 @@ function ListingCard({ listing }) {
                 src={listing.sellerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(listing.seller || 'User')}&background=667eea&color=fff&size=28`} 
                 alt={listing.seller} 
               />
-              {listing.seller}
+              {listing.user_id ? (
+                <Link to={`/profile/${listing.user_id}`} className="seller-link">{listing.seller}</Link>
+              ) : listing.seller}
             </span>
             <span className="rating">⭐ {listing.rating || 'New'}</span>
           </div>
@@ -3997,7 +4622,9 @@ function CodeCard({ snippet, onLike, onDelete }) {
                 alt={snippet.author} 
                 style={{ width: '20px', height: '20px', borderRadius: '50%', marginRight: '4px' }}
               />
-              {snippet.author}
+              {snippet.user_id ? (
+                <Link to={`/profile/${snippet.user_id}`} className="seller-link">{snippet.author}</Link>
+              ) : snippet.author}
             </span>
             <span>{snippet.date}</span>
           </div>
