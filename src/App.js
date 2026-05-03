@@ -52,9 +52,19 @@ async function logActivity({ userId, type, title, message, targetUserId = null }
 // ============================================
 const AppContext = createContext();
 
+const getStoredNotificationPreferenceRaw = () => {
+  try {
+    return localStorage.getItem('devMarketNotificationsEnabled');
+  } catch (error) {
+    return null;
+  }
+};
+
 const getStoredNotificationPreference = () => {
   try {
-    return localStorage.getItem('devMarketNotificationsEnabled') !== 'false';
+    const raw = localStorage.getItem('devMarketNotificationsEnabled');
+    if (raw === null) return true;
+    return raw !== 'false';
   } catch (error) {
     return true;
   }
@@ -641,12 +651,16 @@ function App() {
         .single();
 
       if (profile) {
-        const notificationsEnabled = profile.notifications_enabled !== false;
+        const storedPref = getStoredNotificationPreferenceRaw();
+        const notificationsEnabled = storedPref === null ? profile.notifications_enabled !== false : storedPref !== 'false';
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
         dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: notificationsEnabled });
         localStorage.setItem('devMarketNotificationsEnabled', notificationsEnabled ? 'true' : 'false');
+        if (storedPref !== null && profile.notifications_enabled !== notificationsEnabled) {
+          supabase.from('profiles').upsert({ id: user.id, notifications_enabled: notificationsEnabled, updated_at: new Date().toISOString() }, { onConflict: 'id' }).then(() => {}).catch(() => {});
+        }
         return profile;
       } else {
         const meta = user.user_metadata || {};
@@ -673,8 +687,10 @@ function App() {
 
         dispatch({ type: 'SET_PROFILE', payload: defaultProfile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...defaultProfile } });
-        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: true });
-        localStorage.setItem('devMarketNotificationsEnabled', 'true');
+        const storedPref = getStoredNotificationPreferenceRaw();
+        const notificationsEnabled = storedPref === null ? true : storedPref !== 'false';
+        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: notificationsEnabled });
+        localStorage.setItem('devMarketNotificationsEnabled', notificationsEnabled ? 'true' : 'false');
         return defaultProfile;
       }
     } catch (error) {
@@ -990,7 +1006,7 @@ function App() {
         <div className={`App ${state.theme}`}>
           {isOffline && <div className="offline-banner">📴 You are offline. Cached content is shown.</div>}
           <div className="toast-container">
-            {(state.notifications || []).filter(n => !n.read).slice(0, 3).map(n => (
+            {state.notificationsEnabled && (state.notifications || []).filter(n => !n.read).slice(0, 3).map(n => (
               <Toast key={n.id} notification={n} onClose={removeNotification} />
             ))}
           </div>
@@ -1003,10 +1019,12 @@ function App() {
               <Route path="/code-sharing" element={<CodeSharing />} />
               <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="/profile/:userId" element={<PublicProfile />} />
               <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
+              <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
             </Routes>
           </main>
           <Footer />
@@ -1442,7 +1460,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   }, [setShowAuth]);
 
   return (
-    <div className="modal-overlay" onClick={() => setShowAuth(false)}>
+    <div className="modal-overlay auth-overlay" onClick={() => setShowAuth(false)}>
       <div className="auth-modal" onClick={e => e.stopPropagation()}>
         <button className="btn-close" onClick={() => setShowAuth(false)}>✕</button>
         {showSuccess ? (
@@ -1535,6 +1553,7 @@ function AdminDashboard() {
     maintenanceMode: false
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [pendingAction, setPendingAction] = useState(null);
 
   useEffect(() => {
     if (activeTab === 'users' && users.length === 0) {
@@ -1638,6 +1657,24 @@ function AdminDashboard() {
     } catch (error) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to approve listing', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
     }
+  };
+
+  const confirmDangerAction = (action) => setPendingAction(action);
+
+  const runPendingAction = async () => {
+    if (!pendingAction) return;
+    const { type, payload } = pendingAction;
+    if (type === 'delete-listing') await handleDeleteListing(payload.id, payload.title);
+    if (type === 'ban-user') await handleBanUser(payload.id, payload.name);
+    if (type === 'unban-user') await handleUnbanUser(payload.id, payload.name);
+    if (type === 'toggle-role') await handleToggleAdminRole(payload.user);
+    if (type === 'toggle-hide') {
+      try {
+        await supabase.from('listings').update({ hidden: payload.nextHidden }).eq('id', payload.listing.id);
+        dispatch({ type: 'UPDATE_LISTING', payload: { ...payload.listing, hidden: payload.nextHidden } });
+      } catch (error) {}
+    }
+    setPendingAction(null);
   };
 
   if (!state.currentUser || !state.isAdmin) {
@@ -1772,13 +1809,19 @@ function AdminDashboard() {
                           <button
                             className="btn-sm"
                             style={{ background: user.banned ? 'var(--success)' : 'var(--danger)', color: 'white', border: 'none' }}
-                            onClick={() => user.banned ? handleUnbanUser(user.id, user.name) : handleBanUser(user.id, user.name)}
+                            onClick={() => confirmDangerAction({
+                              type: user.banned ? 'unban-user' : 'ban-user',
+                              payload: { id: user.id, name: user.name }
+                            })}
                           >
                             {user.banned ? '✅ Unban' : '🚫 Ban'}
                           </button>
                           <button
                             className="btn-sm btn-secondary"
-                            onClick={() => handleToggleAdminRole(user)}
+                            onClick={() => confirmDangerAction({
+                              type: 'toggle-role',
+                              payload: { user }
+                            })}
                           >
                             {user.role === 'admin' ? '↩️ Remove Admin' : '🛡️ Make Admin'}
                           </button>
@@ -1823,20 +1866,20 @@ function AdminDashboard() {
                     )}
                     <button
                       className="btn-sm btn-secondary"
-                      onClick={async () => {
-                        const nextHidden = !listing.hidden;
-                        try {
-                          await supabase.from('listings').update({ hidden: nextHidden }).eq('id', listing.id);
-                          dispatch({ type: 'UPDATE_LISTING', payload: { ...listing, hidden: nextHidden } });
-                        } catch (error) {}
-                      }}
+                      onClick={() => confirmDangerAction({
+                        type: 'toggle-hide',
+                        payload: { listing, nextHidden: !listing.hidden }
+                      })}
                     >
                       {listing.hidden ? '👁️ Unhide' : '🙈 Hide'}
                     </button>
                     <button 
                       className="btn-sm" 
                       style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                      onClick={() => handleDeleteListing(listing.id, listing.title)}
+                      onClick={() => confirmDangerAction({
+                        type: 'delete-listing',
+                        payload: { id: listing.id, title: listing.title }
+                      })}
                     >
                       🗑️ Remove
                     </button>
@@ -1891,7 +1934,10 @@ function AdminDashboard() {
                   <button 
                     className="btn-sm" 
                     style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                    onClick={() => handleDeleteListing(listing.id, listing.title)}
+                    onClick={() => confirmDangerAction({
+                      type: 'delete-listing',
+                      payload: { id: listing.id, title: listing.title }
+                    })}
                   >
                     🚫 Remove
                   </button>
@@ -1944,6 +1990,15 @@ function AdminDashboard() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={!!pendingAction}
+        title="Confirm Action"
+        message="Are you sure you want to continue? This action can affect users or content."
+        onConfirm={runPendingAction}
+        onCancel={() => setPendingAction(null)}
+        confirmText="Yes, Continue"
+        type="danger"
+      />
     </div>
   );
 }
@@ -2756,6 +2811,23 @@ function ActivityFeed() {
 function Home() {
   const { state } = useAppContext();
   const navigate = useNavigate();
+  const [installPrompt, setInstallPrompt] = useState(null);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  };
   
   const stats = {
     listings: (state.listings || []).length,
@@ -2780,6 +2852,9 @@ function Home() {
           <div className="hero-buttons">
             <button onClick={() => navigate('/marketplace')} className="btn-primary btn-large">🛒 Browse Marketplace</button>
             <button onClick={() => navigate('/code-sharing')} className="btn-secondary btn-large">💻 Share Code</button>
+            {installPrompt && (
+              <button onClick={handleInstallApp} className="btn-secondary btn-large">📱 Download App</button>
+            )}
           </div>
           <div className="hero-stats">
             <div className="hero-stat">

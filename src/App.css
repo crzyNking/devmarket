@@ -947,6 +947,11 @@ body.modal-open {
   overflow-y: auto;
 }
 
+.auth-overlay {
+  align-items: center !important;
+  justify-content: center !important;
+}
+
 .infinite-loader {
   text-align: center;
   color: var(--gray-500);
@@ -4365,6 +4370,12 @@ input:checked + .toggle-slider:before {
     max-height: calc(100vh - 24px);
     padding: 30px 20px;
   }
+
+  .auth-overlay {
+    padding: 14px;
+    align-items: center !important;
+    justify-content: center !important;
+  }
   .home-page,
   .marketplace-page,
   .advertise-page,
@@ -4731,6 +4742,12 @@ input:checked + .toggle-slider:before {
     max-height: calc(100vh - 72px);
     border-radius: var(--radius-xl);
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.28);
+  }
+
+  .auth-overlay {
+    padding: 12px;
+    align-items: center !important;
+    justify-content: center !important;
   }
 
   .auth-header-new {
