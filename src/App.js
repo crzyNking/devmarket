@@ -254,13 +254,23 @@ const PRESET_AVATARS = [
 
 function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' }) {
   const [showPicker, setShowPicker] = useState(false);
-  const [selected, setSelected] = useState(null);
+  // Derive selected from currentAvatar URL so it reflects persisted value after reload
+  const selectedAvatarId = PRESET_AVATARS.find(av => av.url === currentAvatar)?.id || 
+    (currentAvatar?.includes('ui-avatars') ? 'generated' : null);
+  const [selected, setSelected] = useState(selectedAvatarId);
+
+  // Keep selected in sync when currentAvatar changes (e.g. after DB reload)
+  useEffect(() => {
+    const matchedId = PRESET_AVATARS.find(av => av.url === currentAvatar)?.id ||
+      (currentAvatar?.includes('ui-avatars') ? 'generated' : null);
+    setSelected(matchedId);
+  }, [currentAvatar]);
 
   const displayAvatar = currentAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
   const sizeMap = { small: '60px', medium: '80px', large: '100px' };
   const sz = sizeMap[size] || '100px';
 
-  const handleSelect = async (avatar) => {
+  const handleSelect = (avatar) => {
     setSelected(avatar.id);
     onAvatarUpdate(avatar.url);
     setShowPicker(false);
@@ -288,7 +298,7 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
               {PRESET_AVATARS.map(av => (
                 <div
                   key={av.id}
-                  className={`avatar-option ${selected === av.id || currentAvatar === av.url ? 'selected' : ''}`}
+                  className={`avatar-option ${selected === av.id ? 'selected' : ''}`}
                   onClick={() => handleSelect(av)}
                 >
                   <img src={av.url} alt={av.label} onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${av.label}&background=667eea&color=fff&size=80`; }} />
@@ -622,6 +632,20 @@ function App() {
           }));
         dispatch({ type: 'SET_FAVORITES', payload: favorites });
       }
+
+      // Load persisted follow state from Supabase so it survives refresh
+      try {
+        const [followsRes, followersRes] = await Promise.all([
+          supabase.from('follows').select('following_id').eq('follower_id', userId),
+          supabase.from('follows').select('follower_id').eq('following_id', userId)
+        ]);
+        if (followsRes.data) {
+          dispatch({ type: 'SET_FOLLOWS', payload: followsRes.data.map(r => r.following_id) });
+        }
+        if (followersRes.data) {
+          dispatch({ type: 'SET_FOLLOWERS', payload: followersRes.data.map(r => r.follower_id) });
+        }
+      } catch(e) { /* follows table may not exist yet */ }
 
       setupRealtimeSubscriptions(userId);
     } catch (error) {
@@ -2444,13 +2468,22 @@ function Profile() {
   const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
 
   const handleAvatarUpdate = async (avatarUrl) => {
+    // Optimistically update UI immediately
     dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
     try {
-      await supabase.from('profiles').upsert({
+      const { error } = await supabase.from('profiles').upsert({
         id: state.currentUser.id,
+        name: state.profile?.name || '',
+        email: state.currentUser.email || '',
+        bio: state.profile?.bio || '',
+        website: state.profile?.website || '',
+        github: state.profile?.github || '',
+        twitter: state.profile?.twitter || '',
+        role: state.profile?.role || 'developer',
         avatar_url: avatarUrl,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
+      if (error) console.error('Error saving avatar to DB:', error);
     } catch (error) {
       console.error('Could not save avatar:', error);
     }
@@ -2608,6 +2641,13 @@ function UserProfile() {
     loadUserProfile();
   }, [userId, state.currentUser]);
 
+  // Sync follow state from persisted Redux store whenever it changes
+  useEffect(() => {
+    if (state.follows && userId) {
+      setIsFollowing(state.follows.includes(userId));
+    }
+  }, [state.follows, userId]);
+
   const loadUserProfile = async () => {
     setLoading(true);
     try {
@@ -2632,15 +2672,20 @@ function UserProfile() {
         .eq('follower_id', userId);
       setFollowingCount(fingCount || 0);
 
-      // Check if current user follows this user
-      if (state.currentUser) {
-        const { data: followData } = await supabase
-          .from('follows')
-          .select('id')
-          .eq('follower_id', state.currentUser.id)
-          .eq('following_id', userId)
-          .maybeSingle();
-        setIsFollowing(!!followData);
+      // Check if current user follows this user — derived from persisted state.follows
+      if (state.currentUser && state.follows) {
+        setIsFollowing(state.follows.includes(userId));
+      } else if (state.currentUser) {
+        // Fallback DB check on first load before state.follows is populated
+        try {
+          const { data: followData } = await supabase
+            .from('follows')
+            .select('id')
+            .eq('follower_id', state.currentUser.id)
+            .eq('following_id', userId)
+            .maybeSingle();
+          setIsFollowing(!!followData);
+        } catch(e) {}
       }
 
       // Load user's public content
