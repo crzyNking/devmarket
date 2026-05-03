@@ -13,6 +13,14 @@ import './App.css';
 // ============================================
 const AppContext = createContext();
 
+const getPersistedNotificationsEnabled = () => {
+  try {
+    const stored = localStorage.getItem('devMarketNotificationsEnabled');
+    if (stored !== null) return JSON.parse(stored);
+  } catch(e) {}
+  return true;
+};
+
 const initialState = {
   listings: [],
   apps: [],
@@ -35,7 +43,7 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: true
+  notificationsEnabled: getPersistedNotificationsEnabled()
 };
 
 function appReducer(state, action) {
@@ -85,6 +93,7 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
     case 'SET_NOTIFICATIONS_ENABLED':
+      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(action.payload)); } catch(e) {}
       return { ...state, notificationsEnabled: action.payload };
     case 'ADD_NOTIFICATION': 
       if (!state.notificationsEnabled) return state;
@@ -208,141 +217,81 @@ function SkeletonMessage() {
 }
 
 // ============================================
-// ENHANCED AVATAR UPLOAD WITH SUPABASE STORAGE
+// AVATAR SELECTOR - 3 PRESET OPTIONS
 // ============================================
+const PRESET_AVATARS = [
+  {
+    id: 'dev',
+    url: 'https://api.dicebear.com/7.x/adventurer/svg?seed=DevMarket&backgroundColor=667eea&scale=90',
+    label: '🧑‍💻 Developer'
+  },
+  {
+    id: 'rocket',
+    url: 'https://api.dicebear.com/7.x/bottts/svg?seed=Rocket&backgroundColor=10b981&scale=80',
+    label: '🤖 Bot'
+  },
+  {
+    id: 'pixel',
+    url: 'https://api.dicebear.com/7.x/pixel-art/svg?seed=Pixel&backgroundColor=764ba2&scale=85',
+    label: '🎮 Pixel'
+  }
+];
+
 function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' }) {
-  const [uploading, setUploading] = useState(false);
-  const [preview, setPreview] = useState(null);
-  const [error, setError] = useState(null);
-  const fileInputRef = useRef(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [selected, setSelected] = useState(null);
 
-  const handleFileSelect = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const displayAvatar = currentAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
+  const sizeMap = { small: '60px', medium: '80px', large: '100px' };
+  const sz = sizeMap[size] || '100px';
 
-    setError(null);
-
-    const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
-    if (!validTypes.includes(file.type)) {
-      setError('Please select a valid image file (JPEG, PNG, GIF, WebP, SVG)');
-      return;
-    }
-
-    if (file.size > 5 * 1024 * 1024) {
-      setError('Image must be less than 5MB');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setPreview(event.target.result);
-    };
-    reader.readAsDataURL(file);
-
-    setUploading(true);
-    try {
-      const fileExt = file.name.split('.').pop().toLowerCase();
-      const fileName = `avatar-${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = `public/${fileName}`;
-
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('avatars')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: true,
-          contentType: file.type
-        });
-
-      if (uploadError) {
-        console.log('Storage upload error, trying alternative method...');
-        
-        const { data: uploadData2, error: uploadError2 } = await supabase.storage
-          .from('avatars')
-          .upload(fileName, file, {
-            cacheControl: '3600',
-            upsert: true
-          });
-
-        if (uploadError2) {
-          const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
-          onAvatarUpdate(avatarUrl);
-          setPreview(null);
-          setUploading(false);
-          return;
-        }
-
-        const { data: { publicUrl } } = supabase.storage
-          .from('avatars')
-          .getPublicUrl(fileName);
-
-        onAvatarUpdate(publicUrl);
-      } else {
-        const { data: { publicUrl } } = supabase.storage
-          .from('avatars')
-          .getPublicUrl(filePath);
-
-        onAvatarUpdate(publicUrl);
-      }
-
-      setPreview(null);
-      setError(null);
-    } catch (error) {
-      console.error('Upload error:', error);
-      const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
-      onAvatarUpdate(avatarUrl);
-      setPreview(null);
-      setError('Upload failed, using generated avatar instead');
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
+  const handleSelect = async (avatar) => {
+    setSelected(avatar.id);
+    onAvatarUpdate(avatar.url);
+    setShowPicker(false);
   };
-
-  const displayAvatar = preview || currentAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
-
-  const sizeClasses = {
-    small: { wrapper: '60px', fontSize: '0.7rem' },
-    medium: { wrapper: '80px', fontSize: '0.8rem' },
-    large: { wrapper: '100px', fontSize: '0.85rem' }
-  };
-
-  const currentSize = sizeClasses[size] || sizeClasses.large;
 
   return (
     <div className="avatar-upload-container">
-      <div 
-        className="avatar-preview-wrapper" 
-        onClick={() => !uploading && fileInputRef.current?.click()}
-        style={{ width: currentSize.wrapper, height: currentSize.wrapper }}
-      >
-        <img 
-          src={displayAvatar} 
-          alt={userName || 'User'} 
-          className="avatar-upload-preview"
-          style={{ width: currentSize.wrapper, height: currentSize.wrapper }}
-          onError={(e) => { 
-            e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`; 
-          }}
+      <div className="avatar-preview-wrapper" onClick={() => setShowPicker(true)} style={{ width: sz, height: sz, cursor: 'pointer' }}>
+        <img src={displayAvatar} alt={userName || 'User'} className="avatar-upload-preview"
+          style={{ width: sz, height: sz }}
+          onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`; }}
         />
-        <div className="avatar-upload-overlay" style={{ fontSize: currentSize.fontSize }}>
-          <span>📷</span>
-          <span>{uploading ? 'Uploading...' : 'Change'}</span>
-        </div>
+        <div className="avatar-upload-overlay"><span>📷</span><span>Change</span></div>
       </div>
-      {error && (
-        <p style={{ color: 'var(--danger)', fontSize: '0.8rem', margin: '4px 0 0 0', textAlign: 'center' }}>
-          {error}
-        </p>
+
+      {showPicker && (
+        <div className="modal-overlay" onClick={() => setShowPicker(false)}>
+          <div className="avatar-picker-modal" onClick={e => e.stopPropagation()}>
+            <div className="avatar-picker-header">
+              <h3>🖼️ Choose Your Avatar</h3>
+              <button className="btn-close" onClick={() => setShowPicker(false)}>✕</button>
+            </div>
+            <p className="avatar-picker-desc">Select one of the avatars below as your profile picture</p>
+            <div className="avatar-picker-grid">
+              {PRESET_AVATARS.map(av => (
+                <div
+                  key={av.id}
+                  className={`avatar-option ${selected === av.id || currentAvatar === av.url ? 'selected' : ''}`}
+                  onClick={() => handleSelect(av)}
+                >
+                  <img src={av.url} alt={av.label} onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${av.label}&background=667eea&color=fff&size=80`; }} />
+                  <span>{av.label}</span>
+                </div>
+              ))}
+              {/* Generated from name */}
+              <div
+                className="avatar-option"
+                onClick={() => handleSelect({ id: 'generated', url: `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200` })}
+              >
+                <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=80`} alt="Initials" />
+                <span>🔤 Initials</span>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
-      <input 
-        ref={fileInputRef}
-        type="file" 
-        accept="image/*" 
-        onChange={handleFileSelect} 
-        style={{ display: 'none' }}
-      />
     </div>
   );
 }
@@ -590,6 +539,10 @@ function App() {
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
+        // Load notification preference from Supabase
+        if (profile.notifications_enabled !== undefined && profile.notifications_enabled !== null) {
+          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: profile.notifications_enabled });
+        }
       } else {
         const meta = user.user_metadata || {};
         const defaultProfile = {
@@ -1001,7 +954,34 @@ function useAppContext() {
   return useContext(AppContext);
 }
 
-function Header() {
+// ============================================
+// PWA INSTALL HOOK
+// ============================================
+function usePWAInstall() {
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    window.addEventListener('appinstalled', () => setIsInstalled(true));
+    if (window.matchMedia('(display-mode: standalone)').matches) setIsInstalled(true);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const install = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') setIsInstalled(true);
+    setInstallPrompt(null);
+  };
+
+  return { canInstall: !!installPrompt && !isInstalled, install };
+}
   const { state, dispatch } = useAppContext();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
@@ -1010,6 +990,7 @@ function Header() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const { canInstall, install } = usePWAInstall();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -1098,6 +1079,11 @@ function Header() {
           </nav>
 
           <div className="header-actions">
+            {canInstall && (
+              <button className="btn-install-pwa" onClick={install} title="Install App">
+                📲 <span className="install-label">Install</span>
+              </button>
+            )}
             <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Search" aria-label="Search">
               🔍
             </button>
@@ -1404,10 +1390,25 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
             </div>
             <div className="social-login">
               <button className="social-btn social-btn-google" onClick={() => handleSocialLogin('google')}>
-                <span className="social-icon">G</span> Google
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{flexShrink:0}}>
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                Google
+              </button>
+              <button className="social-btn social-btn-facebook" onClick={() => handleSocialLogin('facebook')}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#1877F2" style={{flexShrink:0}}>
+                  <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                </svg>
+                Facebook
               </button>
               <button className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
-                <span className="social-icon">⌨️</span> GitHub
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{flexShrink:0}}>
+                  <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                </svg>
+                GitHub
               </button>
             </div>
             <div className="auth-divider"><span>or continue with email</span></div>
@@ -4404,13 +4405,29 @@ function Settings() {
                 <div className="setting-item master-toggle">
                   <div className="setting-info">
                     <strong>Enable Notifications</strong>
-                    <p>When disabled, no notifications will be triggered or stored</p>
+                    <p>When disabled, no notifications will appear or be stored</p>
                   </div>
                   <label className="toggle-switch">
                     <input
                       type="checkbox"
                       checked={state.notificationsEnabled}
-                      onChange={() => dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: !state.notificationsEnabled })}
+                      onChange={async () => {
+                        const newVal = !state.notificationsEnabled;
+                        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
+                        // Save to Supabase profile if logged in
+                        if (state.currentUser) {
+                          try {
+                            await supabase.from('profiles').upsert({
+                              id: state.currentUser.id,
+                              notifications_enabled: newVal,
+                              updated_at: new Date().toISOString()
+                            }, { onConflict: 'id' });
+                          } catch(e) { console.log('Could not save notification pref:', e); }
+                        }
+                        if (!newVal) {
+                          dispatch({ type: 'CLEAR_NOTIFICATIONS' });
+                        }
+                      }}
                     />
                     <span className="toggle-slider"></span>
                   </label>

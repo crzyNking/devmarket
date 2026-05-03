@@ -988,11 +988,11 @@ body.modal-open {
 @keyframes authModalIn {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.9) translateY(20px);
+    transform: scale(0.9) translateY(20px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1) translateY(0);
+    transform: scale(1) translateY(0);
   }
 }
 
@@ -1119,24 +1119,25 @@ body.modal-open {
 .social-login {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 20px;
 }
 
 .social-btn {
-  padding: 10px 12px;
-  border: 2px solid var(--gray-200);
+  padding: 9px 8px;
+  border: 1.5px solid var(--gray-200);
   border-radius: var(--radius-lg);
   background: var(--white);
   cursor: pointer;
   font-weight: 500;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   font-family: inherit;
+  white-space: nowrap;
 }
 
 .social-btn:hover {
@@ -1149,6 +1150,11 @@ body.modal-open {
   cursor: not-allowed;
   transform: none;
 }
+
+.social-btn-google:hover { border-color: #4285F4; color: #4285F4; }
+.social-btn-facebook { color: #1877F2; }
+.social-btn-facebook:hover { border-color: #1877F2; background: #f0f4ff; }
+.social-btn-github:hover { border-color: #333; color: #333; }
 
 /* Divider */
 .auth-divider {
@@ -6333,4 +6339,396 @@ input:checked + .toggle-slider:before {
 .App.dark .setting-item.master-toggle {
   background: var(--gray-700);
   border-color: var(--gray-600);
+}
+/* ============================================
+   PWA INSTALL BUTTON
+   ============================================ */
+.btn-install-pwa {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: all var(--transition);
+  box-shadow: var(--shadow-sm);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-install-pwa:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+  opacity: 0.92;
+}
+
+@media (max-width: 768px) {
+  .install-label {
+    display: none;
+  }
+  .btn-install-pwa {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    justify-content: center;
+    font-size: 1rem;
+  }
+}
+
+/* ============================================
+   AVATAR PICKER MODAL
+   ============================================ */
+.avatar-picker-modal {
+  background: var(--white);
+  border-radius: var(--radius-2xl);
+  padding: 32px 28px;
+  max-width: 400px;
+  width: 90%;
+  position: relative;
+  animation: authModalIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: var(--shadow-2xl);
+}
+
+.avatar-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.avatar-picker-header h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--gray-800);
+}
+
+.avatar-picker-desc {
+  color: var(--gray-500);
+  font-size: 0.88rem;
+  margin-bottom: 20px;
+}
+
+.avatar-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.avatar-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  border: 2px solid var(--gray-200);
+  border-radius: var(--radius-xl);
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--white);
+}
+
+.avatar-option:hover {
+  border-color: var(--primary);
+  background: rgba(102,126,234,0.04);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.avatar-option.selected {
+  border-color: var(--primary);
+  background: rgba(102,126,234,0.08);
+  box-shadow: 0 0 0 3px rgba(102,126,234,0.2);
+}
+
+.avatar-option img {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--gray-100);
+}
+
+.avatar-option span {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--gray-700);
+}
+
+/* ============================================
+   AUTH MODAL MOBILE CENTERING FIX
+   ============================================ */
+@media (max-width: 480px) {
+  .modal-overlay {
+    padding: 12px;
+    align-items: center;
+  }
+
+  .auth-modal {
+    padding: 24px 18px;
+    max-width: 100%;
+    margin: 0;
+    border-radius: var(--radius-xl);
+    max-height: 92vh;
+  }
+
+  .social-login {
+    gap: 6px;
+  }
+
+  .social-btn {
+    font-size: 0.72rem;
+    padding: 8px 4px;
+    gap: 3px;
+  }
+
+  .auth-header-new h2 {
+    font-size: 1.3rem;
+  }
+}
+
+/* ============================================
+   MOBILE HEADER BUTTON SIZES
+   ============================================ */
+@media (max-width: 768px) {
+  .icon-button {
+    width: 34px;
+    height: 34px;
+    font-size: 1rem;
+  }
+
+  .btn-login {
+    padding: 7px 14px;
+    font-size: 0.8rem;
+  }
+
+  .header-container {
+    padding: 0 12px;
+    height: 60px;
+  }
+
+  .logo-text h1 {
+    font-size: 1.1rem;
+  }
+
+  .logo-text p {
+    display: none;
+  }
+
+  .logo-icon-wrapper {
+    width: 36px;
+    height: 36px;
+  }
+
+  .user-name {
+    display: none;
+  }
+
+  .dropdown-arrow {
+    display: none;
+  }
+
+  .user-avatar {
+    width: 30px;
+    height: 30px;
+  }
+
+  .user-menu-trigger {
+    padding: 4px 6px 4px 4px;
+  }
+}
+
+/* ============================================
+   MOBILE SEARCH - SMALLER & CENTERED
+   ============================================ */
+@media (max-width: 768px) {
+  .advanced-search-modal {
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0 !important;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto !important;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+
+  .search-filters-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+
+  .search-main-input input {
+    font-size: 0.9rem;
+    padding: 10px 14px;
+  }
+
+  .advanced-search-header h2 {
+    font-size: 1rem;
+  }
+}
+
+/* ============================================
+   NOTIFICATION DROPDOWN MOBILE PADDING FIX
+   ============================================ */
+@media (max-width: 768px) {
+  .notification-item {
+    padding: 8px 10px !important;
+    gap: 8px;
+  }
+
+  .notifications-header {
+    padding: 10px 14px;
+  }
+
+  .notifications-header h3 {
+    font-size: 0.95rem;
+  }
+
+  .btn-text {
+    font-size: 0.78rem;
+    padding: 3px 6px;
+  }
+
+  .empty-notifications {
+    padding: 28px 16px;
+  }
+}
+
+/* ============================================
+   SETTINGS PAGE - FULLY RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+  .settings-container {
+    flex-direction: column !important;
+    gap: 0 !important;
+  }
+
+  .settings-sidebar {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    padding: 8px;
+    background: var(--gray-50);
+    border-radius: var(--radius-lg);
+    margin-bottom: 16px;
+    scrollbar-width: none;
+    min-width: 0;
+    border-right: none !important;
+    width: 100% !important;
+    min-width: unset !important;
+  }
+
+  .settings-sidebar::-webkit-scrollbar { display: none; }
+
+  .settings-nav-btn {
+    flex-shrink: 0;
+    padding: 8px 12px !important;
+    border-radius: var(--radius-lg) !important;
+    min-width: auto;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  .settings-nav-label {
+    font-size: 0.78rem;
+  }
+
+  .settings-content {
+    padding: 0 !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .settings-form {
+    padding: 16px !important;
+  }
+
+  .settings-form h3 {
+    font-size: 1.05rem;
+  }
+
+  .profile-header {
+    flex-direction: column !important;
+    align-items: center !important;
+    text-align: center !important;
+    gap: 14px !important;
+  }
+
+  .profile-actions {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .profile-actions a,
+  .profile-actions button {
+    font-size: 0.82rem;
+    padding: 8px 14px;
+  }
+}
+
+/* ============================================
+   PROFILE PAGE - FULLY RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+  .profile-page {
+    padding: 16px !important;
+  }
+
+  .profile-stats {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 8px !important;
+  }
+
+  .stat-box {
+    padding: 12px 8px !important;
+  }
+
+  .stat-box h3 {
+    font-size: 1.4rem !important;
+  }
+}
+
+/* Avatar upload container */
+.avatar-upload-container {
+  position: relative;
+}
+
+/* ============================================
+   DARK MODE FOR NEW COMPONENTS
+   ============================================ */
+.App.dark .avatar-picker-modal {
+  background: var(--gray-800);
+  color: var(--gray-100);
+}
+
+.App.dark .avatar-picker-header h3 {
+  color: var(--gray-100);
+}
+
+.App.dark .avatar-option {
+  border-color: var(--gray-600);
+  background: var(--gray-700);
+}
+
+.App.dark .avatar-option:hover {
+  border-color: var(--primary-light);
+  background: rgba(102,126,234,0.1);
+}
+
+.App.dark .avatar-option.selected {
+  border-color: var(--primary-light);
+  background: rgba(102,126,234,0.15);
+}
+
+.App.dark .avatar-option span {
+  color: var(--gray-300);
 }
