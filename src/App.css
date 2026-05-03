@@ -7347,7 +7347,7 @@ input:checked + .toggle-slider:before {
   .search-actions .btn-secondary {
     flex: 1;
   }
-}
+
 
 @media (max-width: 480px) {
   .advanced-search-modal {
