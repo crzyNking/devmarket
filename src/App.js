@@ -8,6 +8,29 @@ import { realtimeManager } from './utils/realtime';
 import { analytics } from './utils/analytics';
 import './App.css';
 
+async function createNotificationIfEnabled({ userId, message, type = 'info' }) {
+  if (!userId || !message) return;
+  try {
+    const { data: recipientProfile } = await supabase
+      .from('profiles')
+      .select('notifications_enabled')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (recipientProfile?.notifications_enabled === false) return;
+
+    await supabase.from('notifications').insert([{
+      user_id: userId,
+      message,
+      type,
+      read: false,
+      created_at: new Date().toISOString()
+    }]);
+  } catch (error) {
+    console.log('Could not create notification:', error);
+  }
+}
+
 // ============================================
 // GLOBAL CONTEXT
 // ============================================
@@ -35,7 +58,8 @@ const initialState = {
   onlineUsers: [],
   analyticsData: null,
   isAdmin: false,
-  moderationQueue: []
+  moderationQueue: [],
+  notificationsEnabled: true
 };
 
 function appReducer(state, action) {
@@ -81,6 +105,7 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
     case 'ADD_NOTIFICATION': 
+      if (state.notificationsEnabled === false) return state;
       return { ...state, notifications: [{...action.payload, id: Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
     case 'REMOVE_NOTIFICATION': 
       return { ...state, notifications: (state.notifications || []).filter(n => n.id !== action.payload) };
@@ -88,6 +113,8 @@ function appReducer(state, action) {
       return { ...state, notifications: [] };
     case 'MARK_NOTIFICATIONS_READ': 
       return { ...state, notifications: (state.notifications || []).map(n => ({ ...n, read: true })) };
+    case 'SET_NOTIFICATIONS_ENABLED':
+      return { ...state, notificationsEnabled: action.payload };
     case 'SET_MESSAGES': 
       return { ...state, messages: action.payload || [] };
     case 'ADD_MESSAGE': 
@@ -1991,17 +2018,11 @@ function Messages() {
       const { error } = await supabase.from('messages').insert([msgData]);
       
       if (!error) {
-        if (state.notificationsEnabled) {
-          try {
-            await supabase.from('notifications').insert([{
-              user_id: replyingTo.userId,
-              message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
-              type: 'info',
-              read: false,
-              created_at: new Date().toISOString()
-            }]);
-          } catch (notifError) {}
-        }
+        await createNotificationIfEnabled({
+          userId: replyingTo.userId,
+          message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
+          type: 'info'
+        });
         
         // Refresh messages
         const { data: msgsResult } = await supabase
@@ -2572,19 +2593,11 @@ function ListingCard({ listing }) {
 
         await supabase.from('messages').insert([msgData]);
         
-        if (state.notificationsEnabled) {
-          try {
-            await supabase.from('notifications').insert([{
-              user_id: listing.user_id,
-              message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
-              type: 'info',
-              read: false,
-              created_at: new Date().toISOString()
-            }]);
-          } catch (notifError) {
-            console.log('Could not create notification:', notifError);
-          }
-        }
+        await createNotificationIfEnabled({
+          userId: listing.user_id,
+          message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
+          type: 'info'
+        });
         
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: `Message sent about "${listing.title}"`, 
@@ -3441,19 +3454,11 @@ function AppCard({ app }) {
           created_at: new Date().toISOString()
         }]);
         
-        if (state.notificationsEnabled) {
-          try {
-            await supabase.from('notifications').insert([{
-              user_id: app.user_id,
-              message: `💬 New inquiry about "${app.appName}" from ${state.profile?.name || state.currentUser.email}`,
-              type: 'info',
-              read: false,
-              created_at: new Date().toISOString()
-            }]);
-          } catch (notifError) {
-            console.log('Could not create notification:', notifError);
-          }
-        }
+        await createNotificationIfEnabled({
+          userId: app.user_id,
+          message: `💬 New inquiry about "${app.appName}" from ${state.profile?.name || state.currentUser.email}`,
+          type: 'info'
+        });
         
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: `Inquiry sent about "${app.appName}"`, 
@@ -4101,6 +4106,16 @@ function Settings() {
     }));
   }, [state.notificationsEnabled]);
 
+  useEffect(() => {
+    if (state.profile?.notification_preferences && typeof state.profile.notification_preferences === 'object') {
+      setNotificationPrefs(prev => ({
+        ...prev,
+        ...state.profile.notification_preferences,
+        allNotifications: state.notificationsEnabled !== false
+      }));
+    }
+  }, [state.profile, state.notificationsEnabled]);
+
   if (!state.currentUser) {
     return (
       <div className="settings-page">
@@ -4222,6 +4237,7 @@ function Settings() {
       await supabase.from('profiles').upsert({
         id: state.currentUser.id,
         notifications_enabled: enabled,
+        notification_preferences: notificationPrefs,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
     } catch (error) {

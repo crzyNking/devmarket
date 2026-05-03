@@ -95,6 +95,19 @@ body {
   overflow-x: hidden;
 }
 
+a,
+button,
+input,
+select,
+textarea,
+.listing-card,
+.app-card,
+.code-card,
+.feature-card,
+.settings-nav-btn {
+  transition: all 0.2s ease;
+}
+
 body.modal-open {
   overflow: hidden;
 }
@@ -1445,6 +1458,7 @@ body.modal-open {
    ============================================ */
 .main-content {
   flex: 1;
+  padding-bottom: 16px;
 }
 
 .home-page,
@@ -1465,6 +1479,9 @@ body.modal-open {
 .page-header {
   text-align: center;
   margin-bottom: 48px;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
 }
 
 .page-header h1 {
@@ -4281,6 +4298,29 @@ input:checked + .toggle-slider:before {
 }
 
 @media (max-width: 768px) {
+  .home-page,
+  .marketplace-page,
+  .advertise-page,
+  .code-sharing-page,
+  .messages-page,
+  .profile-page,
+  .favorites-page,
+  .settings-page,
+  .admin-page,
+  .analytics-page {
+    padding: 20px 14px;
+  }
+
+  .page-header {
+    margin-bottom: 28px;
+    gap: 6px;
+  }
+
+  .page-header p {
+    margin-bottom: 12px;
+    font-size: 0.98rem;
+  }
+
   .header-content {
     padding: 10px 12px;
     gap: 8px;
@@ -4556,6 +4596,23 @@ input:checked + .toggle-slider:before {
 }
 
 @media (max-width: 480px) {
+  .main-content {
+    padding-bottom: 8px;
+  }
+
+  .home-page,
+  .marketplace-page,
+  .advertise-page,
+  .code-sharing-page,
+  .messages-page,
+  .profile-page,
+  .favorites-page,
+  .settings-page,
+  .admin-page,
+  .analytics-page {
+    padding: 16px 10px;
+  }
+
   .hero-content h1 {
     font-size: 1.75rem;
   }
