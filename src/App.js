@@ -2,73 +2,16 @@
 // src/App.js (COMPLETE ENHANCED VERSION - FIXED)
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
 import { realtimeManager } from './utils/realtime';
 import { analytics } from './utils/analytics';
 import './App.css';
 
-async function createNotificationIfEnabled({ userId, message, type = 'info' }) {
-  if (!userId || !message) return;
-  try {
-    const { data: recipientProfile } = await supabase
-      .from('profiles')
-      .select('notifications_enabled')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (recipientProfile?.notifications_enabled === false) return;
-
-    await supabase.from('notifications').insert([{
-      user_id: userId,
-      message,
-      type,
-      read: false,
-      created_at: new Date().toISOString()
-    }]);
-  } catch (error) {
-    console.log('Could not create notification:', error);
-  }
-}
-
-async function logActivity({ userId, type, title, message, targetUserId = null }) {
-  if (!userId) return;
-  try {
-    await supabase.from('activity_feed').insert([{
-      user_id: userId,
-      target_user_id: targetUserId,
-      type,
-      title,
-      message,
-      created_at: new Date().toISOString()
-    }]);
-  } catch (error) {
-    // Optional analytics stream; no-op if table is unavailable.
-  }
-}
-
 // ============================================
 // GLOBAL CONTEXT
 // ============================================
 const AppContext = createContext();
-
-const getStoredNotificationPreferenceRaw = () => {
-  try {
-    return localStorage.getItem('devMarketNotificationsEnabled');
-  } catch (error) {
-    return null;
-  }
-};
-
-const getStoredNotificationPreference = () => {
-  try {
-    const raw = localStorage.getItem('devMarketNotificationsEnabled');
-    if (raw === null) return true;
-    return raw !== 'false';
-  } catch (error) {
-    return true;
-  }
-};
 
 const initialState = {
   listings: [],
@@ -82,9 +25,6 @@ const initialState = {
   conversations: [],
   activeConversation: null,
   favorites: [],
-  follows: [],
-  followers: [],
-  activityFeed: [],
   searchHistory: [],
   theme: 'light',
   authError: null,
@@ -92,11 +32,10 @@ const initialState = {
   initialized: false,
   dataLoaded: false,
   realtimeConnected: false,
-  onlineUsers: [],
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: getStoredNotificationPreference()
+  notificationsEnabled: true
 };
 
 function appReducer(state, action) {
@@ -145,8 +84,10 @@ function appReducer(state, action) {
       return { ...state, codeSnippets: (state.codeSnippets || []).map(s => s.id === action.payload.id ? { ...s, likes: action.payload.likes, likedBy: action.payload.likedBy } : s) };
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
+    case 'SET_NOTIFICATIONS_ENABLED':
+      return { ...state, notificationsEnabled: action.payload };
     case 'ADD_NOTIFICATION': 
-      if (state.notificationsEnabled === false) return state;
+      if (!state.notificationsEnabled) return state;
       return { ...state, notifications: [{...action.payload, id: Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
     case 'REMOVE_NOTIFICATION': 
       return { ...state, notifications: (state.notifications || []).filter(n => n.id !== action.payload) };
@@ -154,8 +95,6 @@ function appReducer(state, action) {
       return { ...state, notifications: [] };
     case 'MARK_NOTIFICATIONS_READ': 
       return { ...state, notifications: (state.notifications || []).map(n => ({ ...n, read: true })) };
-    case 'SET_NOTIFICATIONS_ENABLED':
-      return { ...state, notificationsEnabled: action.payload };
     case 'SET_MESSAGES': 
       return { ...state, messages: action.payload || [] };
     case 'ADD_MESSAGE': 
@@ -203,12 +142,6 @@ function appReducer(state, action) {
       return { ...state, messages: (state.messages || []).filter(m => m.id !== action.payload) };
     case 'SET_FAVORITES': 
       return { ...state, favorites: action.payload || [] };
-    case 'SET_FOLLOWS':
-      return { ...state, follows: action.payload || [] };
-    case 'SET_FOLLOWERS':
-      return { ...state, followers: action.payload || [] };
-    case 'SET_ACTIVITY_FEED':
-      return { ...state, activityFeed: action.payload || [] };
     case 'TOGGLE_FAVORITE': {
       const favExists = (state.favorites || []).find(f => f.id === action.payload.id);
       return { ...state, favorites: favExists ? (state.favorites || []).filter(f => f.id !== action.payload.id) : [...(state.favorites || []), action.payload] };
@@ -229,10 +162,6 @@ function appReducer(state, action) {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
       return { ...state, theme: newTheme };
-    }
-    case 'SET_THEME': {
-      localStorage.setItem('devMarketTheme', action.payload);
-      return { ...state, theme: action.payload };
     }
     default: 
       return state;
@@ -584,7 +513,6 @@ function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [hasShownLoader, setHasShownLoader] = useState(false);
-  const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   useEffect(() => {
     const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
@@ -659,17 +587,9 @@ function App() {
         .single();
 
       if (profile) {
-        const storedPref = getStoredNotificationPreferenceRaw();
-        const notificationsEnabled = storedPref === null ? profile.notifications_enabled !== false : storedPref !== 'false';
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
-        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: notificationsEnabled });
-        localStorage.setItem('devMarketNotificationsEnabled', notificationsEnabled ? 'true' : 'false');
-        if (storedPref !== null && profile.notifications_enabled !== notificationsEnabled) {
-          supabase.from('profiles').upsert({ id: user.id, notifications_enabled: notificationsEnabled, updated_at: new Date().toISOString() }, { onConflict: 'id' }).then(() => {}).catch(() => {});
-        }
-        return profile;
       } else {
         const meta = user.user_metadata || {};
         const defaultProfile = {
@@ -695,38 +615,25 @@ function App() {
 
         dispatch({ type: 'SET_PROFILE', payload: defaultProfile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...defaultProfile } });
-        const storedPref = getStoredNotificationPreferenceRaw();
-        const notificationsEnabled = storedPref === null ? true : storedPref !== 'false';
-        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: notificationsEnabled });
-        localStorage.setItem('devMarketNotificationsEnabled', notificationsEnabled ? 'true' : 'false');
-        return defaultProfile;
       }
     } catch (error) {
       console.error('Error loading profile:', error);
-      return null;
     }
   }
 
-  async function loadUserData(userId, notificationsEnabled = true) {
+  async function loadUserData(userId) {
     try {
-      const [msgsResult, favsResult, notifsResult, followsResult, followersResult, activityResult] = await Promise.all([
+      const [notifsResult, msgsResult, favsResult] = await Promise.all([
+        supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
         supabase.from('messages').select('*').or(`from_user.eq.${userId},to_user.eq.${userId}`).order('created_at', { ascending: false }),
-        supabase.from('favorites').select('*, listing:listing_id (*)').eq('user_id', userId),
-        notificationsEnabled
-          ? supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50)
-          : Promise.resolve({ data: [] }),
-        supabase.from('follows').select('following_id').eq('follower_id', userId),
-        supabase.from('follows').select('follower_id').eq('following_id', userId),
-        supabase.from('activity_feed').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100)
+        supabase.from('favorites').select('*, listing:listing_id (*)').eq('user_id', userId)
       ]);
 
-      if (notificationsEnabled && notifsResult.data) {
+      if (notifsResult.data) {
         dispatch({ type: 'SET_NOTIFICATIONS', payload: notifsResult.data.map(n => ({
           ...n,
           read: n.read || false
         })) });
-      } else {
-        dispatch({ type: 'CLEAR_NOTIFICATIONS' });
       }
 
       if (msgsResult.data) {
@@ -747,10 +654,6 @@ function App() {
           }));
         dispatch({ type: 'SET_FAVORITES', payload: favorites });
       }
-
-      dispatch({ type: 'SET_FOLLOWS', payload: (followsResult.data || []).map(f => f.following_id) });
-      dispatch({ type: 'SET_FOLLOWERS', payload: (followersResult.data || []).map(f => f.follower_id) });
-      dispatch({ type: 'SET_ACTIVITY_FEED', payload: activityResult.data || [] });
 
       setupRealtimeSubscriptions(userId);
     } catch (error) {
@@ -792,8 +695,7 @@ function App() {
         const activeConvId = sessionStorage.getItem('activeConversationId');
         const isConversationOpen = activeConvId === otherUserId;
         
-        const notificationsAllowed = localStorage.getItem('devMarketNotificationsEnabled') !== 'false';
-        if (!isConversationOpen && notificationsAllowed) {
+        if (!isConversationOpen) {
           dispatch({ type: 'ADD_NOTIFICATION', payload: {
             message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
             type: 'info',
@@ -813,8 +715,6 @@ function App() {
         filter: `user_id=eq.${userId}`
       },
       (payload) => {
-        const notificationsAllowed = localStorage.getItem('devMarketNotificationsEnabled') !== 'false';
-        if (!notificationsAllowed) return;
         console.log('🔔 New real-time notification:', payload.new);
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
           ...payload.new,
@@ -895,9 +795,8 @@ function App() {
           dispatch({ type: 'SET_SESSION', payload: session });
           
           if (session?.user) {
-            const loadedProfile = await loadProfile(session.user);
-            const notificationsEnabled = loadedProfile?.notifications_enabled !== false;
-            await loadUserData(session.user.id, notificationsEnabled);
+            await loadProfile(session.user);
+            await loadUserData(session.user.id);
           }
         }
 
@@ -916,24 +815,6 @@ function App() {
       }
     }
 
-    // Auth state listener MUST be set up before any early returns
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (mounted) {
-        dispatch({ type: 'SET_SESSION', payload: session });
-        
-        if (event === 'SIGNED_IN' && session?.user) {
-          const loadedProfile = await loadProfile(session.user);
-          const notificationsEnabled = loadedProfile?.notifications_enabled !== false;
-          await loadUserData(session.user.id, notificationsEnabled);
-        } else if (event === 'SIGNED_OUT') {
-          dispatch({ type: 'LOGOUT' });
-          realtimeManager.unsubscribeAll();
-        } else if (event === 'TOKEN_REFRESHED' && session?.user) {
-          dispatch({ type: 'SET_SESSION', payload: session });
-        }
-      }
-    });
-
     if (!hasShownLoader) {
       initialize().then(() => {
         sessionStorage.setItem('devMarketLoaderShown', 'true');
@@ -945,15 +826,24 @@ function App() {
         sessionStorage.setItem('devMarketLoaderShown', 'true');
       }, 6000);
       
-      return () => {
-        clearTimeout(safetyTimeout);
-        mounted = false;
-        subscription?.unsubscribe();
-        realtimeManager.unsubscribeAll();
-      };
+      return () => clearTimeout(safetyTimeout);
     } else {
       initialize().then(() => setIsInitialLoading(false));
     }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (mounted) {
+        dispatch({ type: 'SET_SESSION', payload: session });
+        
+        if (event === 'SIGNED_IN' && session?.user) {
+          await loadProfile(session.user);
+          await loadUserData(session.user.id);
+        } else if (event === 'SIGNED_OUT') {
+          dispatch({ type: 'LOGOUT' });
+          realtimeManager.unsubscribeAll();
+        }
+      }
+    });
 
     return () => {
       mounted = false;
@@ -964,20 +854,9 @@ function App() {
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('devMarketTheme');
-    if (savedTheme && (savedTheme === 'light' || savedTheme === 'dark') && savedTheme !== state.theme) {
-      dispatch({ type: 'SET_THEME', payload: savedTheme });
+    if (savedTheme && savedTheme !== state.theme) {
+      dispatch({ type: 'TOGGLE_THEME' });
     }
-  }, []);
-
-  useEffect(() => {
-    const onOnline = () => setIsOffline(false);
-    const onOffline = () => setIsOffline(true);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
   }, []);
 
   const removeNotification = useCallback((id) => {
@@ -1020,9 +899,8 @@ function App() {
     <AppContext.Provider value={{ state, dispatch }}>
       <Router>
         <div className={`App ${state.theme}`}>
-          {isOffline && <div className="offline-banner">📴 You are offline. Cached content is shown.</div>}
           <div className="toast-container">
-            {state.notificationsEnabled && (state.notifications || []).filter(n => !n.read).slice(0, 3).map(n => (
+            {(state.notifications || []).filter(n => !n.read).slice(0, 3).map(n => (
               <Toast key={n.id} notification={n} onClose={removeNotification} />
             ))}
           </div>
@@ -1035,12 +913,10 @@ function App() {
               <Route path="/code-sharing" element={<CodeSharing />} />
               <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-              <Route path="/profile/:userId" element={<PublicProfile />} />
               <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
-              <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
             </Routes>
           </main>
           <Footer />
@@ -1125,34 +1001,17 @@ function useAppContext() {
   return useContext(AppContext);
 }
 
-// ============================================
-// ENHANCED HEADER WITH REAL-TIME INDICATOR
-// ============================================
 function Header() {
   const { state, dispatch } = useAppContext();
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('login');
-  const [showSearch, setShowSearch] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const userMenuRef = useRef(null);
-
-  // Close dropdown on click outside
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
-        setShowUserMenu(false);
-      }
-    };
-    if (showUserMenu) document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showUserMenu]);
 
   const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
   const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
@@ -1163,7 +1022,6 @@ function Header() {
       analytics.trackSearch(searchQuery, {});
       navigate(`/marketplace?search=${encodeURIComponent(searchQuery.trim())}`);
       setSearchQuery('');
-      setShowSearch(false);
     }
   };
 
@@ -1194,7 +1052,6 @@ function Header() {
   const userAvatar = state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
 
   const closeAll = () => {
-    setIsMenuOpen(false);
     setShowUserMenu(false);
     setShowNotifications(false);
   };
@@ -1211,7 +1068,8 @@ function Header() {
             <div className="logo-text"><h1>DevMarket</h1><p>IT Marketplace Hub</p></div>
           </Link>
 
-          <nav className={`nav-menu ${isMenuOpen ? 'active' : ''}`}>
+          {/* Desktop nav only */}
+          <nav className="nav-menu desktop-nav">
             <Link to="/marketplace" className={`nav-link ${location.pathname === '/marketplace' ? 'active' : ''}`} onClick={closeAll}>
               <span className="nav-icon">🛒</span> Marketplace
             </Link>
@@ -1256,7 +1114,7 @@ function Header() {
                   {unreadNotifications > 0 && <span className="notification-badge">{unreadNotifications}</span>}
                 </button>
                 
-                <div className="user-menu" ref={userMenuRef}>
+                <div className="user-menu">
                   <div className="user-menu-trigger" onClick={() => setShowUserMenu(!showUserMenu)}>
                     <img 
                       src={userAvatar} 
@@ -1269,7 +1127,8 @@ function Header() {
                     <span className="user-name">{userDisplayName}</span>
                     <span className="dropdown-arrow">▾</span>
                   </div>
-                  <div className={`dropdown-menu ${showUserMenu ? 'open' : ''}`}>
+                  {showUserMenu && (
+                    <div className="dropdown-menu">
                       <div className="dropdown-header">
                         <img src={userAvatar} alt={userDisplayName} className="dropdown-avatar" />
                         <div>
@@ -1299,6 +1158,7 @@ function Header() {
                         <span>🚪</span> Logout
                       </button>
                     </div>
+                  )}
                 </div>
               </>
             ) : (
@@ -1306,14 +1166,10 @@ function Header() {
                 👤 Sign In
               </button>
             )}
-            
-            <button className="menu-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)} aria-label="Toggle menu">
-              {isMenuOpen ? '✕' : '☰'}
-            </button>
           </div>
         </div>
 
-        {showNotifications && !isMenuOpen && (
+        {showNotifications && (
           <>
             <div className="overlay-backdrop" onClick={() => setShowNotifications(false)} />
             <div className="notifications-dropdown">
@@ -1367,6 +1223,10 @@ function Header() {
           searchType="all"
         />
       </header>
+
+      {/* Mobile Bottom Navigation Row */}
+      <MobileNav location={location} unreadMessages={unreadMessages} currentUser={state.currentUser} isAdmin={state.isAdmin} />
+
       <ConfirmDialog 
         isOpen={showLogoutConfirm} 
         title="Confirm Logout" 
@@ -1377,6 +1237,42 @@ function Header() {
         type="danger" 
       />
     </>
+  );
+}
+
+// ============================================
+// MOBILE BOTTOM NAVIGATION
+// ============================================
+function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
+  const navItems = [
+    { to: '/', icon: '🏠', label: 'Home' },
+    { to: '/marketplace', icon: '🛒', label: 'Market' },
+    { to: '/advertise', icon: '📱', label: 'Advertise' },
+    { to: '/code-sharing', icon: '💻', label: 'Code' },
+    ...(currentUser ? [
+      { to: '/favorites', icon: '⭐', label: 'Favorites' },
+      { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
+      { to: '/profile', icon: '👤', label: 'Profile' },
+    ] : []),
+    ...(isAdmin ? [{ to: '/admin', icon: '🛡️', label: 'Admin' }] : []),
+  ];
+
+  return (
+    <nav className="mobile-bottom-nav">
+      {navItems.map(item => (
+        <Link
+          key={item.to}
+          to={item.to}
+          className={`mobile-nav-btn ${location.pathname === item.to ? 'active' : ''}`}
+        >
+          <span className="mobile-nav-icon">
+            {item.icon}
+            {item.badge > 0 && <span className="mobile-nav-badge">{item.badge}</span>}
+          </span>
+          <span className="mobile-nav-label">{item.label}</span>
+        </Link>
+      ))}
+    </nav>
   );
 }
 
@@ -1472,24 +1368,12 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
 
   const handleSocialLogin = async (provider) => {
     try {
-      const { error } = await supabase.auth.signInWithOAuth({ 
-        provider, 
-        options: { 
-          redirectTo: window.location.origin,
-          queryParams: provider === 'facebook' ? {
-            access_type: 'offline',
-            prompt: 'consent',
-          } : undefined
-        } 
-      });
-      if (error) {
-        dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured. Please check your Supabase settings.` });
-      }
+      const { error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin } });
+      if (error) dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not configured.` });
     } catch (error) {
       dispatch({ type: 'SET_AUTH_ERROR', payload: `${provider} login not available.` });
     }
   };
-
 
   useEffect(() => {
     const handleEsc = (e) => { if (e.key === 'Escape') setShowAuth(false); };
@@ -1498,7 +1382,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   }, [setShowAuth]);
 
   return (
-    <div className="modal-overlay auth-overlay" onClick={() => setShowAuth(false)}>
+    <div className="modal-overlay" onClick={() => setShowAuth(false)}>
       <div className="auth-modal" onClick={e => e.stopPropagation()}>
         <button className="btn-close" onClick={() => setShowAuth(false)}>✕</button>
         {showSuccess ? (
@@ -1519,42 +1403,13 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
               <p>{authMode === 'login' ? 'Sign in to continue building' : 'Start your developer journey'}</p>
             </div>
             <div className="social-login">
-  <button 
-    className="social-btn social-btn-google" 
-    onClick={() => handleSocialLogin('google')}
-    type="button"
-  >
-    <svg className="social-icon-img" viewBox="0 0 24 24" width="20" height="20">
-      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
-      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-    </svg>
-    Google
-  </button>
-  
-  <button 
-    className="social-btn social-btn-github" 
-    onClick={() => handleSocialLogin('github')}
-    type="button"
-  >
-    <svg className="social-icon-img" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-      <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-    </svg>
-    GitHub
-  </button>
-  
-  <button 
-    className="social-btn social-btn-facebook" 
-    onClick={() => handleSocialLogin('facebook')}
-    type="button"
-  >
-    <svg className="social-icon-img" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-    </svg>
-    Facebook
-  </button>
-</div>
+              <button className="social-btn social-btn-google" onClick={() => handleSocialLogin('google')}>
+                <span className="social-icon">G</span> Google
+              </button>
+              <button className="social-btn social-btn-github" onClick={() => handleSocialLogin('github')}>
+                <span className="social-icon">⌨️</span> GitHub
+              </button>
+            </div>
             <div className="auth-divider"><span>or continue with email</span></div>
             {state.authError && <div className="auth-error">⚠️ {state.authError}</div>}
             <form onSubmit={handleSubmit} className="auth-form">
@@ -1580,9 +1435,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
                 <>
                   <div className="form-group">
                     <label>Confirm Password</label>
-                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} className={errors.confirmPassword ? 'error' : ''} />
-                    <button type="button" className="password-toggle" onClick={() => setShowConfirmPassword(!showConfirmPassword)}>{showConfirmPassword ? '👁️' : '👁️‍🗨️'}</button>
-                    {errors.confirmPassword && <span className="error-message">{errors.confirmPassword}</span>}
+                    <input type={showConfirmPassword ? "text" : "password"} placeholder="Confirm password" value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} />
                   </div>
                   <button type="button" className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
                 </>
@@ -1622,7 +1475,7 @@ function AdminDashboard() {
     maintenanceMode: false
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
-  const [pendingAction, setPendingAction] = useState(null);
+  const [hideConfirm, setHideConfirm] = useState(null); // { id, title }
 
   useEffect(() => {
     if (activeTab === 'users' && users.length === 0) {
@@ -1671,79 +1524,53 @@ function AdminDashboard() {
     }
   };
 
-  const handleSaveSettings = () => {
-    (async () => {
-      try {
-        await supabase.from('platform_settings').upsert([{ key: 'global', value: platformSettings, updated_at: new Date().toISOString() }], { onConflict: 'key' });
-      } catch (error) {
-        localStorage.setItem('devMarketPlatformSettings', JSON.stringify(platformSettings));
-      }
-      setSettingsSaved(true);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: {
-        message: '✅ Platform settings saved!', type: 'success',
-        time: new Date().toLocaleTimeString(), read: false
+  const handleHideListing = async (listingId, title) => {
+    try {
+      await supabase.from('listings').update({ hidden: true }).eq('id', listingId);
+      dispatch({ type: 'HIDE_LISTING', payload: listingId });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: `🙈 Listing "${title}" hidden from users`, type: 'info', 
+        time: new Date().toLocaleTimeString(), read: false 
       }});
-      setTimeout(() => setSettingsSaved(false), 3000);
-    })();
+    } catch (e) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Could not hide listing', type: 'error', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    }
+    setHideConfirm(null);
+  };
+
+  const handleUnhideListing = async (listingId, title) => {
+    try {
+      await supabase.from('listings').update({ hidden: false }).eq('id', listingId);
+      dispatch({ type: 'UNHIDE_LISTING', payload: listingId });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: `👁️ Listing "${title}" is now visible`, type: 'success', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    } catch (e) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Could not unhide listing', type: 'error', 
+        time: new Date().toLocaleTimeString(), read: false 
+      }});
+    }
+  };
+
+  const handleSaveSettings = () => {
+    setSettingsSaved(true);
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: '✅ Platform settings saved!', type: 'success', 
+      time: new Date().toLocaleTimeString(), read: false 
+    }});
+    setTimeout(() => setSettingsSaved(false), 3000);
   };
 
   const handleBanUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ banned: true, updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, banned: true } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `🚫 ${userName || 'User'} was banned`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to ban user', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-  };
-
-  const handleUnbanUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ banned: false, updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, banned: false } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ ${userName || 'User'} was unbanned`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to unban user', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-  };
-
-  const handleToggleAdminRole = async (user) => {
-    const nextRole = user.role === 'admin' ? 'developer' : 'admin';
-    try {
-      await supabase.from('profiles').update({ role: nextRole, updated_at: new Date().toISOString() }).eq('id', user.id);
-      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, role: nextRole } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ ${user.name || 'User'} is now ${nextRole}`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to update role', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-  };
-
-  const handleApproveListing = async (listing) => {
-    try {
-      await supabase.from('listings').update({ hidden: false, moderated: true, updated_at: new Date().toISOString() }).eq('id', listing.id);
-      dispatch({ type: 'UPDATE_LISTING', payload: { ...listing, hidden: false, moderated: true } });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ "${listing.title}" approved`, type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to approve listing', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-  };
-
-  const confirmDangerAction = (action) => setPendingAction(action);
-
-  const runPendingAction = async () => {
-    if (!pendingAction) return;
-    const { type, payload } = pendingAction;
-    if (type === 'delete-listing') await handleDeleteListing(payload.id, payload.title);
-    if (type === 'ban-user') await handleBanUser(payload.id, payload.name);
-    if (type === 'unban-user') await handleUnbanUser(payload.id, payload.name);
-    if (type === 'toggle-role') await handleToggleAdminRole(payload.user);
-    if (type === 'toggle-hide') {
-      try {
-        await supabase.from('listings').update({ hidden: payload.nextHidden }).eq('id', payload.listing.id);
-        dispatch({ type: 'UPDATE_LISTING', payload: { ...payload.listing, hidden: payload.nextHidden } });
-      } catch (error) {}
-    }
-    setPendingAction(null);
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: `⚠️ Ban feature requires server-side implementation for ${userName}`, 
+      type: 'warning', time: new Date().toLocaleTimeString(), read: false 
+    }});
   };
 
   if (!state.currentUser || !state.isAdmin) {
@@ -1874,27 +1701,13 @@ function AdminDashboard() {
                     <span className="admin-user-email">{user.email || '—'}</span>
                     <div className="admin-row-actions">
                       {user.id !== state.currentUser.id && (
-                        <>
-                          <button
-                            className="btn-sm"
-                            style={{ background: user.banned ? 'var(--success)' : 'var(--danger)', color: 'white', border: 'none' }}
-                            onClick={() => confirmDangerAction({
-                              type: user.banned ? 'unban-user' : 'ban-user',
-                              payload: { id: user.id, name: user.name }
-                            })}
-                          >
-                            {user.banned ? '✅ Unban' : '🚫 Ban'}
-                          </button>
-                          <button
-                            className="btn-sm btn-secondary"
-                            onClick={() => confirmDangerAction({
-                              type: 'toggle-role',
-                              payload: { user }
-                            })}
-                          >
-                            {user.role === 'admin' ? '↩️ Remove Admin' : '🛡️ Make Admin'}
-                          </button>
-                        </>
+                        <button 
+                          className="btn-sm" 
+                          style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
+                          onClick={() => handleBanUser(user.id, user.name)}
+                        >
+                          🚫 Ban
+                        </button>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--gray-400)', fontSize: '0.8rem' }}>You</span>
@@ -1921,9 +1734,12 @@ function AdminDashboard() {
             </div>
             <div className="admin-listings-grid">
               {(state.listings || []).map(listing => (
-                <div key={listing.id} className="admin-listing-item">
+                <div key={listing.id} className={`admin-listing-item ${listing.hidden ? 'listing-hidden' : ''}`}>
                   <div className="admin-listing-info">
-                    <h4>{listing.title}</h4>
+                    <h4>
+                      {listing.title}
+                      {listing.hidden && <span className="hidden-badge">🙈 Hidden</span>}
+                    </h4>
                     <p>{listing.description?.substring(0, 80)}...</p>
                     <small>By {listing.seller_name || listing.seller} · {listing.price} · {listing.category}</small>
                   </div>
@@ -1933,22 +1749,27 @@ function AdminDashboard() {
                         👁 View
                       </a>
                     )}
-                    <button
-                      className="btn-sm btn-secondary"
-                      onClick={() => confirmDangerAction({
-                        type: 'toggle-hide',
-                        payload: { listing, nextHidden: !listing.hidden }
-                      })}
-                    >
-                      {listing.hidden ? '👁️ Unhide' : '🙈 Hide'}
-                    </button>
+                    {listing.hidden ? (
+                      <button 
+                        className="btn-sm" 
+                        style={{ background: 'var(--success)', color: 'white', border: 'none' }}
+                        onClick={() => handleUnhideListing(listing.id, listing.title)}
+                      >
+                        👁️ Unhide
+                      </button>
+                    ) : (
+                      <button 
+                        className="btn-sm" 
+                        style={{ background: 'var(--warning)', color: 'white', border: 'none' }}
+                        onClick={() => setHideConfirm({ id: listing.id, title: listing.title })}
+                      >
+                        🙈 Hide
+                      </button>
+                    )}
                     <button 
                       className="btn-sm" 
                       style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                      onClick={() => confirmDangerAction({
-                        type: 'delete-listing',
-                        payload: { id: listing.id, title: listing.title }
-                      })}
+                      onClick={() => handleDeleteListing(listing.id, listing.title)}
                     >
                       🗑️ Remove
                     </button>
@@ -1960,6 +1781,16 @@ function AdminDashboard() {
               )}
             </div>
           </div>
+
+          <ConfirmDialog
+            isOpen={!!hideConfirm}
+            title="Hide Listing"
+            message={`Are you sure you want to hide "${hideConfirm?.title}"? It will no longer be visible to non-admin users.`}
+            onConfirm={() => handleHideListing(hideConfirm.id, hideConfirm.title)}
+            onCancel={() => setHideConfirm(null)}
+            confirmText="Yes, Hide It"
+            type="warning"
+          />
         </div>
       )}
 
@@ -1996,17 +1827,14 @@ function AdminDashboard() {
                   <button 
                     className="btn-sm" 
                     style={{ background: 'var(--success)', color: 'white', border: 'none' }}
-                    onClick={() => handleApproveListing(listing)}
+                    onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ "${listing.title}" approved`, type: 'success', time: new Date().toLocaleTimeString(), read: false }})}
                   >
                     ✅ Approve
                   </button>
                   <button 
                     className="btn-sm" 
                     style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
-                    onClick={() => confirmDangerAction({
-                      type: 'delete-listing',
-                      payload: { id: listing.id, title: listing.title }
-                    })}
+                    onClick={() => handleDeleteListing(listing.id, listing.title)}
                   >
                     🚫 Remove
                   </button>
@@ -2059,15 +1887,6 @@ function AdminDashboard() {
           </div>
         </div>
       )}
-      <ConfirmDialog
-        isOpen={!!pendingAction}
-        title="Confirm Action"
-        message="Are you sure you want to continue? This action can affect users or content."
-        onConfirm={runPendingAction}
-        onCancel={() => setPendingAction(null)}
-        confirmText="Yes, Continue"
-        type="danger"
-      />
     </div>
   );
 }
@@ -2256,11 +2075,15 @@ function Messages() {
       const { error } = await supabase.from('messages').insert([msgData]);
       
       if (!error) {
-        await createNotificationIfEnabled({
-          userId: replyingTo.userId,
-          message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
-          type: 'info'
-        });
+        try {
+          await supabase.from('notifications').insert([{
+            user_id: replyingTo.userId,
+            message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
+            type: 'info',
+            read: false,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (notifError) {}
         
         // Refresh messages
         const { data: msgsResult } = await supabase
@@ -2684,192 +2507,6 @@ function Profile() {
           )}
         </div>
       )}
-
-      {userApps.length > 0 && (
-        <div className="profile-section">
-          <h2>Your Apps ({userApps.length})</h2>
-          <div className="app-grid">
-            {userApps.slice(0, 3).map(app => <AppCard key={app.id} app={app} />)}
-          </div>
-        </div>
-      )}
-
-      {userSnippets.length > 0 && (
-        <div className="profile-section">
-          <h2>Your Posts ({userSnippets.length})</h2>
-          <div className="admin-section-card">
-            <div className="activity-list">
-              {userSnippets.slice(0, 5).map(snippet => (
-                <div key={snippet.id} className="activity-item">
-                  <span>💻</span>
-                  <div>
-                    <strong>{snippet.title}</strong>
-                    <p>{snippet.description?.substring(0, 120)}</p>
-                  </div>
-                  <small>{snippet.language}</small>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================
-// PUBLIC PROFILE + FOLLOW SYSTEM
-// ============================================
-function PublicProfile() {
-  const { userId } = useParams();
-  const { state, dispatch } = useAppContext();
-  const [profile, setProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      setLoading(true);
-      try {
-        const { data } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
-        if (alive) setProfile(data || null);
-      } catch (error) {
-        if (alive) setProfile(null);
-      }
-      if (alive) setLoading(false);
-    };
-    if (userId) load();
-    return () => { alive = false; };
-  }, [userId]);
-
-  const isOwn = state.currentUser?.id === userId;
-  const isFollowing = (state.follows || []).includes(userId);
-  const listings = (state.listings || []).filter(l => l.user_id === userId && (!l.hidden || state.isAdmin));
-  const apps = (state.apps || []).filter(a => a.user_id === userId);
-  const snippets = (state.codeSnippets || []).filter(s => s.user_id === userId);
-
-  const handleFollowToggle = async () => {
-    if (!state.currentUser || isOwn) return;
-    setBusy(true);
-    try {
-      if (isFollowing) {
-        await supabase.from('follows').delete().eq('follower_id', state.currentUser.id).eq('following_id', userId);
-        dispatch({ type: 'SET_FOLLOWS', payload: (state.follows || []).filter(id => id !== userId) });
-      } else {
-        await supabase.from('follows').insert([{ follower_id: state.currentUser.id, following_id: userId, created_at: new Date().toISOString() }]);
-        dispatch({ type: 'SET_FOLLOWS', payload: [...(state.follows || []), userId] });
-        await logActivity({
-          userId: state.currentUser.id,
-          type: 'follow',
-          title: 'Started following',
-          message: `${state.profile?.name || 'A user'} followed ${profile?.name || 'a user'}`,
-          targetUserId: userId
-        });
-        await createNotificationIfEnabled({
-          userId,
-          message: `👤 ${state.profile?.name || state.currentUser.email} started following you`,
-          type: 'info'
-        });
-      }
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Failed to update follow status', type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-    setBusy(false);
-  };
-
-  if (loading) return <div className="profile-page"><div className="empty-state"><h3>Loading profile...</h3></div></div>;
-  if (!profile) return <div className="profile-page"><div className="empty-state"><h3>Profile not found</h3></div></div>;
-
-  return (
-    <div className="profile-page">
-      <div className="profile-header">
-        <img src={profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.name || 'User')}&background=667eea&color=fff&size=120`} alt={profile.name} style={{ width: '110px', height: '110px', borderRadius: '50%' }} />
-        <div>
-          <h1>{profile.name || 'User'}</h1>
-          <p>{profile.bio || 'No bio yet.'}</p>
-          {!isOwn && state.currentUser && (
-            <button onClick={handleFollowToggle} className="btn-primary" disabled={busy}>
-              {busy ? 'Updating...' : isFollowing ? 'Unfollow' : 'Follow'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="profile-stats">
-        <div className="stat-box"><h3>{listings.length}</h3><p>Listings</p></div>
-        <div className="stat-box"><h3>{apps.length}</h3><p>Apps</p></div>
-        <div className="stat-box"><h3>{snippets.length}</h3><p>Snippets</p></div>
-      </div>
-
-      {listings.length > 0 && (
-        <div className="profile-section">
-          <h2>Listings</h2>
-          <div className="listings-grid">{listings.slice(0, 6).map(l => <ListingCard key={l.id} listing={l} />)}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================
-// ACTIVITY FEED
-// ============================================
-function ActivityFeed() {
-  const { state } = useAppContext();
-  const [feed, setFeed] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      if (!state.currentUser) return;
-      setLoading(true);
-      try {
-        const { data } = await supabase
-          .from('activity_feed')
-          .select('*')
-          .or(`user_id.eq.${state.currentUser.id},target_user_id.eq.${state.currentUser.id}`)
-          .order('created_at', { ascending: false })
-          .limit(100);
-        if (alive) setFeed(data || []);
-      } catch (error) {
-        if (alive) setFeed(state.activityFeed || []);
-      }
-      if (alive) setLoading(false);
-    };
-    load();
-    return () => { alive = false; };
-  }, [state.currentUser, state.activityFeed]);
-
-  if (!state.currentUser) return <div className="favorites-page"><div className="empty-state"><h3>Please login to view activity</h3></div></div>;
-
-  return (
-    <div className="favorites-page">
-      <div className="page-header">
-        <h1>📡 Activity Feed</h1>
-        <p>Latest actions from your network</p>
-      </div>
-      {loading ? (
-        <div className="empty-state"><p>Loading activity...</p></div>
-      ) : feed.length === 0 ? (
-        <div className="empty-state"><p>No activity yet.</p></div>
-      ) : (
-        <div className="admin-section-card">
-          <div className="activity-list">
-            {feed.map(item => (
-              <div key={item.id || `${item.type}-${item.created_at}`} className="activity-item">
-                <span>⚡</span>
-                <div>
-                  <strong>{item.title || item.type || 'Activity'}</strong>
-                  <p>{item.message || 'New update available.'}</p>
-                </div>
-                <small>{new Date(item.created_at).toLocaleString()}</small>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2880,23 +2517,6 @@ function ActivityFeed() {
 function Home() {
   const { state } = useAppContext();
   const navigate = useNavigate();
-  const [installPrompt, setInstallPrompt] = useState(null);
-
-  useEffect(() => {
-    const handler = (e) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-    };
-    window.addEventListener('beforeinstallprompt', handler);
-    return () => window.removeEventListener('beforeinstallprompt', handler);
-  }, []);
-
-  const handleInstallApp = async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    await installPrompt.userChoice;
-    setInstallPrompt(null);
-  };
   
   const stats = {
     listings: (state.listings || []).length,
@@ -2905,9 +2525,7 @@ function Home() {
     users: 1250
   };
   
-  const featuredListings = (state.listings || [])
-    .filter(l => !l.hidden || state.isAdmin)
-    .slice(0, 3);
+  const featuredListings = (state.listings || []).filter(l => !l.hidden).slice(0, 3);
 
   return (
     <div className="home-page">
@@ -2921,9 +2539,6 @@ function Home() {
           <div className="hero-buttons">
             <button onClick={() => navigate('/marketplace')} className="btn-primary btn-large">🛒 Browse Marketplace</button>
             <button onClick={() => navigate('/code-sharing')} className="btn-secondary btn-large">💻 Share Code</button>
-            {installPrompt && (
-              <button onClick={handleInstallApp} className="btn-secondary btn-large">📱 Download App</button>
-            )}
           </div>
           <div className="hero-stats">
             <div className="hero-stat">
@@ -2993,14 +2608,9 @@ function ListingCard({ listing }) {
   const [showContact, setShowContact] = useState(false);
   const [message, setMessage] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showHideConfirm, setShowHideConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [hiding, setHiding] = useState(false);
   const isFavorited = (state.favorites || []).some(f => f.id === listing.id);
   const isOwner = state.currentUser && listing.user_id === state.currentUser.id;
-  const isAdmin = state.isAdmin;
-
-  if (listing.hidden && !isAdmin) return null;
 
   const handleContact = async () => {
     if (!state.currentUser) {
@@ -3037,11 +2647,17 @@ function ListingCard({ listing }) {
 
         await supabase.from('messages').insert([msgData]);
         
-        await createNotificationIfEnabled({
-          userId: listing.user_id,
-          message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
-          type: 'info'
-        });
+        try {
+          await supabase.from('notifications').insert([{
+            user_id: listing.user_id,
+            message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
+            type: 'info',
+            read: false,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (notifError) {
+          console.log('Could not create notification:', notifError);
+        }
         
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: `Message sent about "${listing.title}"`, 
@@ -3129,43 +2745,9 @@ function ListingCard({ listing }) {
     setShowDeleteConfirm(false);
   };
 
-  const handleHide = async () => {
-    setHiding(true);
-    try {
-      const { error } = await supabase
-        .from('listings')
-        .update({ hidden: true })
-        .eq('id', listing.id);
-      if (error) throw error;
-      dispatch({ type: 'HIDE_LISTING', payload: listing.id });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🙈 Listing hidden from users', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Failed to hide: ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-    setHiding(false);
-    setShowHideConfirm(false);
-  };
-
-  const handleUnhide = async () => {
-    try {
-      const { error } = await supabase
-        .from('listings')
-        .update({ hidden: false })
-        .eq('id', listing.id);
-      if (error) throw error;
-      dispatch({ type: 'UNHIDE_LISTING', payload: listing.id });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👁️ Listing is now visible', type: 'success', time: new Date().toLocaleTimeString(), read: false } });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Failed to unhide: ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false } });
-    }
-  };
-
   return (
     <>
-      <div className={`listing-card ${listing.hidden ? 'listing-hidden-admin' : ''}`}>
-        {listing.hidden && isAdmin && (
-          <div className="hidden-badge">🙈 Hidden from users</div>
-        )}
+      <div className="listing-card">
         <div className="card-image">
           {listing.imageUrl ? (
             <img src={listing.imageUrl} alt={listing.title} loading="lazy" />
@@ -3181,7 +2763,7 @@ function ListingCard({ listing }) {
           >
             {isFavorited ? '⭐' : '☆'}
           </button>
-          {(isOwner || isAdmin) && (
+          {isOwner && (
             <button
               className="delete-button"
               onClick={() => setShowDeleteConfirm(true)}
@@ -3206,7 +2788,7 @@ function ListingCard({ listing }) {
                 src={listing.sellerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(listing.seller || 'User')}&background=667eea&color=fff&size=28`} 
                 alt={listing.seller} 
               />
-              <Link to={`/profile/${listing.user_id}`}>{listing.seller}</Link>
+              {listing.seller}
             </span>
             <span className="rating">⭐ {listing.rating || 'New'}</span>
           </div>
@@ -3238,11 +2820,6 @@ function ListingCard({ listing }) {
             >
               {isOwner ? '👤 Your Listing' : showContact ? '📤 Send' : '📧 Contact'}
             </button>
-            {isAdmin && !isOwner && (
-              listing.hidden
-                ? <button onClick={handleUnhide} className="btn-sm btn-unhide">👁️ Unhide</button>
-                : <button onClick={() => setShowHideConfirm(true)} className="btn-sm btn-hide">🙈 Hide</button>
-            )}
           </div>
         </div>
       </div>
@@ -3253,15 +2830,6 @@ function ListingCard({ listing }) {
         onConfirm={handleDelete}
         onCancel={() => setShowDeleteConfirm(false)}
         confirmText={deleting ? 'Deleting...' : 'Delete'}
-        type="danger"
-      />
-      <ConfirmDialog
-        isOpen={showHideConfirm}
-        title="Hide Listing"
-        message="Are you sure you want to hide this listing?"
-        onConfirm={handleHide}
-        onCancel={() => setShowHideConfirm(false)}
-        confirmText={hiding ? 'Hiding...' : 'Hide Listing'}
         type="danger"
       />
     </>
@@ -3286,8 +2854,6 @@ function Marketplace() {
     category: 'website'
   });
   const [submitting, setSubmitting] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(12);
-  const loadMoreRef = useRef(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -3356,12 +2922,6 @@ function Marketplace() {
       };
 
       dispatch({ type: 'ADD_LISTING', payload: newListing });
-      await logActivity({
-        userId: state.currentUser.id,
-        type: 'listing_created',
-        title: 'New listing posted',
-        message: `"${formData.title}" was published`
-      });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: `✅ Listing "${formData.title}" published successfully!`, 
         type: 'success', 
@@ -3393,6 +2953,7 @@ function Marketplace() {
 
   const filteredListings = (state.listings || [])
     .filter(l => {
+      // Hide hidden listings from non-admin users
       if (l.hidden && !state.isAdmin) return false;
       const matchesSearch = l.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
                            l.description?.toLowerCase().includes(searchTerm.toLowerCase());
@@ -3409,23 +2970,6 @@ function Marketplace() {
       }
       return new Date(b.created_at || 0) - new Date(a.created_at || 0);
     });
-  const visibleListings = filteredListings.slice(0, visibleCount);
-
-  useEffect(() => {
-    setVisibleCount(12);
-  }, [searchTerm, sortBy, filterPrice, state.listings?.length]);
-
-  useEffect(() => {
-    const target = loadMoreRef.current;
-    if (!target) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting) {
-        setVisibleCount(prev => Math.min(prev + 12, filteredListings.length));
-      }
-    }, { rootMargin: '200px' });
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [filteredListings.length]);
 
   return (
     <div className="marketplace-page">
@@ -3452,43 +2996,30 @@ function Marketplace() {
       </div>
 
       {showForm && (
-  <div className="modal-overlay" onClick={() => setShowForm(false)}>
-    <div className="modal-content listing-form-modal" onClick={e => e.stopPropagation()}>
-      <div className="listing-form-wrapper">
-        <button className="btn-close" onClick={() => setShowForm(false)}>✕</button>
-        
-        <div className="listing-form-header">
-          <span className="listing-form-icon">📢</span>
-          <h2>Create New Listing</h2>
-          <p>Fill in the details below to list your website or portfolio</p>
-        </div>
-        
-        <form onSubmit={handleSubmit} className="listing-form-styled">
-          <div className="form-section">
-            <div className="form-section-title">
-              <span>📝</span> Basic Information
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+          <div className="modal-content large listing-form-modal" onClick={e => e.stopPropagation()}>
+            <div className="listing-form-header">
+              <span className="listing-form-icon">📢</span>
+              <h2>Create New Listing</h2>
+              <p>Fill in the details below to list your website or portfolio</p>
             </div>
-            
-            <div className="form-group">
-              <label>Title <span className="required">*</span></label>
-              <div className="input-wrapper">
-                <span className="input-icon">📝</span>
-                <input 
-                  type="text" 
-                  placeholder="e.g., Modern SaaS Dashboard" 
-                  value={formData.title} 
-                  onChange={e => setFormData({ ...formData, title: e.target.value })} 
-                  required 
-                />
+            <form onSubmit={handleSubmit} className="listing-form-styled">
+              <div className="form-group">
+                <label>Title <span className="required">*</span></label>
+                <div className="input-wrapper">
+                  <span className="input-icon">📝</span>
+                  <input 
+                    type="text" 
+                    placeholder="e.g., Modern SaaS Dashboard" 
+                    value={formData.title} 
+                    onChange={e => setFormData({ ...formData, title: e.target.value })} 
+                    required 
+                  />
+                </div>
               </div>
-            </div>
-            
-            <div className="form-group">
-              <label>Category <span className="required">*</span></label>
-              <div className="input-wrapper">
-                <span className="input-icon">📂</span>
+              <div className="form-group">
+                <label>Category</label>
                 <select 
-                  className="category-select"
                   value={formData.category} 
                   onChange={e => setFormData({ ...formData, category: e.target.value })}
                 >
@@ -3497,106 +3028,79 @@ function Marketplace() {
                   <option value="ecommerce">🛍️ E-Commerce</option>
                   <option value="blog">📝 Blog</option>
                   <option value="saas">☁️ SaaS</option>
-                  <option value="app">📱 App</option>
                   <option value="other">📦 Other</option>
                 </select>
               </div>
-            </div>
-            
-            <div className="form-group">
-              <label>Description <span className="required">*</span></label>
-              <textarea 
-                placeholder="Describe your website, its features, and what makes it special..." 
-                value={formData.description} 
-                onChange={e => setFormData({ ...formData, description: e.target.value })} 
-                required 
-                rows="4" 
-                className="listing-textarea"
-              />
-            </div>
-          </div>
-          
-          <div className="form-section">
-            <div className="form-section-title">
-              <span>💰</span> Pricing & Links
-            </div>
-            
-            <div className="form-row">
               <div className="form-group">
-                <label>Price <span className="required">*</span></label>
-                <div className="input-wrapper">
-                  <span className="input-icon">💰</span>
-                  <input 
-                    type="text" 
-                    placeholder="$500 or Negotiable" 
-                    value={formData.price} 
-                    onChange={e => setFormData({ ...formData, price: e.target.value })} 
-                    required 
-                  />
-                </div>
-              </div>
-              <div className="form-group">
-                <label>Website URL <span className="optional">(optional)</span></label>
-                <div className="input-wrapper">
-                  <span className="input-icon">🔗</span>
-                  <input 
-                    type="url" 
-                    placeholder="https://example.com" 
-                    value={formData.url} 
-                    onChange={e => setFormData({ ...formData, url: e.target.value })} 
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="form-section">
-            <div className="form-section-title">
-              <span>🖼️</span> Media
-            </div>
-            
-            <div className="form-group">
-              <label>Image URL <span className="optional">(optional)</span></label>
-              <div className="input-wrapper">
-                <span className="input-icon">🖼️</span>
-                <input 
-                  type="url" 
-                  placeholder="https://example.com/image.jpg" 
-                  value={formData.imageUrl} 
-                  onChange={e => setFormData({ ...formData, imageUrl: e.target.value })} 
+                <label>Description <span className="required">*</span></label>
+                <textarea 
+                  placeholder="Describe your website, its features, and what makes it special..." 
+                  value={formData.description} 
+                  onChange={e => setFormData({ ...formData, description: e.target.value })} 
+                  required 
+                  rows="4" 
+                  className="listing-textarea"
                 />
               </div>
-            </div>
-            
-            <div className="file-upload-area" style={{ marginTop: '12px' }}>
-              <div className="file-upload-icon">📁</div>
-              <div className="file-upload-text">Drag & drop an image or click to browse</div>
-              <div className="file-upload-hint">Supported formats: JPG, PNG, GIF, WebP (Max 5MB)</div>
-            </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Price <span className="required">*</span></label>
+                  <div className="input-wrapper">
+                    <span className="input-icon">💰</span>
+                    <input 
+                      type="text" 
+                      placeholder="$500 or Negotiable" 
+                      value={formData.price} 
+                      onChange={e => setFormData({ ...formData, price: e.target.value })} 
+                      required 
+                    />
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label>Website URL</label>
+                  <div className="input-wrapper">
+                    <span className="input-icon">🔗</span>
+                    <input 
+                      type="url" 
+                      placeholder="https://example.com" 
+                      value={formData.url} 
+                      onChange={e => setFormData({ ...formData, url: e.target.value })} 
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="form-group">
+                <label>Image URL (optional)</label>
+                <div className="input-wrapper">
+                  <span className="input-icon">🖼️</span>
+                  <input 
+                    type="url" 
+                    placeholder="https://example.com/image.jpg" 
+                    value={formData.imageUrl} 
+                    onChange={e => setFormData({ ...formData, imageUrl: e.target.value })} 
+                  />
+                </div>
+              </div>
+              <div className="listing-form-footer">
+                <span className="listing-form-note">💡 Your listing will be visible to all DevMarket users</span>
+                <div className="listing-form-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={submitting}>
+                    {submitting ? (
+                      <><span className="loading-spinner"></span> Publishing...</>
+                    ) : (
+                      <>📤 Publish Listing</>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
+            <button className="btn-close" onClick={() => setShowForm(false)}>✕</button>
           </div>
-          
-          <div className="listing-form-footer">
-            <span className="listing-form-note">
-              <span>💡</span> Your listing will be visible to all DevMarket users
-            </span>
-            <div className="listing-form-actions">
-              <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
-                Cancel
-              </button>
-              <button type="submit" className="btn-primary" disabled={submitting}>
-                {submitting ? (
-                  <><span className="loading-spinner"></span> Publishing...</>
-                ) : (
-                  <>📤 Publish Listing</>
-                )}
-              </button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-)}
+        </div>
+      )}
 
       <div className="filters-bar">
         <input 
@@ -3619,7 +3123,7 @@ function Marketplace() {
       </div>
 
       <div className="listings-grid">
-        {visibleListings.map(listing => (
+        {filteredListings.map(listing => (
           <ListingCard key={listing.id} listing={listing} />
         ))}
         {filteredListings.length === 0 && (
@@ -3639,9 +3143,6 @@ function Marketplace() {
           </div>
         )}
       </div>
-      {visibleCount < filteredListings.length && (
-        <div ref={loadMoreRef} className="infinite-loader">Loading more listings...</div>
-      )}
     </div>
   );
 }
@@ -3715,12 +3216,6 @@ function Advertise() {
       };
       
       dispatch({ type: 'ADD_APP', payload: newApp });
-      await logActivity({
-        userId: state.currentUser.id,
-        type: 'app_created',
-        title: 'New app published',
-        message: `"${formData.appName}" was published`
-      });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: `✅ App "${formData.appName}" published successfully!`, 
         type: 'success', 
@@ -3972,11 +3467,17 @@ function AppCard({ app }) {
           created_at: new Date().toISOString()
         }]);
         
-        await createNotificationIfEnabled({
-          userId: app.user_id,
-          message: `💬 New inquiry about "${app.appName}" from ${state.profile?.name || state.currentUser.email}`,
-          type: 'info'
-        });
+        try {
+          await supabase.from('notifications').insert([{
+            user_id: app.user_id,
+            message: `💬 New inquiry about "${app.appName}" from ${state.profile?.name || state.currentUser.email}`,
+            type: 'info',
+            read: false,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (notifError) {
+          console.log('Could not create notification:', notifError);
+        }
         
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: `Inquiry sent about "${app.appName}"`, 
@@ -4168,12 +3669,6 @@ function CodeSharing() {
       };
       
       dispatch({ type: 'ADD_CODE_SNIPPET', payload: newSnippet });
-      await logActivity({
-        userId: state.currentUser.id,
-        type: 'snippet_created',
-        title: 'New snippet shared',
-        message: `"${formData.title}" was shared`
-      });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: `✅ Code snippet "${formData.title}" shared successfully!`, 
         type: 'success', 
@@ -4442,9 +3937,6 @@ function CodeSharing() {
 function CodeCard({ snippet, onLike, onDelete }) {
   const { state } = useAppContext();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [comments, setComments] = useState([]);
-  const [commentText, setCommentText] = useState('');
-  const [showComments, setShowComments] = useState(false);
   const isOwner = state.currentUser && snippet.user_id === state.currentUser.id;
   
   const handleCopy = () => {
@@ -4460,41 +3952,6 @@ function CodeCard({ snippet, onLike, onDelete }) {
   
   const userName = state.profile?.name || state.currentUser?.email;
   const isLiked = state.currentUser && snippet.likedBy?.includes(userName);
-
-  useEffect(() => {
-    let alive = true;
-    const loadComments = async () => {
-      try {
-        const { data } = await supabase
-          .from('snippet_comments')
-          .select('*')
-          .eq('snippet_id', snippet.id)
-          .order('created_at', { ascending: false })
-          .limit(20);
-        if (alive) setComments(data || []);
-      } catch (error) {
-        if (alive) setComments([]);
-      }
-    };
-    if (showComments) loadComments();
-    return () => { alive = false; };
-  }, [snippet.id, showComments]);
-
-  const handleAddComment = async () => {
-    if (!state.currentUser || !commentText.trim()) return;
-    const payload = {
-      snippet_id: snippet.id,
-      user_id: state.currentUser.id,
-      author_name: state.profile?.name || state.currentUser.email,
-      message: commentText.trim(),
-      created_at: new Date().toISOString()
-    };
-    setComments(prev => [payload, ...prev]);
-    setCommentText('');
-    try {
-      await supabase.from('snippet_comments').insert([payload]);
-    } catch (error) {}
-  };
 
   return (
     <>
@@ -4554,35 +4011,8 @@ function CodeCard({ snippet, onLike, onDelete }) {
             <button onClick={handleCopy} className="btn-copy" aria-label="Copy code">
               📋 Copy
             </button>
-            <button onClick={() => setShowComments(v => !v)} className="btn-copy" aria-label="Toggle comments">
-              💬 {showComments ? 'Hide' : 'Comments'}
-            </button>
           </div>
         </div>
-        {showComments && (
-          <div className="snippet-comments">
-            <div className="snippet-comment-input">
-              <input
-                type="text"
-                placeholder={state.currentUser ? 'Write a comment...' : 'Login to comment'}
-                value={commentText}
-                disabled={!state.currentUser}
-                onChange={e => setCommentText(e.target.value)}
-              />
-              <button className="btn-primary btn-sm" onClick={handleAddComment} disabled={!commentText.trim() || !state.currentUser}>
-                Post
-              </button>
-            </div>
-            <div className="snippet-comment-list">
-              {comments.length === 0 ? <small>No comments yet.</small> : comments.map((c, idx) => (
-                <div key={c.id || `${c.created_at}-${idx}`} className="snippet-comment-item">
-                  <strong>{c.author_name || 'User'}</strong>
-                  <p>{c.message}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
       <ConfirmDialog
         isOpen={showDeleteConfirm}
@@ -4660,7 +4090,6 @@ function Settings() {
   });
   
   const [notificationPrefs, setNotificationPrefs] = useState({
-    allNotifications: state.notificationsEnabled !== false,
     emailNotifications: true,
     pushNotifications: false,
     marketingEmails: false,
@@ -4687,23 +4116,6 @@ function Settings() {
       twitter: state.profile?.twitter || ''
     });
   }, [state.profile, state.currentUser]);
-
-  useEffect(() => {
-    setNotificationPrefs(prev => ({
-      ...prev,
-      allNotifications: state.notificationsEnabled !== false
-    }));
-  }, [state.notificationsEnabled]);
-
-  useEffect(() => {
-    if (state.profile?.notification_preferences && typeof state.profile.notification_preferences === 'object') {
-      setNotificationPrefs(prev => ({
-        ...prev,
-        ...state.profile.notification_preferences,
-        allNotifications: state.notificationsEnabled !== false
-      }));
-    }
-  }, [state.profile, state.notificationsEnabled]);
 
   if (!state.currentUser) {
     return (
@@ -4812,52 +4224,6 @@ function Settings() {
     }
     
     setSaving(false);
-  };
-
-  const handleNotificationPreferencesSave = async () => {
-    const enabled = notificationPrefs.allNotifications !== false;
-    localStorage.setItem('devMarketNotificationsEnabled', enabled ? 'true' : 'false');
-    dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: enabled });
-    if (!enabled) {
-      dispatch({ type: 'CLEAR_NOTIFICATIONS' });
-    }
-
-    try {
-      await supabase.from('profiles').upsert({
-        id: state.currentUser.id,
-        notifications_enabled: enabled,
-        notification_preferences: notificationPrefs,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-    } catch (error) {
-      console.error('Could not save notification preferences:', error);
-    }
-
-    dispatch({ type: 'ADD_NOTIFICATION', payload: {
-      message: '✅ Notification preferences saved!',
-      type: 'success',
-      time: new Date().toLocaleTimeString(),
-      read: false
-    }});
-  };
-
-  const handleMasterNotificationToggle = async () => {
-    const nextEnabled = !notificationPrefs.allNotifications;
-    setNotificationPrefs(prev => ({ ...prev, allNotifications: nextEnabled }));
-    localStorage.setItem('devMarketNotificationsEnabled', nextEnabled ? 'true' : 'false');
-    dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: nextEnabled });
-    if (!nextEnabled) dispatch({ type: 'CLEAR_NOTIFICATIONS' });
-
-    try {
-      await supabase.from('profiles').upsert({
-        id: state.currentUser.id,
-        notifications_enabled: nextEnabled,
-        notification_preferences: { ...notificationPrefs, allNotifications: nextEnabled },
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-    } catch (error) {
-      console.error('Could not persist master notification toggle:', error);
-    }
   };
 
   const sidebarTabs = [
@@ -5037,40 +4403,50 @@ function Settings() {
 
                 <div className="setting-item master-toggle">
                   <div className="setting-info">
-                    <strong>All Notifications</strong>
-                    <p>Completely enable or disable all notifications.</p>
+                    <strong>Enable Notifications</strong>
+                    <p>When disabled, no notifications will be triggered or stored</p>
                   </div>
                   <label className="toggle-switch">
                     <input
                       type="checkbox"
-                      checked={notificationPrefs.allNotifications}
-                      onChange={handleMasterNotificationToggle}
+                      checked={state.notificationsEnabled}
+                      onChange={() => dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: !state.notificationsEnabled })}
                     />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
 
-                <div className={`notification-settings ${!notificationPrefs.allNotifications ? 'disabled-section' : ''}`}>
-                  {Object.entries(notificationPrefs).filter(([key]) => key !== 'allNotifications').map(([key, value]) => (
-                    <div className="setting-item" key={key}>
-                      <div className="setting-info">
-                        <strong>{key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</strong>
+                {state.notificationsEnabled && (
+                  <div className="notification-settings">
+                    {Object.entries(notificationPrefs).map(([key, value]) => (
+                      <div className="setting-item" key={key}>
+                        <div className="setting-info">
+                          <strong>{key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</strong>
+                        </div>
+                        <label className="toggle-switch">
+                          <input
+                            type="checkbox"
+                            checked={value}
+                            onChange={() => setNotificationPrefs({ ...notificationPrefs, [key]: !value })}
+                          />
+                          <span className="toggle-slider"></span>
+                        </label>
                       </div>
-                      <label className="toggle-switch">
-                        <input
-                          type="checkbox"
-                          checked={value && notificationPrefs.allNotifications}
-                          disabled={!notificationPrefs.allNotifications}
-                          onChange={() => setNotificationPrefs({ ...notificationPrefs, [key]: !value })}
-                        />
-                        <span className="toggle-slider"></span>
-                      </label>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
                 
                 <button
-                  onClick={handleNotificationPreferencesSave}
+                  onClick={() => {
+                    if (state.notificationsEnabled) {
+                      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+                        message: '✅ Notification preferences saved!', 
+                        type: 'success', 
+                        time: new Date().toLocaleTimeString(), 
+                        read: false 
+                      }});
+                    }
+                  }}
                   className="btn-primary"
                 >
                   💾 Save Preferences
