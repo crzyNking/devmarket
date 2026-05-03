@@ -953,26 +953,36 @@ body.modal-open {
 }
 
 /* Auth Modal - perfectly centered */
-.auth-modal {
-  background: var(--white);
-  border-radius: var(--radius-2xl);
-  padding: 48px;
-  max-width: 460px;
-  width: 100%;
-  position: relative;
-  animation: authModalIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  box-shadow: var(--shadow-2xl);
-  margin: auto; /* Additional centering */
-  max-height: 90vh;
-  overflow-y: auto;
+/* ── 3. AUTH MODAL — mobile & iOS ────────────── */
+@media (max-width: 768px) {
+  .auth-modal {
+    position: relative;
+    margin: 0 auto;
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    padding: 32px 24px 28px;
+    border-radius: var(--radius-xl);
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+  }
 }
 
-/* For very small screens */
-@media (max-height: 700px) {
+@media (max-width: 480px) {
   .auth-modal {
-    padding: 32px 24px;
-    max-height: 95vh;
-    overflow-y: auto;
+    max-width: 100%;
+    padding: 28px 18px 24px;
+    border-radius: var(--radius-lg);
+    max-height: 92vh;
+  }
+
+  .auth-header-new h2 {
+    font-size: 1.25rem;
+  }
+
+  .auth-header-new p {
+    font-size: 0.85rem;
   }
 }
 
@@ -7204,14 +7214,14 @@ input:checked + .toggle-slider:before {
 }
 
 /* ── 2. MODAL OVERLAY — mobile base ──────────── */
+/* ── 2. MODAL OVERLAY — mobile base ──────────── */
 @media (max-width: 768px) {
   .modal-overlay {
-    /* Use flexbox column so modal sits near the centre-upper area,
-       not stuck at the very top on short Android chrome bars */
-    align-items: flex-start;
-    justify-content: flex-start;
-    padding: 0;
-    /* Full-screen overlay, no gaps */
+    /* CENTER the modal properly */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
@@ -7292,30 +7302,32 @@ input:checked + .toggle-slider:before {
 }
 
 /* ── 4. ADVANCED SEARCH MODAL — mobile ───────── */
+/* ── 4. ADVANCED SEARCH MODAL — mobile ───────── */
 @media (max-width: 768px) {
   .advanced-search-modal {
-    /* Treat as a bottom sheet on mobile for better UX */
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    top: auto !important;
-    max-width: 100% !important;
-    width: 100% !important;
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
-    margin: 0 !important;
-    max-height: 88vh !important;
-    overflow-y: auto !important;
+    position: relative;
+    margin: 0 auto;
+    width: 100%;
+    max-width: 100%;
+    border-radius: var(--radius-xl);
+    max-height: 90vh;
+    overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    padding: 20px 16px calc(16px + var(--safe-bottom)) !important;
-    animation: slideUpSheet 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+    padding: 20px 16px;
+    box-sizing: border-box;
   }
 
-  /* When advanced search is open, overlay aligns to bottom */
+  /* Remove bottom sheet specific styles */
   .modal-overlay:has(.advanced-search-modal) {
-    align-items: flex-end;
-    padding: 0;
+    align-items: center;
+    padding: 16px;
   }
+
+  /* Remove the drag handle pill */
+  .advanced-search-modal::before {
+    display: none;
+  }
+}
 
   .search-filters-grid {
     grid-template-columns: 1fr 1fr;
@@ -7376,55 +7388,51 @@ input:checked + .toggle-slider:before {
 }
 
 /* ── 6. AVATAR PICKER MODAL — mobile ─────────── */
+/* ── 6. AVATAR PICKER MODAL — mobile ─────────── */
 @media (max-width: 768px) {
   .avatar-picker-modal {
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    top: auto !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
-    margin: 0 !important;
-    max-height: 80vh !important;
-    padding-bottom: calc(20px + var(--safe-bottom)) !important;
-    animation: slideUpSheet 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+    position: relative;
+    margin: 0 auto;
+    width: 100%;
+    max-width: 400px;
+    border-radius: var(--radius-xl);
+    max-height: 80vh;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    padding: 20px 16px;
+    box-sizing: border-box;
   }
 
   .modal-overlay:has(.avatar-picker-modal) {
-    align-items: flex-end;
-    padding: 0;
+    align-items: center;
+    padding: 16px;
   }
 
   .avatar-picker-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 10px;
   }
 }
 
 @media (max-width: 400px) {
   .avatar-picker-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
 /* ── 7. GENERIC MODAL CONTENT — mobile ──────── */
 @media (max-width: 768px) {
   .modal-content {
-    margin: auto 16px;
-    max-height: 88vh;
+    margin: 0 auto;
+    max-height: 90vh;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    width: calc(100% - 32px);
+    width: 100%;
     max-width: 100%;
+    box-sizing: border-box;
   }
 
   .modal-content.large {
-    margin-top: max(16px, var(--safe-top));
-    margin-bottom: 16px;
     max-height: 90vh;
   }
 }
