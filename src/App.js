@@ -52,6 +52,14 @@ async function logActivity({ userId, type, title, message, targetUserId = null }
 // ============================================
 const AppContext = createContext();
 
+const getStoredNotificationPreference = () => {
+  try {
+    return localStorage.getItem('devMarketNotificationsEnabled') !== 'false';
+  } catch (error) {
+    return true;
+  }
+};
+
 const initialState = {
   listings: [],
   apps: [],
@@ -78,7 +86,7 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: true
+  notificationsEnabled: getStoredNotificationPreference()
 };
 
 function appReducer(state, action) {
@@ -4649,6 +4657,25 @@ function Settings() {
     }});
   };
 
+  const handleMasterNotificationToggle = async () => {
+    const nextEnabled = !notificationPrefs.allNotifications;
+    setNotificationPrefs(prev => ({ ...prev, allNotifications: nextEnabled }));
+    localStorage.setItem('devMarketNotificationsEnabled', nextEnabled ? 'true' : 'false');
+    dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: nextEnabled });
+    if (!nextEnabled) dispatch({ type: 'CLEAR_NOTIFICATIONS' });
+
+    try {
+      await supabase.from('profiles').upsert({
+        id: state.currentUser.id,
+        notifications_enabled: nextEnabled,
+        notification_preferences: { ...notificationPrefs, allNotifications: nextEnabled },
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (error) {
+      console.error('Could not persist master notification toggle:', error);
+    }
+  };
+
   const sidebarTabs = [
     { id: 'profile', icon: '👤', label: 'Profile' },
     { id: 'security', icon: '🔒', label: 'Security' },
@@ -4833,7 +4860,7 @@ function Settings() {
                     <input
                       type="checkbox"
                       checked={notificationPrefs.allNotifications}
-                      onChange={() => setNotificationPrefs({ ...notificationPrefs, allNotifications: !notificationPrefs.allNotifications })}
+                      onChange={handleMasterNotificationToggle}
                     />
                     <span className="toggle-slider"></span>
                   </label>
