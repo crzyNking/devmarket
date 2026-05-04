@@ -909,6 +909,7 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+    let finished = false;
 
     async function initialize() {
       try {
@@ -935,21 +936,25 @@ function App() {
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
         }
+      } finally {
+        finished = true;
       }
     }
 
+    // Always keep a safety fallback to avoid infinite loader on refresh.
+    const safetyTimeout = setTimeout(() => {
+      if (!mounted || finished) return;
+      setIsInitialLoading(false);
+      try { sessionStorage.setItem('devMarketLoaderShown', 'true'); } catch (e) {}
+      setHasShownLoader(true);
+    }, 7000);
+
     if (!hasShownLoader) {
       initialize().then(() => {
-        sessionStorage.setItem('devMarketLoaderShown', 'true');
+        try { sessionStorage.setItem('devMarketLoaderShown', 'true'); } catch (e) {}
+        setHasShownLoader(true);
         setTimeout(() => setIsInitialLoading(false), 500);
       });
-      
-      const safetyTimeout = setTimeout(() => {
-        setIsInitialLoading(false);
-        sessionStorage.setItem('devMarketLoaderShown', 'true');
-      }, 6000);
-      
-      return () => clearTimeout(safetyTimeout);
     } else {
       initialize().then(() => setIsInitialLoading(false));
     }
@@ -970,6 +975,7 @@ function App() {
 
     return () => {
       mounted = false;
+      clearTimeout(safetyTimeout);
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
