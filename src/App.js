@@ -113,11 +113,13 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS_ENABLED':
       try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(action.payload)); } catch(e) {}
       return { ...state, notificationsEnabled: action.payload };
-    case 'ADD_NOTIFICATION': 
-      if (!state.notificationsEnabled) return state;
-      // Note: Supabase persistence for notifications is handled in individual action callers
-      // so we only update local state here to keep the reducer pure
-      return { ...state, notifications: [{...action.payload, id: action.payload.id || Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
+    case 'ADD_NOTIFICATION': {
+      // When notifications are disabled, block ALL incoming notifications
+      // except those with _force: true (used for the toggle feedback itself)
+      if (!state.notificationsEnabled && !action.payload._force) return state;
+      const newNotif = { ...action.payload, id: action.payload.id || `n-${Date.now()}-${Math.random()}` };
+      return { ...state, notifications: [newNotif, ...(state.notifications || [])].slice(0, 50) };
+    }
     case 'REMOVE_NOTIFICATION': 
       return { ...state, notifications: (state.notifications || []).filter(n => n.id !== action.payload) };
     case 'CLEAR_NOTIFICATIONS': 
@@ -162,8 +164,8 @@ function appReducer(state, action) {
       // New sender: create a new conversation entry
       const newConv = {
         userId: otherUserId,
-        userName: newMsg.from_name || 'Unknown User',
-        userAvatar: newMsg.from_avatar || null,
+        userName: newMsg.from_name || newMsg.to_name || 'User',
+        userAvatar: newMsg.from_avatar || newMsg.to_avatar || null,
         lastMessage: newMsg.message,
         lastMessageTime: newMsg.created_at,
         unreadCount: newMsg.to_user === state.currentUser?.id ? 1 : 0,
@@ -187,6 +189,23 @@ function appReducer(state, action) {
       return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'DELETE_MESSAGE': 
       return { ...state, messages: (state.messages || []).filter(m => m.id !== action.payload) };
+    // Soft-delete conversation for current user only:
+    // action.payload = { currentUserId, otherUserId }
+    case 'DELETE_CONVERSATION_FOR_USER': {
+      const { currentUserId, otherUserId } = action.payload;
+      const filtered = (state.messages || []).filter(m => {
+        const involves = (m.from_user === currentUserId && m.to_user === otherUserId) ||
+                         (m.from_user === otherUserId && m.to_user === currentUserId);
+        return !involves;
+      });
+      const filteredConvs = (state.conversations || []).filter(c => c.userId !== otherUserId);
+      return {
+        ...state,
+        messages: filtered,
+        conversations: filteredConvs,
+        activeConversation: state.activeConversation?.userId === otherUserId ? null : state.activeConversation
+      };
+    }
     case 'SET_FAVORITES': 
       return { ...state, favorites: action.payload || [] };
     case 'TOGGLE_FAVORITE': {
@@ -541,15 +560,11 @@ function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [hasShownLoader, setHasShownLoader] = useState(false);
-
-  useEffect(() => {
-    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
-    if (loaderShown) {
-      setHasShownLoader(true);
-    }
-  }, []);
+  // On hard refresh within same tab session: skip the splash screen
+  const [isInitialLoading, setIsInitialLoading] = useState(
+    !sessionStorage.getItem('devMarketLoaderShown')
+  );
+  const hasShownLoader = !!sessionStorage.getItem('devMarketLoaderShown');
 
   async function loadPublicData() {
     try {
@@ -620,9 +635,13 @@ function App() {
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
-        // Load notification preference from Supabase
-        if (profile.notifications_enabled !== undefined && profile.notifications_enabled !== null) {
-          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: profile.notifications_enabled });
+        // Always restore notification preference from Supabase (source of truth)
+        // This ensures the toggle survives refresh
+        const dbVal = profile.notifications_enabled;
+        if (dbVal !== undefined && dbVal !== null) {
+          // Update both localStorage and state from DB value
+          try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(dbVal)); } catch(e) {}
+          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: dbVal });
         }
       } else {
         const meta = user.user_metadata || {};
@@ -720,31 +739,77 @@ function App() {
         table: 'messages',
         filter: `to_user=eq.${userId}`
       },
-      (payload) => {
+      async (payload) => {
         const newMsg = payload.new;
-        console.log('📨 New real-time message:', newMsg);
         
-        dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
+        // Fetch sender profile to get real name + avatar (if not embedded in message row)
+        let fromName = newMsg.from_name;
+        let fromAvatar = newMsg.from_avatar;
+        if (!fromName) {
+          try {
+            const { data: senderProfile } = await supabase
+              .from('profiles')
+              .select('name, avatar_url')
+              .eq('id', newMsg.from_user)
+              .single();
+            if (senderProfile) {
+              fromName = senderProfile.name;
+              fromAvatar = senderProfile.avatar_url;
+            }
+          } catch (_) {}
+        }
+
+        // Check if this user had previously deleted the conversation with the sender.
+        // If they did, the new message starts a FRESH conversation (deletedAt check).
+        let deletedAt = null;
+        try {
+          const { data: delRec } = await supabase
+            .from('deleted_conversations')
+            .select('deleted_at')
+            .eq('user_id', userId)
+            .eq('other_user_id', newMsg.from_user)
+            .maybeSingle();
+          if (delRec) {
+            deletedAt = delRec.deleted_at;
+            // This is a new message AFTER deletion — clear the deletion record
+            // so the conversation starts fresh
+            if (new Date(newMsg.created_at) > new Date(deletedAt)) {
+              await supabase.from('deleted_conversations')
+                .delete()
+                .eq('user_id', userId)
+                .eq('other_user_id', newMsg.from_user);
+              deletedAt = null; // treated as fresh
+            }
+          }
+        } catch (_) {}
         
-        const otherUserId = newMsg.from_user;
-        const otherUserName = newMsg.from_name || 'User';
+        const enrichedMsg = { ...newMsg, from_name: fromName || 'User', from_avatar: fromAvatar };
+        
+        // Only add if message is after deletion threshold (or no deletion)
+        if (deletedAt && new Date(newMsg.created_at) <= new Date(deletedAt)) {
+          return; // Skip messages before deletion
+        }
+        
+        dispatch({ type: 'ADD_MESSAGE', payload: enrichedMsg });
+        
+        const otherUserId = enrichedMsg.from_user;
+        const otherUserName = fromName || 'User';
         
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
           payload: {
             otherUserId,
-            message: newMsg
+            message: { ...enrichedMsg, from_name: otherUserName, from_avatar: fromAvatar }
           }
         });
         
-        // Only notify if the conversation is NOT currently open (not being read)
-        // Use window flag set by Messages component to track active conversation
+        // Only notify if the conversation is NOT currently open
         const activeConvId = window.__activeConversationId || null;
         const isConversationOpen = activeConvId === otherUserId;
         
         if (!isConversationOpen) {
           dispatch({ type: 'ADD_NOTIFICATION', payload: {
-            message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
+            message: `💬 New message from ${otherUserName}: ${enrichedMsg.message?.substring(0, 50)}`,
             type: 'info',
             time: new Date().toLocaleTimeString(),
             read: false
@@ -762,7 +827,8 @@ function App() {
         filter: `user_id=eq.${userId}`
       },
       (payload) => {
-        console.log('🔔 New real-time notification:', payload.new);
+        // ADD_NOTIFICATION reducer already checks notificationsEnabled,
+        // so this dispatch is safe — it will be ignored if notifications are OFF
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
           ...payload.new,
           read: false
@@ -814,15 +880,60 @@ function App() {
   async function buildConversations(messages, userId) {
     const conversationMap = new Map();
     
+    // Collect all unique other user IDs first
+    const otherUserIds = new Set();
+    messages.forEach(msg => {
+      const otherId = msg.from_user === userId ? msg.to_user : msg.from_user;
+      otherUserIds.add(otherId);
+    });
+
+    // Fetch soft-deleted conversations for this user
+    let deletedSet = new Set();
+    try {
+      const { data: deleted } = await supabase
+        .from('deleted_conversations')
+        .select('other_user_id, deleted_at')
+        .eq('user_id', userId);
+      if (deleted) {
+        deleted.forEach(d => deletedSet.set ? deletedSet.add(d.other_user_id) : null);
+        // Map deleted_at so we only show messages AFTER deletion
+        deleted.forEach(d => {
+          deletedSet[d.other_user_id] = d.deleted_at;
+        });
+      }
+    } catch (_) {}
+
+    // Batch-fetch all profiles for other users
+    let profilesMap = new Map();
+    if (otherUserIds.size > 0) {
+      try {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, name, avatar_url')
+          .in('id', Array.from(otherUserIds));
+        if (profiles) {
+          profiles.forEach(p => profilesMap.set(p.id, p));
+        }
+      } catch (_) {}
+    }
+    
     messages.forEach(msg => {
       const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
-      const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
+      
+      // If the conversation was deleted, only include messages AFTER deletion time
+      const deletedAt = deletedSet[otherUserId];
+      if (deletedAt && new Date(msg.created_at) <= new Date(deletedAt)) {
+        return; // Skip messages before/at deletion time
+      }
+
+      const profile = profilesMap.get(otherUserId);
+      const otherUserName = profile?.name || (msg.from_user === userId ? msg.to_name : msg.from_name) || 'User';
+      const otherUserAvatar = profile?.avatar_url || (msg.from_user === userId ? msg.to_avatar : msg.from_avatar);
       
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: otherUserName || 'Unknown User',
+          userName: otherUserName,
           userAvatar: otherUserAvatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
@@ -832,6 +943,10 @@ function App() {
       }
       
       const conv = conversationMap.get(otherUserId);
+      if (profile) {
+        conv.userName = profile.name || conv.userName;
+        conv.userAvatar = profile.avatar_url || conv.userAvatar;
+      }
       conv.messages.push(msg);
       
       if (!msg.read && msg.to_user === userId) {
@@ -890,11 +1005,12 @@ function App() {
       const safetyTimeout = setTimeout(() => {
         setIsInitialLoading(false);
         sessionStorage.setItem('devMarketLoaderShown', 'true');
-      }, 6000);
+      }, 4000);
       
       return () => clearTimeout(safetyTimeout);
     } else {
-      initialize().then(() => setIsInitialLoading(false));
+      setIsInitialLoading(false);
+      initialize();
     }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -1929,6 +2045,26 @@ function AdminDashboard() {
     }
   };
 
+  const handleDemoteUser = async (userId, userName) => {
+    try {
+      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `👤 ${userName} set back to Developer`, type: 'info', time: new Date().toLocaleTimeString(), read: false }});
+    } catch (e) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not demote user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+    }
+  };
+
+  const handleUnbanUser = async (userId, userName) => {
+    try {
+      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ ${userName} has been unbanned`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+    } catch (e) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not unban user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+    }
+  };
+
   if (!state.currentUser || !state.isAdmin) {
     return (
       <div className="admin-page">
@@ -2208,6 +2344,15 @@ function AdminDashboard() {
                           🛡️ Promote
                         </button>
                       )}
+                      {user.id !== state.currentUser.id && user.role === 'admin' && (
+                        <button 
+                          className="btn-sm" 
+                          style={{ background: 'var(--warning)', color: 'white', border: 'none', cursor: 'pointer' }}
+                          onClick={() => handleDemoteUser(user.id, user.name)}
+                        >
+                          👤 Set Developer
+                        </button>
+                      )}
                       {user.id !== state.currentUser.id && user.role !== 'banned' && (
                         <button 
                           className="btn-sm" 
@@ -2218,7 +2363,16 @@ function AdminDashboard() {
                         </button>
                       )}
                       {user.role === 'banned' && (
-                        <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
+                        <>
+                          <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
+                          <button
+                            className="btn-sm"
+                            style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
+                            onClick={() => handleUnbanUser(user.id, user.name)}
+                          >
+                            ✅ Unban
+                          </button>
+                        </>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
@@ -2856,22 +3010,31 @@ function Messages() {
     if (!convToDelete) return;
     setDeletingConv(true);
     try {
-      // Delete all messages between these two users
-      await supabase.from('messages').delete()
-        .or(
-          `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
-        );
+      const myId = state.currentUser.id;
+      const otherId = convToDelete.userId;
 
-      // Remove from conversations state
-      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations.filter(c => c.userId !== convToDelete.userId) });
-      dispatch({ type: 'SET_MESSAGES', payload: (state.messages || []).filter(m => 
-        !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
-      )});
-      
-      if (activeConv?.userId === convToDelete.userId) {
-        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: null });
-        setReplyingTo(null);
+      // Record a "deleted_conversation" marker in the DB so if the other user 
+      // messages again, only a fresh conversation is shown to THIS user.
+      // We soft-delete by inserting a record into a deleted_conversations table
+      // (falls back gracefully if table doesn't exist).
+      try {
+        await supabase.from('deleted_conversations').upsert([{
+          user_id: myId,
+          other_user_id: otherId,
+          deleted_at: new Date().toISOString()
+        }], { onConflict: 'user_id,other_user_id' });
+      } catch (_) {
+        // Table may not exist yet — that's OK, local state is still wiped
       }
+
+      // Remove only from THIS user's local state (not deleting from DB for other user)
+      dispatch({
+        type: 'DELETE_CONVERSATION_FOR_USER',
+        payload: { currentUserId: myId, otherUserId: otherId }
+      });
+      setReplyingTo(null);
+      setMobileShowChat(false);
+
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: '🗑️ Conversation deleted', type: 'success', 
         time: new Date().toLocaleTimeString(), read: false 
@@ -2894,7 +3057,7 @@ function Messages() {
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'Unknown User',
+          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'User',
           userAvatar: msg.from_user === userId ? msg.to_avatar : msg.from_avatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
@@ -2994,7 +3157,7 @@ function Messages() {
                 </div>
                 <div className="conv-info">
                   <div className="conv-row1">
-                    <strong className="conv-name">{conv.userName || 'Unknown User'}</strong>
+                    <strong className="conv-name">{conv.userName || 'User'}</strong>
                     <span className="conv-time">{formatMsgTime(conv.lastMessageTime)}</span>
                   </div>
                   <div className="conv-row2">
@@ -3029,7 +3192,7 @@ function Messages() {
                 <span className={`online-dot ${isOnline(activeConv.userId) ? 'online' : 'offline'}`}></span>
               </div>
               <div className="messenger-chat-info">
-                <strong>{activeConv.userName || 'Unknown User'}</strong>
+                <strong>{activeConv.userName || 'User'}</strong>
                 <p>{isOnline(activeConv.userId) ? '🟢 Active now' : '⚪ Offline'}</p>
               </div>
               <button
@@ -3045,18 +3208,28 @@ function Messages() {
               {activeMessages.map((msg, i) => {
                 const isMine = msg.from_user === state.currentUser.id;
                 const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
+                const showName = !isMine && showAvatar;
                 const isLast = isMine && i === activeMessages.length - 1;
+                const senderName = isMine
+                  ? (state.profile?.name || state.currentUser?.email?.split('@')[0] || 'You')
+                  : (activeConv.userName || 'User');
+                const senderAvatar = isMine
+                  ? (state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`)
+                  : (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`);
                 return (
                   <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
                     {!isMine && (
                       <img
-                        src={showAvatar ? (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`) : undefined}
+                        src={showAvatar ? senderAvatar : undefined}
                         alt=""
                         className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
                         onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
                       />
                     )}
                     <div className="msg-col">
+                      {showName && (
+                        <span className="msg-sender-name">{senderName}</span>
+                      )}
                       <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
                         <p>{msg.message}</p>
                       </div>
@@ -3072,6 +3245,13 @@ function Messages() {
                         )}
                       </div>
                     </div>
+                    {isMine && (
+                      <img
+                        src={showAvatar ? undefined : undefined}
+                        alt=""
+                        style={{ display: 'none' }}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -3236,7 +3416,12 @@ function Profile() {
             size="large"
           />
           <div className="profile-info">
-            <h1>{userName}</h1>
+            <h1>
+              {userName}
+              {state.profile?.verified && (
+                <span className="verified-badge" title="Verified Account">✓</span>
+              )}
+            </h1>
             <p className="profile-email">{state.currentUser.email}</p>
             {state.profile?.role && (
               <span className="profile-role-badge">
@@ -3530,6 +3715,16 @@ function UserProfile() {
   const displayName = profile.name || 'Anonymous User';
   const avatarUrl = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`;
 
+  const roleBadge = {
+    admin: { icon: '🛡️', label: 'Admin', color: '#667eea', bg: '#ede9fe' },
+    developer: { icon: '👨‍💻', label: 'Developer', color: '#10b981', bg: '#d1fae5' },
+    designer: { icon: '🎨', label: 'Designer', color: '#f59e0b', bg: '#fef3c7' },
+    freelancer: { icon: '💼', label: 'Freelancer', color: '#3b82f6', bg: '#dbeafe' },
+    startup: { icon: '🚀', label: 'Startup', color: '#8b5cf6', bg: '#ede9fe' },
+    banned: { icon: '🚫', label: 'Banned', color: '#ef4444', bg: '#fee2e2' },
+  };
+  const badge = roleBadge[profile.role] || { icon: '👤', label: profile.role || 'Member', color: '#6b7280', bg: '#f3f4f6' };
+
   return (
     <div className="profile-page">
       <div className="profile-header-card">
@@ -3539,7 +3734,21 @@ function UserProfile() {
             <img src={avatarUrl} alt={displayName} className="avatar-large" />
           </div>
           <div className="profile-info">
-            <h1>{displayName}</h1>
+            <h1>
+              {displayName}
+              {profile.verified && (
+                <span className="verified-badge" title="Verified Account">✓</span>
+              )}
+            </h1>
+            {/* Role Badge */}
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              background: badge.bg, color: badge.color,
+              padding: '4px 12px', borderRadius: 'var(--radius-full)',
+              fontSize: '0.8rem', fontWeight: 600, marginBottom: 8
+            }}>
+              {badge.icon} {badge.label}
+            </span>
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
@@ -3547,6 +3756,12 @@ function UserProfile() {
               )}
               {profile.github && (
                 <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">⚡ GitHub</a>
+              )}
+              {profile.twitter && (
+                <a href={`https://twitter.com/${profile.twitter.replace('@','')}`} target="_blank" rel="noopener noreferrer" className="profile-link">𝕏 Twitter</a>
+              )}
+              {profile.linkedin && (
+                <a href={`https://linkedin.com/in/${profile.linkedin}`} target="_blank" rel="noopener noreferrer" className="profile-link">💼 LinkedIn</a>
               )}
             </div>
           </div>
@@ -5359,11 +5574,11 @@ function Settings() {
   };
 
   const handleSaveNotifications = async () => {
+    const currentEnabled = state.notificationsEnabled;
     try {
-      const newVal = state.notificationsEnabled;
       const updateData = {
         id: state.currentUser.id,
-        notifications_enabled: newVal,
+        notifications_enabled: currentEnabled,
         notif_email: notificationPrefs.emailNotifications,
         notif_push: notificationPrefs.pushNotifications,
         notif_marketing: notificationPrefs.marketingEmails,
@@ -5373,10 +5588,13 @@ function Settings() {
         notif_digest: notificationPrefs.weeklyDigest,
         updated_at: new Date().toISOString()
       };
-      await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
+      const { error } = await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
+      if (error) throw error;
+      // Keep localStorage in sync
+      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(currentEnabled)); } catch(e) {}
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
     } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences: ' + (e.message || ''), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
     }
   };
 
@@ -5669,26 +5887,30 @@ function Settings() {
                       dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
                       if (!newVal) {
                         dispatch({ type: 'CLEAR_NOTIFICATIONS' });
-                        // Show feedback via a temporary direct state notification bypassing the guard
-                        setTimeout(() => {
-                          const el = document.getElementById('notif-status-msg');
-                          if (el) { el.textContent = '🔕 Notifications are now OFF'; el.style.color = 'var(--danger)'; }
-                        }, 50);
-                      } else {
-                        setTimeout(() => {
-                          const el = document.getElementById('notif-status-msg');
-                          if (el) { el.textContent = '🔔 Notifications are now ON'; el.style.color = 'var(--success)'; }
-                        }, 50);
                       }
+                      // Use _force:true so this feedback toast bypasses the disabled-notifications guard
+                      dispatch({ type: 'ADD_NOTIFICATION', payload: {
+                        message: newVal ? '🔔 Notifications are now ON' : '🔕 Notifications are now OFF',
+                        type: newVal ? 'success' : 'info',
+                        time: new Date().toLocaleTimeString(),
+                        read: false,
+                        _force: true
+                      }});
                       if (state.currentUser) {
-                        try { await supabase.from('profiles').upsert({ id: state.currentUser.id, notifications_enabled: newVal, updated_at: new Date().toISOString() }, { onConflict: 'id' }); } catch(e) {}
+                        try {
+                          await supabase.from('profiles').upsert({
+                            id: state.currentUser.id,
+                            notifications_enabled: newVal,
+                            updated_at: new Date().toISOString()
+                          }, { onConflict: 'id' });
+                        } catch(e) {}
                       }
                     }} />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
-                <p id="notif-status-msg" style={{ fontSize: '0.8rem', marginTop: 4, fontWeight: 600, transition: 'color 0.3s', minHeight: '1.2em' }}>
-                  {state.notificationsEnabled ? '' : '🔕 Notifications are currently OFF'}
+                <p style={{ fontSize: '0.8rem', marginTop: 4, fontWeight: 600, minHeight: '1.2em', color: state.notificationsEnabled ? 'var(--success)' : 'var(--danger)' }}>
+                  {state.notificationsEnabled ? '🔔 Notifications are currently ON' : '🔕 Notifications are currently OFF'}
                 </p>
 
                 {state.notificationsEnabled && (

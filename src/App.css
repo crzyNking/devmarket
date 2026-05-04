@@ -142,7 +142,7 @@ body.modal-open {
   bottom: 0;
   left: 0;
   right: 0;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--white);
   border-top: 1px solid var(--gray-200);
   z-index: var(--z-header);
   padding: 0;
@@ -7922,6 +7922,13 @@ input:checked + .toggle-slider:before {
   flex-direction: column;
   gap: 2px;
 }
+.msg-sender-name {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--gray-500);
+  padding: 0 4px 2px;
+  display: block;
+}
 .msg-bubble {
   padding: 10px 14px;
   border-radius: 18px;
@@ -8932,4 +8939,62 @@ input:checked + .toggle-slider:before {
   .admin-tab { white-space: nowrap; flex-shrink: 0; }
   .engage-grid { grid-template-columns: repeat(2, 1fr); }
   .platform-health-grid { gap: 12px; }
+}
+/* ============================================
+   VERIFIED BADGE — Admin-controlled profile verification
+   ============================================ */
+.verified-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: linear-gradient(135deg, #1d9bf0, #0d6efd);
+  color: white;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-left: 8px;
+  vertical-align: middle;
+  box-shadow: 0 1px 4px rgba(29,155,240,0.4);
+  flex-shrink: 0;
+  cursor: help;
+}
+.profile-info h1 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ============================================
+   NOTIFICATION TOGGLE — cleaner ON/OFF visual
+   ============================================ */
+.setting-item.master-toggle .toggle-switch .toggle-slider {
+  background: var(--danger);
+}
+.setting-item.master-toggle .toggle-switch input:checked + .toggle-slider {
+  background: var(--success);
+}
+
+/* ============================================
+   MESSENGER — Real user name improvements
+   ============================================ */
+.conv-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--gray-800);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+.messenger-chat-info strong {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--gray-900);
+}
+.App.dark .conv-name,
+.App.dark .messenger-chat-info strong {
+  color: var(--gray-100);
 }
