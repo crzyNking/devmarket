@@ -10,7 +10,12 @@ export class RealtimeManager {
     this.maxReconnectAttempts = 5;
   }
 
-  subscribe(channelName, config, onEvent) {
+  /**
+   * mode:
+   *  - 'postgres_changes' (old behavior)
+   *  - 'broadcast' (for realtime.broadcast_changes triggers)
+   */
+  subscribe(channelName, config = {}, onEvent) {
     if (this.channels[channelName]) {
       console.log(`Channel ${channelName} already exists, returning existing`);
       return this.channels[channelName];
@@ -18,46 +23,69 @@ export class RealtimeManager {
 
     this.reconnectAttempts[channelName] = 0;
 
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        {
-          event: config.event || '*',
-          schema: config.schema || 'public',
-          table: config.table,
-          filter: config.filter
-        },
+    const mode = config.mode || 'postgres_changes';
+
+    const channel =
+      mode === 'broadcast'
+        ? supabase.channel(channelName, {
+            config: { private: true }, // IMPORTANT for private topics
+          })
+        : supabase.channel(channelName);
+
+    if (mode === 'broadcast') {
+      // TG_OP publishes event types like: 'INSERT' | 'UPDATE' | 'DELETE'
+      channel.on(
+        'broadcast',
+        { event: config.event || '*' },
         (payload) => {
-          console.log(`📨 Event received on ${channelName}:`, payload.eventType);
+          // payload shape typically: { type, event, topic, payload, ... }
+          console.log(`📨 Broadcast received on ${channelName}:`, payload?.event || config.event);
           if (onEvent) onEvent(payload);
           this.notifyListeners(channelName, payload);
         }
-      )
-      .subscribe((status) => {
-        switch (status) {
-          case 'SUBSCRIBED':
-            this.isConnected = true;
-            this.reconnectAttempts[channelName] = 0;
-            console.log(`✅ Connected to ${channelName}`);
-            break;
-          case 'CHANNEL_ERROR':
-            console.error(`❌ Error on channel ${channelName}`);
-            this.handleReconnect(channelName, config, onEvent);
-            break;
-          case 'CLOSED':
-            console.log(`🔒 Channel ${channelName} closed`);
-            this.isConnected = false;
-            this.handleReconnect(channelName, config, onEvent);
-            break;
-          case 'TIMED_OUT':
-            console.warn(`⏰ Channel ${channelName} timed out`);
-            this.handleReconnect(channelName, config, onEvent);
-            break;
-          default:
-            console.log(`Status for ${channelName}: ${status}`);
-        }
-      });
+      );
+    } else {
+      channel
+        .on(
+          'postgres_changes',
+          {
+            event: config.event || '*',
+            schema: config.schema || 'public',
+            table: config.table,
+            filter: config.filter,
+          },
+          (payload) => {
+            console.log(`📨 Event received on ${channelName}:`, payload.eventType);
+            if (onEvent) onEvent(payload);
+            this.notifyListeners(channelName, payload);
+          }
+        );
+    }
+
+    channel.subscribe((status) => {
+      switch (status) {
+        case 'SUBSCRIBED':
+          this.isConnected = true;
+          this.reconnectAttempts[channelName] = 0;
+          console.log(`✅ Connected to ${channelName}`);
+          break;
+        case 'CHANNEL_ERROR':
+          console.error(`❌ Error on channel ${channelName}`);
+          this.handleReconnect(channelName, config, onEvent);
+          break;
+        case 'CLOSED':
+          console.log(`🔒 Channel ${channelName} closed`);
+          this.isConnected = false;
+          this.handleReconnect(channelName, config, onEvent);
+          break;
+        case 'TIMED_OUT':
+          console.warn(`⏰ Channel ${channelName} timed out`);
+          this.handleReconnect(channelName, config, onEvent);
+          break;
+        default:
+          console.log(`Status for ${channelName}: ${status}`);
+      }
+    });
 
     this.channels[channelName] = channel;
     return channel;
@@ -70,10 +98,15 @@ export class RealtimeManager {
     }
 
     this.reconnectAttempts[channelName]++;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts[channelName]), 30000);
-    
-    console.log(`🔄 Attempting reconnect for ${channelName} in ${delay}ms (attempt ${this.reconnectAttempts[channelName]})`);
-    
+    const delay = Math.min(
+      1000 * Math.pow(2, this.reconnectAttempts[channelName]),
+      30000
+    );
+
+    console.log(
+      `🔄 Attempting reconnect for ${channelName} in ${delay}ms (attempt ${this.reconnectAttempts[channelName]})`
+    );
+
     setTimeout(() => {
       this.unsubscribe(channelName);
       this.subscribe(channelName, config, onEvent);
@@ -98,9 +131,7 @@ export class RealtimeManager {
   }
 
   unsubscribeAll() {
-    Object.keys(this.channels).forEach(channel => {
-      this.unsubscribe(channel);
-    });
+    Object.keys(this.channels).forEach((channel) => this.unsubscribe(channel));
     this.isConnected = false;
   }
 
@@ -137,7 +168,7 @@ export class RealtimeManager {
     return {
       isConnected: this.isConnected,
       activeChannels: this.getActiveChannels(),
-      attemptCounts: this.reconnectAttempts
+      attemptCounts: this.reconnectAttempts,
     };
   }
 
