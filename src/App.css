@@ -7922,13 +7922,6 @@ input:checked + .toggle-slider:before {
   flex-direction: column;
   gap: 2px;
 }
-.msg-sender-name {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--gray-500);
-  padding: 0 4px 2px;
-  display: block;
-}
 .msg-bubble {
   padding: 10px 14px;
   border-radius: 18px;

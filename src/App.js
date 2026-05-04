@@ -189,23 +189,6 @@ function appReducer(state, action) {
       return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'DELETE_MESSAGE': 
       return { ...state, messages: (state.messages || []).filter(m => m.id !== action.payload) };
-    // Soft-delete conversation for current user only:
-    // action.payload = { currentUserId, otherUserId }
-    case 'DELETE_CONVERSATION_FOR_USER': {
-      const { currentUserId, otherUserId } = action.payload;
-      const filtered = (state.messages || []).filter(m => {
-        const involves = (m.from_user === currentUserId && m.to_user === otherUserId) ||
-                         (m.from_user === otherUserId && m.to_user === currentUserId);
-        return !involves;
-      });
-      const filteredConvs = (state.conversations || []).filter(c => c.userId !== otherUserId);
-      return {
-        ...state,
-        messages: filtered,
-        conversations: filteredConvs,
-        activeConversation: state.activeConversation?.userId === otherUserId ? null : state.activeConversation
-      };
-    }
     case 'SET_FAVORITES': 
       return { ...state, favorites: action.payload || [] };
     case 'TOGGLE_FAVORITE': {
@@ -560,11 +543,15 @@ function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
-  // On hard refresh within same tab session: skip the splash screen
-  const [isInitialLoading, setIsInitialLoading] = useState(
-    !sessionStorage.getItem('devMarketLoaderShown')
-  );
-  const hasShownLoader = !!sessionStorage.getItem('devMarketLoaderShown');
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [hasShownLoader, setHasShownLoader] = useState(false);
+
+  useEffect(() => {
+    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
+    if (loaderShown) {
+      setHasShownLoader(true);
+    }
+  }, []);
 
   async function loadPublicData() {
     try {
@@ -635,13 +622,9 @@ function App() {
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
-        // Always restore notification preference from Supabase (source of truth)
-        // This ensures the toggle survives refresh
-        const dbVal = profile.notifications_enabled;
-        if (dbVal !== undefined && dbVal !== null) {
-          // Update both localStorage and state from DB value
-          try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(dbVal)); } catch(e) {}
-          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: dbVal });
+        // Load notification preference from Supabase
+        if (profile.notifications_enabled !== undefined && profile.notifications_enabled !== null) {
+          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: profile.notifications_enabled });
         }
       } else {
         const meta = user.user_metadata || {};
@@ -758,37 +741,8 @@ function App() {
             }
           } catch (_) {}
         }
-
-        // Check if this user had previously deleted the conversation with the sender.
-        // If they did, the new message starts a FRESH conversation (deletedAt check).
-        let deletedAt = null;
-        try {
-          const { data: delRec } = await supabase
-            .from('deleted_conversations')
-            .select('deleted_at')
-            .eq('user_id', userId)
-            .eq('other_user_id', newMsg.from_user)
-            .maybeSingle();
-          if (delRec) {
-            deletedAt = delRec.deleted_at;
-            // This is a new message AFTER deletion — clear the deletion record
-            // so the conversation starts fresh
-            if (new Date(newMsg.created_at) > new Date(deletedAt)) {
-              await supabase.from('deleted_conversations')
-                .delete()
-                .eq('user_id', userId)
-                .eq('other_user_id', newMsg.from_user);
-              deletedAt = null; // treated as fresh
-            }
-          }
-        } catch (_) {}
         
         const enrichedMsg = { ...newMsg, from_name: fromName || 'User', from_avatar: fromAvatar };
-        
-        // Only add if message is after deletion threshold (or no deletion)
-        if (deletedAt && new Date(newMsg.created_at) <= new Date(deletedAt)) {
-          return; // Skip messages before deletion
-        }
         
         dispatch({ type: 'ADD_MESSAGE', payload: enrichedMsg });
         
@@ -887,22 +841,6 @@ function App() {
       otherUserIds.add(otherId);
     });
 
-    // Fetch soft-deleted conversations for this user
-    let deletedSet = new Set();
-    try {
-      const { data: deleted } = await supabase
-        .from('deleted_conversations')
-        .select('other_user_id, deleted_at')
-        .eq('user_id', userId);
-      if (deleted) {
-        deleted.forEach(d => deletedSet.set ? deletedSet.add(d.other_user_id) : null);
-        // Map deleted_at so we only show messages AFTER deletion
-        deleted.forEach(d => {
-          deletedSet[d.other_user_id] = d.deleted_at;
-        });
-      }
-    } catch (_) {}
-
     // Batch-fetch all profiles for other users
     let profilesMap = new Map();
     if (otherUserIds.size > 0) {
@@ -919,13 +857,7 @@ function App() {
     
     messages.forEach(msg => {
       const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      
-      // If the conversation was deleted, only include messages AFTER deletion time
-      const deletedAt = deletedSet[otherUserId];
-      if (deletedAt && new Date(msg.created_at) <= new Date(deletedAt)) {
-        return; // Skip messages before/at deletion time
-      }
-
+      // Prefer real DB profile name over embedded from_name/to_name fields
       const profile = profilesMap.get(otherUserId);
       const otherUserName = profile?.name || (msg.from_user === userId ? msg.to_name : msg.from_name) || 'User';
       const otherUserAvatar = profile?.avatar_url || (msg.from_user === userId ? msg.to_avatar : msg.from_avatar);
@@ -943,6 +875,7 @@ function App() {
       }
       
       const conv = conversationMap.get(otherUserId);
+      // Update name/avatar from real profile if we have it (in case earlier msg had null)
       if (profile) {
         conv.userName = profile.name || conv.userName;
         conv.userAvatar = profile.avatar_url || conv.userAvatar;
@@ -1005,12 +938,11 @@ function App() {
       const safetyTimeout = setTimeout(() => {
         setIsInitialLoading(false);
         sessionStorage.setItem('devMarketLoaderShown', 'true');
-      }, 4000);
+      }, 6000);
       
       return () => clearTimeout(safetyTimeout);
     } else {
-      setIsInitialLoading(false);
-      initialize();
+      initialize().then(() => setIsInitialLoading(false));
     }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -2045,26 +1977,6 @@ function AdminDashboard() {
     }
   };
 
-  const handleDemoteUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `👤 ${userName} set back to Developer`, type: 'info', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not demote user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
-  const handleUnbanUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ ${userName} has been unbanned`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not unban user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
   if (!state.currentUser || !state.isAdmin) {
     return (
       <div className="admin-page">
@@ -2344,15 +2256,6 @@ function AdminDashboard() {
                           🛡️ Promote
                         </button>
                       )}
-                      {user.id !== state.currentUser.id && user.role === 'admin' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--warning)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleDemoteUser(user.id, user.name)}
-                        >
-                          👤 Set Developer
-                        </button>
-                      )}
                       {user.id !== state.currentUser.id && user.role !== 'banned' && (
                         <button 
                           className="btn-sm" 
@@ -2363,16 +2266,7 @@ function AdminDashboard() {
                         </button>
                       )}
                       {user.role === 'banned' && (
-                        <>
-                          <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
-                          <button
-                            className="btn-sm"
-                            style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
-                            onClick={() => handleUnbanUser(user.id, user.name)}
-                          >
-                            ✅ Unban
-                          </button>
-                        </>
+                        <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
@@ -3010,31 +2904,22 @@ function Messages() {
     if (!convToDelete) return;
     setDeletingConv(true);
     try {
-      const myId = state.currentUser.id;
-      const otherId = convToDelete.userId;
+      // Delete all messages between these two users
+      await supabase.from('messages').delete()
+        .or(
+          `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
+        );
 
-      // Record a "deleted_conversation" marker in the DB so if the other user 
-      // messages again, only a fresh conversation is shown to THIS user.
-      // We soft-delete by inserting a record into a deleted_conversations table
-      // (falls back gracefully if table doesn't exist).
-      try {
-        await supabase.from('deleted_conversations').upsert([{
-          user_id: myId,
-          other_user_id: otherId,
-          deleted_at: new Date().toISOString()
-        }], { onConflict: 'user_id,other_user_id' });
-      } catch (_) {
-        // Table may not exist yet — that's OK, local state is still wiped
+      // Remove from conversations state
+      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations.filter(c => c.userId !== convToDelete.userId) });
+      dispatch({ type: 'SET_MESSAGES', payload: (state.messages || []).filter(m => 
+        !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
+      )});
+      
+      if (activeConv?.userId === convToDelete.userId) {
+        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: null });
+        setReplyingTo(null);
       }
-
-      // Remove only from THIS user's local state (not deleting from DB for other user)
-      dispatch({
-        type: 'DELETE_CONVERSATION_FOR_USER',
-        payload: { currentUserId: myId, otherUserId: otherId }
-      });
-      setReplyingTo(null);
-      setMobileShowChat(false);
-
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: '🗑️ Conversation deleted', type: 'success', 
         time: new Date().toLocaleTimeString(), read: false 
@@ -3208,28 +3093,18 @@ function Messages() {
               {activeMessages.map((msg, i) => {
                 const isMine = msg.from_user === state.currentUser.id;
                 const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
-                const showName = !isMine && showAvatar;
                 const isLast = isMine && i === activeMessages.length - 1;
-                const senderName = isMine
-                  ? (state.profile?.name || state.currentUser?.email?.split('@')[0] || 'You')
-                  : (activeConv.userName || 'User');
-                const senderAvatar = isMine
-                  ? (state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`)
-                  : (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`);
                 return (
                   <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
                     {!isMine && (
                       <img
-                        src={showAvatar ? senderAvatar : undefined}
+                        src={showAvatar ? (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`) : undefined}
                         alt=""
                         className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
                         onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
                       />
                     )}
                     <div className="msg-col">
-                      {showName && (
-                        <span className="msg-sender-name">{senderName}</span>
-                      )}
                       <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
                         <p>{msg.message}</p>
                       </div>
@@ -3245,13 +3120,6 @@ function Messages() {
                         )}
                       </div>
                     </div>
-                    {isMine && (
-                      <img
-                        src={showAvatar ? undefined : undefined}
-                        alt=""
-                        style={{ display: 'none' }}
-                      />
-                    )}
                   </div>
                 );
               })}
@@ -3715,16 +3583,6 @@ function UserProfile() {
   const displayName = profile.name || 'Anonymous User';
   const avatarUrl = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`;
 
-  const roleBadge = {
-    admin: { icon: '🛡️', label: 'Admin', color: '#667eea', bg: '#ede9fe' },
-    developer: { icon: '👨‍💻', label: 'Developer', color: '#10b981', bg: '#d1fae5' },
-    designer: { icon: '🎨', label: 'Designer', color: '#f59e0b', bg: '#fef3c7' },
-    freelancer: { icon: '💼', label: 'Freelancer', color: '#3b82f6', bg: '#dbeafe' },
-    startup: { icon: '🚀', label: 'Startup', color: '#8b5cf6', bg: '#ede9fe' },
-    banned: { icon: '🚫', label: 'Banned', color: '#ef4444', bg: '#fee2e2' },
-  };
-  const badge = roleBadge[profile.role] || { icon: '👤', label: profile.role || 'Member', color: '#6b7280', bg: '#f3f4f6' };
-
   return (
     <div className="profile-page">
       <div className="profile-header-card">
@@ -3740,15 +3598,6 @@ function UserProfile() {
                 <span className="verified-badge" title="Verified Account">✓</span>
               )}
             </h1>
-            {/* Role Badge */}
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              background: badge.bg, color: badge.color,
-              padding: '4px 12px', borderRadius: 'var(--radius-full)',
-              fontSize: '0.8rem', fontWeight: 600, marginBottom: 8
-            }}>
-              {badge.icon} {badge.label}
-            </span>
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
@@ -3756,12 +3605,6 @@ function UserProfile() {
               )}
               {profile.github && (
                 <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">⚡ GitHub</a>
-              )}
-              {profile.twitter && (
-                <a href={`https://twitter.com/${profile.twitter.replace('@','')}`} target="_blank" rel="noopener noreferrer" className="profile-link">𝕏 Twitter</a>
-              )}
-              {profile.linkedin && (
-                <a href={`https://linkedin.com/in/${profile.linkedin}`} target="_blank" rel="noopener noreferrer" className="profile-link">💼 LinkedIn</a>
               )}
             </div>
           </div>
@@ -5574,11 +5417,11 @@ function Settings() {
   };
 
   const handleSaveNotifications = async () => {
-    const currentEnabled = state.notificationsEnabled;
     try {
+      const newVal = state.notificationsEnabled;
       const updateData = {
         id: state.currentUser.id,
-        notifications_enabled: currentEnabled,
+        notifications_enabled: newVal,
         notif_email: notificationPrefs.emailNotifications,
         notif_push: notificationPrefs.pushNotifications,
         notif_marketing: notificationPrefs.marketingEmails,
@@ -5588,13 +5431,10 @@ function Settings() {
         notif_digest: notificationPrefs.weeklyDigest,
         updated_at: new Date().toISOString()
       };
-      const { error } = await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
-      if (error) throw error;
-      // Keep localStorage in sync
-      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(currentEnabled)); } catch(e) {}
+      await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
     } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences: ' + (e.message || ''), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
     }
   };
 
