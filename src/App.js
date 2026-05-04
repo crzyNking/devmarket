@@ -1148,11 +1148,9 @@ function Header() {
                   <span className="nav-icon">💬</span> Messages
                   {unreadMessages > 0 && <span className="notification-badge">{unreadMessages}</span>}
                 </Link>
-                {state.isAdmin && (
-                  <Link to="/admin" className={`nav-link ${location.pathname === '/admin' ? 'active' : ''}`} onClick={closeAll}>
-                    <span className="nav-icon">🛡️</span> Admin
-                  </Link>
-                )}
+                <Link to="/posts" className={`nav-link ${location.pathname === '/posts' ? 'active' : ''}`} onClick={closeAll}>
+                  <span className="nav-icon">📝</span> Posts
+                </Link>
               </>
             )}
           </nav>
@@ -1162,6 +1160,11 @@ function Header() {
               <button className="btn-install-pwa" onClick={install} title="Install App">
                 📲 <span className="install-label">Install</span>
               </button>
+            )}
+            {state.currentUser && (
+              <Link to="/posts" className="btn-post-header" onClick={closeAll} title="Create Post">
+                ✍️ <span className="post-label">Post</span>
+              </Link>
             )}
             <button className="icon-button" onClick={() => setShowAdvancedSearch(true)} title="Search" aria-label="Search">
               🔍
@@ -1320,11 +1323,14 @@ function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
   const navItems = [
     { to: '/', icon: '🏠', label: 'Home' },
     { to: '/marketplace', icon: '🛒', label: 'Market' },
-    { to: '/code-sharing', icon: '💻', label: 'Code' },
     { to: '/posts', icon: '📝', label: 'Posts' },
     ...(currentUser ? [
+      { to: '/favorites', icon: '⭐', label: 'Favorites' },
+      { to: '/activity', icon: '📣', label: 'Activity' },
       { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
-    ] : []),
+    ] : [
+      { to: '/code-sharing', icon: '💻', label: 'Code' },
+    ]),
   ];
 
   return (
@@ -2088,7 +2094,7 @@ function AnalyticsPage() {
 }
 
 // ============================================
-// ENHANCED MESSAGES WITH REAL-TIME INDICATOR
+// MESSENGER-STYLE MESSAGES — Full Redesign
 // ============================================
 function Messages() {
   const { state, dispatch } = useAppContext();
@@ -2099,8 +2105,71 @@ function Messages() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [convToDelete, setConvToDelete] = useState(null);
   const [deletingConv, setDeletingConv] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState(new Set());
+  const [typingTimeout, setTypingTimeout] = useState(null);
+  const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesEndRef = useRef(null);
   const chatMessagesRef = useRef(null);
+  const typingChannelRef = useRef(null);
+  const presenceChannelRef = useRef(null);
+
+  // Presence tracking: subscribe to online/offline
+  useEffect(() => {
+    if (!state.currentUser) return;
+    try {
+      const presenceChannel = supabase.channel('online-users', {
+        config: { presence: { key: state.currentUser.id } }
+      });
+      presenceChannel
+        .on('presence', { event: 'sync' }, () => {
+          const state_ = presenceChannel.presenceState();
+          const online = new Set(Object.keys(state_));
+          setOnlineUsers(online);
+        })
+        .on('presence', { event: 'join' }, ({ key }) => {
+          setOnlineUsers(prev => new Set([...prev, key]));
+        })
+        .on('presence', { event: 'leave' }, ({ key }) => {
+          setOnlineUsers(prev => { const s = new Set(prev); s.delete(key); return s; });
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await presenceChannel.track({ user_id: state.currentUser.id, online_at: new Date().toISOString() });
+          }
+        });
+      presenceChannelRef.current = presenceChannel;
+    } catch (e) {}
+    return () => { if (presenceChannelRef.current) supabase.removeChannel(presenceChannelRef.current); };
+  }, [state.currentUser]);
+
+  // Typing indicator subscription for active conversation
+  useEffect(() => {
+    if (!state.activeConversation || !state.currentUser) return;
+    try {
+      const channelName = `typing:${[state.currentUser.id, state.activeConversation.userId].sort().join('-')}`;
+      const channel = supabase.channel(channelName);
+      channel
+        .on('broadcast', { event: 'typing' }, ({ payload }) => {
+          if (payload.userId !== state.currentUser.id) {
+            setIsTyping(true);
+            clearTimeout(typingTimeout);
+            const t = setTimeout(() => setIsTyping(false), 3000);
+            setTypingTimeout(t);
+          }
+        })
+        .subscribe();
+      typingChannelRef.current = channel;
+    } catch (e) {}
+    return () => { if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current); };
+  }, [state.activeConversation?.userId]);
+
+  const broadcastTyping = useCallback(() => {
+    if (!typingChannelRef.current || !state.currentUser) return;
+    try {
+      typingChannelRef.current.send({ type: 'broadcast', event: 'typing', payload: { userId: state.currentUser.id } });
+    } catch (e) {}
+  }, [state.currentUser]);
 
   const scrollToBottom = useCallback(() => {
     if (chatMessagesRef.current) {
@@ -2108,20 +2177,15 @@ function Messages() {
     }
   }, []);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [state.activeConversation, scrollToBottom]);
+  useEffect(() => { scrollToBottom(); }, [state.activeConversation, scrollToBottom]);
 
-  // Auto-scroll on new messages only if we're near the bottom
   useEffect(() => {
     if (chatMessagesRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
-      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-      if (isNearBottom) scrollToBottom();
+      if (scrollHeight - scrollTop - clientHeight < 120) scrollToBottom();
     }
   }, [state.messages.length, scrollToBottom]);
 
-  // Real-time: update active conversation when new messages arrive
   useEffect(() => {
     if (state.activeConversation && state.conversations.length > 0) {
       const updated = state.conversations.find(c => c.userId === state.activeConversation.userId);
@@ -2289,6 +2353,7 @@ function Messages() {
   const openConversation = (conv) => {
     dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: conv });
     setReplyingTo(conv);
+    setMobileShowChat(true);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
     sessionStorage.setItem('activeConversationId', conv.userId);
     
@@ -2307,159 +2372,190 @@ function Messages() {
     setShowDeleteConfirm(true);
   };
 
+  const formatMsgTime = (ts) => {
+    const d = new Date(ts);
+    const now = new Date();
+    const diffDays = Math.floor((now - d) / 86400000);
+    if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return 'Yesterday ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const isOnline = (userId) => onlineUsers.has(userId);
+
   const activeMessages = (activeConv?.messages || [])
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
   return (
-    <div className="messages-page">
-      <div className="page-header">
-        <h1>💬 Messages</h1>
-        <p>Your conversations and inquiries</p>
-        <div className="realtime-indicator">
-          {state.realtimeConnected ? (
-            <span className="realtime-badge connected">
-              <span className="realtime-pulse"></span> Live
-            </span>
-          ) : (
-            <span className="realtime-badge disconnected">
-              <span className="realtime-pulse offline"></span> Reconnecting...
-            </span>
-          )}
-        </div>
-      </div>
-      
-      <div className="messages-layout">
-        <div className="conversations-sidebar">
-          <h3>Conversations {conversations.length > 0 && <span className="conv-count">{conversations.length}</span>}</h3>
-          {loadingMessages ? (
-            <div className="conversations-skeleton">
-              {[1,2,3,4,5].map(i => <SkeletonMessage key={i} />)}
-            </div>
-          ) : conversations.length === 0 ? (
-            <div className="empty-conversations">
-              <span>💬</span>
-              <p>No conversations yet</p>
-              <small>Messages from inquiries will appear here</small>
-            </div>
-          ) : (
-            <div className="conversations-list">
-              {conversations.map((conv, index) => (
-                <div
-                  key={conv.userId || index}
-                  className={`conversation-item ${activeConv?.userId === conv.userId ? 'active' : ''} ${conv.unreadCount > 0 ? 'unread' : ''}`}
-                  onClick={() => openConversation(conv)}
-                >
-                  <img 
-                    src={conv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.userName || 'User')}&background=667eea&color=fff&size=40`} 
-                    alt={conv.userName} 
-                    className="conversation-avatar"
-                    onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=40`; }}
-                  />
-                  <div className="conversation-info">
-                    <div className="conversation-header">
-                      <strong>{conv.userName || 'Unknown User'}</strong>
-                      <span className="conversation-time">
-                        {new Date(conv.lastMessageTime).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <p className="conversation-preview">
-                      {conv.lastMessage?.substring(0, 45)}
-                      {conv.lastMessage?.length > 45 ? '...' : ''}
-                    </p>
-                  </div>
-                  {conv.unreadCount > 0 && (
-                    <span className="unread-badge">{conv.unreadCount}</span>
-                  )}
-                  <button 
-                    className="conv-delete-btn"
-                    onClick={(e) => confirmDeleteConversation(e, conv)}
-                    title="Delete conversation"
-                    aria-label="Delete conversation"
-                  >
-                    🗑️
-                  </button>
-                </div>
-              ))}
-            </div>
+    <div className="messenger-page">
+      {/* Sidebar */}
+      <div className={`messenger-sidebar ${mobileShowChat ? 'mobile-hidden' : ''}`}>
+        <div className="messenger-sidebar-header">
+          <h2>💬 Messages</h2>
+          {state.realtimeConnected && (
+            <span className="live-badge">🟢 Live</span>
           )}
         </div>
 
-        <div className="chat-area-wrapper">
-          {activeConv ? (
-            <>
-              <div className="chat-header">
-                <img 
-                  src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName || 'User')}&background=667eea&color=fff&size=40`} 
-                  alt={activeConv.userName} 
-                  className="chat-avatar"
-                />
-                <div className="chat-header-info">
-                  <strong>{activeConv.userName || 'Unknown User'}</strong>
-                  <p>{activeMessages.length} messages{state.realtimeConnected ? ' · Live' : ''}</p>
+        {loadingMessages ? (
+          <div className="conv-list">{[1,2,3,4].map(i => <SkeletonMessage key={i} />)}</div>
+        ) : conversations.length === 0 ? (
+          <div className="messenger-empty-sidebar">
+            <span>💬</span>
+            <p>No conversations yet</p>
+            <small>Messages from listing inquiries appear here</small>
+          </div>
+        ) : (
+          <div className="conv-list">
+            {conversations.map((conv, index) => (
+              <div
+                key={conv.userId || index}
+                className={`conv-item ${activeConv?.userId === conv.userId ? 'active' : ''} ${conv.unreadCount > 0 ? 'unread' : ''}`}
+                onClick={() => openConversation(conv)}
+              >
+                <div className="conv-avatar-wrap">
+                  <img
+                    src={conv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.userName || 'U')}&background=667eea&color=fff&size=48`}
+                    alt={conv.userName}
+                    className="conv-avatar"
+                    onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=48`; }}
+                  />
+                  <span className={`online-dot ${isOnline(conv.userId) ? 'online' : 'offline'}`}></span>
                 </div>
-                <button 
-                  className="btn-secondary btn-sm chat-delete-btn"
-                  onClick={() => { setConvToDelete(activeConv); setShowDeleteConfirm(true); }}
-                  title="Delete this conversation"
-                >
-                  🗑️ Delete
-                </button>
+                <div className="conv-info">
+                  <div className="conv-row1">
+                    <strong className="conv-name">{conv.userName || 'Unknown User'}</strong>
+                    <span className="conv-time">{formatMsgTime(conv.lastMessageTime)}</span>
+                  </div>
+                  <div className="conv-row2">
+                    <p className="conv-preview">{conv.lastMessage?.substring(0, 38)}{conv.lastMessage?.length > 38 ? '…' : ''}</p>
+                    {conv.unreadCount > 0 && <span className="conv-badge">{conv.unreadCount}</span>}
+                  </div>
+                </div>
+                <button
+                  className="conv-del-btn"
+                  onClick={(e) => confirmDeleteConversation(e, conv)}
+                  title="Delete"
+                >×</button>
               </div>
-              <div className="chat-messages-scrollable" ref={chatMessagesRef}>
-                {activeMessages.map((msg) => (
-                  <div 
-                    key={msg.id} 
-                    className={`chat-message ${msg.from_user === state.currentUser.id ? 'sent' : 'received'} ${msg._optimistic ? 'optimistic' : ''}`}
-                  >
-                    <div className="message-bubble">
-                      <p>{msg.message}</p>
-                      <small className="message-time">
-                        {new Date(msg.created_at).toLocaleString()}
-                        {msg.from_user === state.currentUser.id && (
-                          <span className="message-status">
-                            {msg._optimistic ? ' ⏳' : msg.read ? ' ✓✓' : ' ✓'}
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Chat Area */}
+      <div className={`messenger-chat ${mobileShowChat ? 'mobile-show' : ''}`}>
+        {activeConv ? (
+          <>
+            <div className="messenger-chat-header">
+              <button className="messenger-back-btn" onClick={() => { setMobileShowChat(false); }}>←</button>
+              <div className="messenger-chat-avatar-wrap">
+                <img
+                  src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName || 'U')}&background=667eea&color=fff&size=44`}
+                  alt={activeConv.userName}
+                  className="messenger-chat-avatar"
+                  onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=44`; }}
+                />
+                <span className={`online-dot ${isOnline(activeConv.userId) ? 'online' : 'offline'}`}></span>
+              </div>
+              <div className="messenger-chat-info">
+                <strong>{activeConv.userName || 'Unknown User'}</strong>
+                <p>{isOnline(activeConv.userId) ? '🟢 Active now' : '⚪ Offline'}</p>
+              </div>
+              <button
+                className="btn-secondary btn-sm"
+                onClick={() => { setConvToDelete(activeConv); setShowDeleteConfirm(true); }}
+                style={{ marginLeft: 'auto', fontSize: '0.75rem' }}
+              >
+                🗑️
+              </button>
+            </div>
+
+            <div className="messenger-messages" ref={chatMessagesRef}>
+              {activeMessages.map((msg, i) => {
+                const isMine = msg.from_user === state.currentUser.id;
+                const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
+                const isLast = isMine && i === activeMessages.length - 1;
+                return (
+                  <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
+                    {!isMine && (
+                      <img
+                        src={showAvatar ? (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`) : undefined}
+                        alt=""
+                        className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
+                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
+                      />
+                    )}
+                    <div className="msg-col">
+                      <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
+                        <p>{msg.message}</p>
+                      </div>
+                      <div className={`msg-meta ${isMine ? 'mine' : ''}`}>
+                        <span>{formatMsgTime(msg.created_at)}</span>
+                        {isMine && (
+                          <span className="msg-status">
+                            {msg._optimistic ? '🕐' : msg.read ? '✓✓' : '✓'}
                           </span>
                         )}
-                      </small>
+                        {isMine && isLast && msg.read && !msg._optimistic && (
+                          <span style={{ fontSize: '0.65rem', color: 'var(--primary)' }}>Seen</span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                ))}
-                <div ref={messagesEndRef} />
-              </div>
-              <div className="chat-input-area">
-                <textarea
-                  placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
-                  value={replyMessage}
-                  onChange={e => setReplyMessage(e.target.value)}
-                  className="chat-textarea"
-                  rows="2"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendReply();
-                    }
-                  }}
-                />
-                <button 
-                  className="btn-primary chat-send-btn" 
-                  onClick={handleSendReply} 
-                  disabled={sending || !replyMessage.trim()}
-                >
-                  {sending ? '⏳' : '📤 Send'}
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="chat-empty">
-              <span className="empty-icon">💬</span>
-              <h3>Select a conversation</h3>
-              <p>Choose a conversation from the sidebar to start chatting.</p>
-              {state.realtimeConnected && (
-                <p className="realtime-note">🟢 Connected — new messages arrive instantly!</p>
+                );
+              })}
+              {isTyping && (
+                <div className="msg-row theirs">
+                  <img
+                    src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`}
+                    alt=""
+                    className="msg-avatar"
+                    onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
+                  />
+                  <div className="msg-col">
+                    <div className="typing-bubble">
+                      <span className="typing-dot"></span>
+                      <span className="typing-dot"></span>
+                      <span className="typing-dot"></span>
+                    </div>
+                  </div>
+                </div>
               )}
+              <div ref={messagesEndRef} />
             </div>
-          )}
-        </div>
+
+            <div className="messenger-input-area">
+              <textarea
+                placeholder="Aa"
+                value={replyMessage}
+                onChange={e => { setReplyMessage(e.target.value); broadcastTyping(); }}
+                className="messenger-input"
+                rows="1"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendReply(); }
+                }}
+              />
+              <button
+                className="messenger-send-btn"
+                onClick={handleSendReply}
+                disabled={sending || !replyMessage.trim()}
+                title="Send"
+              >
+                {sending ? '⏳' : '➤'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="messenger-no-chat">
+            <div className="messenger-no-chat-inner">
+              <span>💬</span>
+              <h3>Your Messages</h3>
+              <p>Select a conversation to start chatting</p>
+              {state.realtimeConnected && <p className="live-note">🟢 Live — messages arrive instantly</p>}
+            </div>
+          </div>
+        )}
       </div>
 
       <ConfirmDialog
@@ -5369,6 +5465,110 @@ function Footer() {
 export default App;
 
 // ============================================
+// MEDIA UPLOAD ZONE — Drag & Drop + URL
+// ============================================
+function MediaUploadZone({ label, accept, currentUrl, onUrl, onFile }) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [urlMode, setUrlMode] = useState(false);
+  const [urlVal, setUrlVal] = useState(currentUrl || '');
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef();
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    await onFile(file);
+    setUploading(false);
+  };
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    await onFile(file);
+    setUploading(false);
+  };
+
+  const handleUrlSubmit = (e) => {
+    e.preventDefault();
+    onUrl(urlVal.trim());
+    setUrlMode(false);
+  };
+
+  const isImage = label.includes('📷');
+  const preview = currentUrl;
+
+  return (
+    <div className="media-upload-zone-wrapper">
+      {urlMode ? (
+        <div className="media-url-mode">
+          <input
+            type="url"
+            placeholder={isImage ? "Paste image URL..." : "Paste video/YouTube URL..."}
+            value={urlVal}
+            onChange={e => setUrlVal(e.target.value)}
+            className="compose-url-input"
+            autoFocus
+          />
+          <div className="media-url-actions">
+            <button className="btn-secondary btn-sm" onClick={() => setUrlMode(false)}>Cancel</button>
+            <button className="btn-primary btn-sm" onClick={handleUrlSubmit}>Use URL</button>
+          </div>
+        </div>
+      ) : (
+        <div
+          className={`media-dropzone ${isDragging ? 'dragging' : ''} ${preview ? 'has-media' : ''}`}
+          onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
+          onClick={() => !preview && fileRef.current?.click()}
+        >
+          <input
+            ref={fileRef}
+            type="file"
+            accept={accept}
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+          />
+          {uploading ? (
+            <div className="dropzone-uploading">
+              <div className="upload-spinner"></div>
+              <p>Uploading...</p>
+            </div>
+          ) : preview ? (
+            <div className="dropzone-preview">
+              {isImage ? (
+                <img src={preview} alt="Preview" onError={e => e.target.style.display='none'} />
+              ) : (
+                <div className="dropzone-video-thumb">🎥 Video attached</div>
+              )}
+              <button
+                className="dropzone-remove"
+                onClick={e => { e.stopPropagation(); onUrl(''); setUrlVal(''); }}
+                title="Remove"
+              >×</button>
+            </div>
+          ) : (
+            <div className="dropzone-empty">
+              <span className="dropzone-icon">{isImage ? '📷' : '🎥'}</span>
+              <p className="dropzone-label">{label}</p>
+              <p className="dropzone-hint">Drag & drop or click to upload</p>
+              <button
+                className="dropzone-url-btn"
+                onClick={e => { e.stopPropagation(); setUrlMode(true); }}
+              >🔗 Use URL instead</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
 // POSTS COMPONENT — Social Feed
 // ============================================
 function Posts() {
@@ -5506,19 +5706,43 @@ function Posts() {
             rows={4}
           />
           <div className="compose-media-inputs">
-            <input
-              type="url"
-              placeholder="📷 Image URL (paste a link to an image)"
-              value={newPost.imageUrl}
-              onChange={e => setNewPost({...newPost, imageUrl: e.target.value})}
-              className="compose-url-input"
+            <MediaUploadZone
+              label="📷 Image"
+              accept="image/*"
+              currentUrl={newPost.imageUrl}
+              onUrl={url => setNewPost({...newPost, imageUrl: url})}
+              onFile={async (file) => {
+                try {
+                  const ext = file.name.split('.').pop();
+                  const path = `posts/${Date.now()}.${ext}`;
+                  const { error } = await supabase.storage.from('post-media').upload(path, file, { upsert: true });
+                  if (!error) {
+                    const { data } = supabase.storage.from('post-media').getPublicUrl(path);
+                    setNewPost(p => ({...p, imageUrl: data.publicUrl}));
+                  }
+                } catch(e) {
+                  dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Image upload failed, try URL instead', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+                }
+              }}
             />
-            <input
-              type="url"
-              placeholder="🎥 Video URL (YouTube, Vimeo, or .mp4 link)"
-              value={newPost.videoUrl}
-              onChange={e => setNewPost({...newPost, videoUrl: e.target.value})}
-              className="compose-url-input"
+            <MediaUploadZone
+              label="🎥 Video"
+              accept="video/*"
+              currentUrl={newPost.videoUrl}
+              onUrl={url => setNewPost({...newPost, videoUrl: url})}
+              onFile={async (file) => {
+                try {
+                  const ext = file.name.split('.').pop();
+                  const path = `posts/${Date.now()}.${ext}`;
+                  const { error } = await supabase.storage.from('post-media').upload(path, file, { upsert: true });
+                  if (!error) {
+                    const { data } = supabase.storage.from('post-media').getPublicUrl(path);
+                    setNewPost(p => ({...p, videoUrl: data.publicUrl}));
+                  }
+                } catch(e) {
+                  dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Video upload failed, try URL instead', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+                }
+              }}
             />
           </div>
           {newPost.imageUrl && (
