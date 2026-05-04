@@ -120,6 +120,9 @@ function appReducer(state, action) {
       // Strip _force before storing so it doesn't pollute the notification object
       const { _force, ...notifData } = action.payload;
       const newNotif = { ...notifData, id: notifData.id || `n-${Date.now()}-${Math.random()}` };
+      // Deduplicate: if a notification with the same id already exists, skip
+      const alreadyExists = (state.notifications || []).some(n => n.id === newNotif.id);
+      if (alreadyExists) return state;
       return { ...state, notifications: [newNotif, ...(state.notifications || [])].slice(0, 50) };
     }
     case 'REMOVE_NOTIFICATION': 
@@ -676,7 +679,8 @@ function App() {
 
       if (msgsResult.data) {
         dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        await buildConversations(msgsResult.data, userId);
+        // Build conversations asynchronously — this fetches real profile names
+        buildConversations(msgsResult.data, userId);
       }
 
       if (favsResult.data) {
@@ -783,11 +787,14 @@ function App() {
         filter: `user_id=eq.${userId}`
       },
       (payload) => {
-        // ADD_NOTIFICATION reducer already checks notificationsEnabled,
-        // so this dispatch is safe — it will be ignored if notifications are OFF
+        const newNotif = payload.new;
+        // ADD_NOTIFICATION reducer already checks notificationsEnabled.
+        // Dispatch with the DB id so the deduplication in the reducer works.
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          ...payload.new,
-          read: false
+          ...newNotif,
+          id: newNotif.id,  // use real DB id for dedup
+          read: newNotif.read || false,
+          time: new Date(newNotif.created_at).toLocaleTimeString()
         }});
       }
     );
@@ -934,21 +941,23 @@ function App() {
     // Show the full splash loader only on the very first visit per session.
     // On subsequent page refreshes within the same session show a minimal spinner.
     if (!hasShownLoader) {
+      // Safety timeout: max 2.5s before we force-dismiss the loader
       const safetyTimeout = setTimeout(() => {
         if (mounted) {
           setIsInitialLoading(false);
           sessionStorage.setItem('devMarketLoaderShown', 'true');
           setHasShownLoader(true);
         }
-      }, 6000);
+      }, 2500);
 
       initialize().then(() => {
+        clearTimeout(safetyTimeout);
         if (mounted) {
           sessionStorage.setItem('devMarketLoaderShown', 'true');
           setHasShownLoader(true);
-          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 400);
+          // Small delay for smooth fade-out animation
+          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 200);
         }
-        clearTimeout(safetyTimeout);
       });
 
       return () => {
@@ -956,10 +965,12 @@ function App() {
         clearTimeout(safetyTimeout);
       };
     } else {
-      // Already seen the splash — init quickly with mini-spinner
+      // Already seen the splash — init quickly, no spinner shown to user
       initialize().then(() => {
         if (mounted) setIsInitialLoading(false);
       });
+      // Don't block the UI on repeated refreshes
+      setIsInitialLoading(false);
     }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -1049,14 +1060,9 @@ function App() {
   }
 
   if (isInitialLoading && hasShownLoader) {
-    return (
-      <div className="dm-mini-loader">
-        <div className="dm-mini-loader__inner">
-          <div className="dm-mini-loader__ring"></div>
-          <span>🚀</span>
-        </div>
-      </div>
-    );
+    // On repeat visits, don't block render — just show the app immediately
+    // The auth/data loads in the background via useEffect
+    return null;
   }
 
   return (
@@ -2886,34 +2892,49 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
+    const msgText = replyMessage.trim();
+    const senderName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
+    const senderAvatar = state.profile?.avatar_url || null;
+
     const optimisticMsg = {
       id: `temp-${Date.now()}`,
       from_user: state.currentUser.id,
       to_user: replyingTo.userId,
+      from_name: senderName,
+      from_avatar: senderAvatar,
+      to_name: replyingTo.userName,
+      to_avatar: replyingTo.userAvatar,
       subject: 'Re: Conversation',
-      message: replyMessage,
+      message: msgText,
       read: false,
       created_at: new Date().toISOString(),
       _optimistic: true
     };
 
-    // Optimistically update UI
+    setReplyMessage('');
+
+    // Optimistically update BOTH activeConversation AND conversations list
     if (activeConv) {
-      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+      const updatedConv = {
         ...activeConv,
         messages: [...(activeConv.messages || []), optimisticMsg],
-        lastMessage: replyMessage,
+        lastMessage: msgText,
         lastMessageTime: optimisticMsg.created_at
-      }});
+      };
+      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: updatedConv });
+      dispatch({ type: 'UPDATE_CONVERSATION', payload: { userId: replyingTo.userId, lastMessage: msgText, lastMessageTime: optimisticMsg.created_at } });
     }
-    setReplyMessage('');
 
     try {
       const msgData = {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
+        from_name: senderName,
+        from_avatar: senderAvatar,
+        to_name: replyingTo.userName,
+        to_avatar: replyingTo.userAvatar,
         subject: 'Re: Conversation',
-        message: optimisticMsg.message,
+        message: msgText,
         read: false,
         created_at: new Date().toISOString()
       };
@@ -2921,29 +2942,48 @@ function Messages() {
       const { data: insertedMsg, error } = await supabase.from('messages').insert([msgData]).select().single();
       
       if (!error && insertedMsg) {
-        // Replace optimistic message with real one in active conversation
+        // Replace optimistic message with real one
         if (activeConv) {
-          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+          const withReal = {
             ...activeConv,
             messages: [
               ...(activeConv.messages || []).filter(m => m.id !== optimisticMsg.id),
               insertedMsg
-            ],
+            ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
             lastMessage: insertedMsg.message,
             lastMessageTime: insertedMsg.created_at
-          }});
+          };
+          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: withReal });
         }
-        // Try to notify recipient (non-blocking)
+        // Non-blocking notification to recipient
         supabase.from('notifications').insert([{
           user_id: replyingTo.userId,
-          message: `💬 New message from ${state.profile?.name || state.currentUser.email?.split('@')[0] || 'User'}`,
+          message: `💬 New message from ${senderName}`,
           type: 'info',
           read: false,
           created_at: new Date().toISOString()
-        }]).then(() => {}).catch(() => {});
+        }]).catch(() => {});
+      } else if (error) {
+        // Rollback optimistic update on error
+        if (activeConv) {
+          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+            ...activeConv,
+            messages: (activeConv.messages || []).filter(m => m.id !== optimisticMsg.id)
+          }});
+        }
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: '❌ Failed to send message', type: 'error', 
+          time: new Date().toLocaleTimeString(), read: false 
+        }});
       }
     } catch (error) {
       console.error('Error sending reply:', error);
+      if (activeConv) {
+        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+          ...activeConv,
+          messages: (activeConv.messages || []).filter(m => m.id !== optimisticMsg.id)
+        }});
+      }
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: '❌ Failed to send message', type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
@@ -3628,9 +3668,16 @@ function UserProfile() {
 
   if (loading) return (
     <div className="profile-page">
-      <div className="loading-container">
-        <div className="loading-spinner-large"></div>
-        <p>Loading profile...</p>
+      <div className="profile-header-card" style={{ minHeight: 280 }}>
+        <div className="profile-cover"></div>
+        <div className="profile-header-inner">
+          <div className="skeleton" style={{ width: 100, height: 100, borderRadius: '50%', flexShrink: 0 }}></div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="skeleton" style={{ height: 22, width: '40%' }}></div>
+            <div className="skeleton" style={{ height: 14, width: '25%' }}></div>
+            <div className="skeleton" style={{ height: 14, width: '70%' }}></div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -3648,33 +3695,73 @@ function UserProfile() {
   const displayName = profile.name || 'Anonymous User';
   const avatarUrl = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`;
 
+  const roleIcon = profile.role === 'admin' ? '🛡️' 
+    : profile.role === 'developer' ? '👨‍💻' 
+    : profile.role === 'designer' ? '🎨' 
+    : profile.role === 'freelancer' ? '💼' 
+    : '👤';
+
+  const handleMessageUser = () => {
+    // Navigate to messages; the realtime conversation will appear once user sends from listing or via compose
+    navigate('/messages');
+  };
+
   return (
     <div className="profile-page">
       <div className="profile-header-card">
-        <div className="profile-cover"></div>
+        <div className="profile-cover" style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 50%, #10b981 100%)' }}></div>
         <div className="profile-header-inner">
           <div className="avatar-container-static">
-            <img src={avatarUrl} alt={displayName} className="avatar-large" />
+            <img 
+              src={avatarUrl} 
+              alt={displayName} 
+              className="avatar-large" 
+              onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`; }}
+            />
+            {profile.privacy_online !== false && (
+              <span className="avatar-online-ring" title="May be online"></span>
+            )}
           </div>
           <div className="profile-info">
-            <h1>
-              {displayName}
-              {profile.verified && (
-                <span className="verified-badge" title="Verified Account">✓</span>
-              )}
-            </h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <h1 style={{ margin: 0 }}>
+                {displayName}
+                {profile.verified && (
+                  <span className="verified-badge" title="Verified Account"> ✓</span>
+                )}
+              </h1>
+            </div>
             {profile.role && (
-              <span className="profile-role-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
-                {profile.role === 'admin' ? '🛡️' : profile.role === 'developer' ? '👨‍💻' : profile.role === 'banned' ? '🚫' : '👤'} {profile.role}
+              <span className="profile-role-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4, marginBottom: 8 }}>
+                {roleIcon} {profile.role}
               </span>
             )}
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
-                <a href={profile.website} target="_blank" rel="noopener noreferrer" className="profile-link">🌐 Website</a>
+                <a href={profile.website.startsWith('http') ? profile.website : `https://${profile.website}`} target="_blank" rel="noopener noreferrer" className="profile-link">
+                  🌐 Website
+                </a>
               )}
               {profile.github && (
-                <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">⚡ GitHub</a>
+                <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">
+                  ⚡ GitHub
+                </a>
+              )}
+              {profile.twitter && (
+                <a href={`https://twitter.com/${profile.twitter.replace('@', '')}`} target="_blank" rel="noopener noreferrer" className="profile-link">
+                  𝕏 Twitter
+                </a>
+              )}
+              {profile.linkedin && (
+                <a href={`https://linkedin.com/in/${profile.linkedin}`} target="_blank" rel="noopener noreferrer" className="profile-link">
+                  💼 LinkedIn
+                </a>
+              )}
+              {profile.privacy_show_email && profile.email && (
+                <a href={`mailto:${profile.email}`} className="profile-link">
+                  📧 Email
+                </a>
               )}
             </div>
           </div>
@@ -3688,12 +3775,14 @@ function UserProfile() {
                 >
                   {followLoading ? '...' : isFollowing ? '✓ Following' : '+ Follow'}
                 </button>
-                <button
-                  className="btn-secondary"
-                  onClick={() => navigate('/messages')}
-                >
-                  💬 Message
-                </button>
+                {profile.privacy_allow_messages !== false && (
+                  <button
+                    className="btn-secondary"
+                    onClick={handleMessageUser}
+                  >
+                    💬 Message
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -3702,6 +3791,10 @@ function UserProfile() {
           <div className="stat-box">
             <h3>{userPosts.listings.length}</h3>
             <p>Listings</p>
+          </div>
+          <div className="stat-box">
+            <h3>{userPosts.apps.length}</h3>
+            <p>Apps</p>
           </div>
           <div className="stat-box">
             <h3>{userPosts.snippets.length}</h3>
@@ -5919,6 +6012,15 @@ function Settings() {
                 <p style={{ marginTop: '16px', color: 'var(--gray-500)' }}>
                   Current theme: <strong>{state.theme === 'light' ? '☀️ Light' : '🌙 Dark'}</strong>
                 </p>
+
+                {/* ── PWA Install Section ── */}
+                <div style={{ marginTop: 32 }}>
+                  <h4 style={{ marginBottom: 4 }}>📲 Install App</h4>
+                  <p style={{ color: 'var(--gray-500)', fontSize: '0.88rem', marginBottom: 16 }}>
+                    Install DevMarket as a standalone app on your device for the best experience — faster load, offline access, and no browser chrome.
+                  </p>
+                  <PWAInstallWidget />
+                </div>
               </div>
             )}
 
@@ -6242,6 +6344,84 @@ function AdminAnnouncementsTab({ dispatch, state }) {
 }
 
 // ============================================
+// PWA INSTALL WIDGET — in-page install card
+// ============================================
+function PWAInstallWidget() {
+  const { canInstall, install } = usePWAInstall();
+  const [installing, setInstalling] = useState(false);
+  const [installed, setInstalled] = useState(
+    typeof window !== 'undefined' && window.matchMedia('(display-mode: standalone)').matches
+  );
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  const showIOSGuide = isIOS && isSafari && !installed;
+
+  const handleInstall = async () => {
+    setInstalling(true);
+    await install();
+    setInstalling(false);
+    setInstalled(true);
+  };
+
+  if (installed) {
+    return (
+      <div className="pwa-install-widget installed">
+        <span className="pwa-widget-icon">✅</span>
+        <div>
+          <strong>DevMarket is installed!</strong>
+          <p style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>Open it from your home screen or app drawer.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (showIOSGuide) {
+    return (
+      <div className="pwa-install-widget ios-guide">
+        <span className="pwa-widget-icon">🍎</span>
+        <div>
+          <strong>Add to Home Screen (iOS)</strong>
+          <ol style={{ marginTop: 8, paddingLeft: 18, fontSize: '0.88rem', lineHeight: 1.8, color: 'var(--gray-600)' }}>
+            <li>Tap the <strong>Share</strong> button <span style={{ fontFamily: 'monospace' }}>⎋</span> at the bottom of Safari</li>
+            <li>Scroll down and tap <strong>"Add to Home Screen"</strong></li>
+            <li>Tap <strong>"Add"</strong> in the top-right corner</li>
+          </ol>
+        </div>
+      </div>
+    );
+  }
+
+  if (canInstall) {
+    return (
+      <div className="pwa-install-widget">
+        <span className="pwa-widget-icon">🚀</span>
+        <div style={{ flex: 1 }}>
+          <strong>Install DevMarket App</strong>
+          <p style={{ color: 'var(--gray-500)', fontSize: '0.85rem', marginTop: 2 }}>
+            Faster loads, offline access, native app experience.
+          </p>
+        </div>
+        <button className="btn-primary" onClick={handleInstall} disabled={installing} style={{ flexShrink: 0 }}>
+          {installing ? '⏳ Installing...' : '📲 Install Now'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pwa-install-widget muted">
+      <span className="pwa-widget-icon">📱</span>
+      <div>
+        <strong>Install not available</strong>
+        <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>
+          Your browser may not support installation, or the app is already installed. Try Chrome or Edge on Android/Desktop.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
 // FOOTER COMPONENT
 // ============================================
 function Footer() {
@@ -6273,28 +6453,46 @@ function Footer() {
 }
 
 // ============================================
-// FLOATING PWA INSTALL BUTTON
+// FLOATING PWA INSTALL BUTTON — enhanced
 // ============================================
 function FloatingPWAButton() {
   const { canInstall, install } = usePWAInstall();
   const [dismissed, setDismissed] = useState(() => {
     try { return localStorage.getItem('pwaDismissed') === '1'; } catch(e) { return false; }
   });
+  const [installing, setInstalling] = useState(false);
 
   if (!canInstall || dismissed) return null;
 
+  const handleInstall = async () => {
+    setInstalling(true);
+    await install();
+    setInstalling(false);
+  };
+
   return (
-    <div className="pwa-float-banner">
+    <div className="pwa-float-banner" role="banner" aria-label="Install DevMarket app">
       <div className="pwa-float-content">
-        <span className="pwa-float-icon">📲</span>
+        <div className="pwa-float-icon-wrap">
+          <span className="pwa-float-icon">🚀</span>
+        </div>
         <div className="pwa-float-text">
-          <strong>Install DevMarket</strong>
-          <p>Add to your home screen for the best experience</p>
+          <strong>Add DevMarket to Home Screen</strong>
+          <p>Install for faster access & offline support</p>
         </div>
       </div>
       <div className="pwa-float-actions">
-        <button className="pwa-float-install" onClick={install}>Install</button>
-        <button className="pwa-float-dismiss" onClick={() => { setDismissed(true); try { localStorage.setItem('pwaDismissed', '1'); } catch(e) {} }}>✕</button>
+        <button className="pwa-float-install" onClick={handleInstall} disabled={installing}>
+          {installing ? '⏳' : '📲 Install'}
+        </button>
+        <button 
+          className="pwa-float-dismiss" 
+          onClick={() => { 
+            setDismissed(true); 
+            try { localStorage.setItem('pwaDismissed', '1'); } catch(e) {} 
+          }}
+          aria-label="Dismiss install prompt"
+        >✕</button>
       </div>
     </div>
   );
