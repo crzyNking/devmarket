@@ -44,9 +44,8 @@ const initialState = {
   activeConversation: null,
   favorites: [],
   searchHistory: [],
-  follows: [],        // users the current user follows
-  followers: [],      // users who follow the current user
-  activityFeed: [],
+  follows: [],
+  followers: [],
   theme: 'light',
   authError: null,
   loading: true,
@@ -56,7 +55,9 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: getPersistedNotificationsEnabled()
+  notificationsEnabled: getPersistedNotificationsEnabled(),
+  announcement: null,
+  maintenanceMode: false,
 };
 
 function appReducer(state, action) {
@@ -134,28 +135,43 @@ function appReducer(state, action) {
           c.userId === action.payload.userId ? { ...c, ...action.payload } : c
         )
       };
-    case 'ADD_CONVERSATION_MESSAGE':
+    case 'ADD_CONVERSATION_MESSAGE': {
+      const { otherUserId, message: newMsg } = action.payload;
+      const existingConv = (state.conversations || []).find(c => c.userId === otherUserId);
+      if (existingConv) {
+        // Deduplicate: skip if message id already exists in this conversation
+        const alreadyExists = existingConv.messages.some(m => m.id === newMsg.id);
+        if (alreadyExists) return state;
+        return {
+          ...state,
+          conversations: (state.conversations || []).map(c =>
+            c.userId === otherUserId
+              ? {
+                  ...c,
+                  messages: [...c.messages, newMsg],
+                  lastMessage: newMsg.message,
+                  lastMessageTime: newMsg.created_at,
+                  unreadCount: newMsg.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
+                }
+              : c
+          )
+        };
+      }
+      // New sender: create a new conversation entry
+      const newConv = {
+        userId: otherUserId,
+        userName: newMsg.from_name || 'Unknown User',
+        userAvatar: newMsg.from_avatar || null,
+        lastMessage: newMsg.message,
+        lastMessageTime: newMsg.created_at,
+        unreadCount: newMsg.to_user === state.currentUser?.id ? 1 : 0,
+        messages: [newMsg]
+      };
       return {
         ...state,
-        conversations: (state.conversations || []).map(c => {
-          if (c.userId === action.payload.otherUserId) {
-            return {
-              ...c,
-              // Update name/avatar if we now have better data
-              userName: c.userName && c.userName !== 'User' ? c.userName : (action.payload.message.from_name || c.userName),
-              userAvatar: c.userAvatar || action.payload.message.from_avatar || c.userAvatar,
-              messages: [...c.messages, action.payload.message],
-              lastMessage: action.payload.message.message,
-              lastMessageTime: action.payload.message.created_at,
-              unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
-            };
-          }
-          if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
-            return c;
-          }
-          return c;
-        })
+        conversations: [newConv, ...(state.conversations || [])]
       };
+    }
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversation: action.payload };
     case 'MARK_CONVERSATION_READ':
@@ -198,12 +214,18 @@ function appReducer(state, action) {
     case 'SET_MODERATION_QUEUE':
       return { ...state, moderationQueue: action.payload || [] };
     case 'LOGOUT': 
-      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], follows: [], followers: [], activityFeed: [], isAdmin: false };
+      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], follows: [], followers: [], isAdmin: false, announcement: null };
     case 'TOGGLE_THEME': {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
       return { ...state, theme: newTheme };
     }
+    case 'SET_ANNOUNCEMENT':
+      return { ...state, announcement: action.payload };
+    case 'CLEAR_ANNOUNCEMENT':
+      return { ...state, announcement: null };
+    case 'SET_MAINTENANCE_MODE':
+      return { ...state, maintenanceMode: action.payload };
     default: 
       return state;
   }
@@ -648,7 +670,7 @@ function App() {
 
       if (msgsResult.data) {
         dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        buildConversations(msgsResult.data, userId);
+        await buildConversations(msgsResult.data, userId);
       }
 
       if (favsResult.data) {
@@ -696,48 +718,29 @@ function App() {
         table: 'messages',
         filter: `to_user=eq.${userId}`
       },
-      async (payload) => {
+      (payload) => {
         const newMsg = payload.new;
         console.log('📨 New real-time message:', newMsg);
         
         dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
         
         const otherUserId = newMsg.from_user;
-        let otherUserName = newMsg.from_name;
-        let otherUserAvatar = newMsg.from_avatar;
-
-        // If name/avatar not stored in message, fetch from profiles
-        if (!otherUserName || !otherUserAvatar) {
-          try {
-            const { data: senderProfile } = await supabase
-              .from('profiles')
-              .select('name, avatar_url')
-              .eq('id', otherUserId)
-              .single();
-            if (senderProfile) {
-              otherUserName = otherUserName || senderProfile.name || 'User';
-              otherUserAvatar = otherUserAvatar || senderProfile.avatar_url || null;
-            }
-          } catch(e) {}
-        }
-
-        otherUserName = otherUserName || 'User';
+        const otherUserName = newMsg.from_name || 'User';
         
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
           payload: {
             otherUserId,
-            message: { ...newMsg, from_name: otherUserName, from_avatar: otherUserAvatar }
+            message: newMsg
           }
         });
         
         // Only notify if the conversation is NOT currently open (not being read)
-        const currentState = (() => { try { return null; } catch(e) { return null; } })();
-        // We use a workaround: check via sessionStorage flag set by Messages component
-        const activeConvId = sessionStorage.getItem('activeConversationId');
+        // Use window flag set by Messages component to track active conversation
+        const activeConvId = window.__activeConversationId || null;
         const isConversationOpen = activeConvId === otherUserId;
         
-        if (!isConversationOpen && getPersistedNotificationsEnabled()) {
+        if (!isConversationOpen) {
           dispatch({ type: 'ADD_NOTIFICATION', payload: {
             message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
             type: 'info',
@@ -758,9 +761,6 @@ function App() {
       },
       (payload) => {
         console.log('🔔 New real-time notification:', payload.new);
-        // Check persisted preference — getPersistedNotificationsEnabled reads localStorage
-        const notifEnabled = getPersistedNotificationsEnabled();
-        if (!notifEnabled) return;
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
           ...payload.new,
           read: false
@@ -776,14 +776,33 @@ function App() {
         table: 'listings'
       },
       (payload) => {
+        // Targeted update — no full refetch needed
         if (payload.eventType === 'INSERT') {
           dispatch({ type: 'ADD_LISTING', payload: payload.new });
         } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_LISTING', payload: payload.old.id });
+          dispatch({ type: 'DELETE_LISTING', payload: payload.old?.id });
         } else if (payload.eventType === 'UPDATE') {
           dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
         }
-        loadPublicData();
+      }
+    );
+
+    // Also subscribe to messages SENT by this user so sender sees real-time confirmation
+    realtimeManager.subscribe(
+      `messages-sent-${userId}`,
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `from_user=eq.${userId}`
+      },
+      (payload) => {
+        const sentMsg = payload.new;
+        // Deduplicate: ignore optimistic messages we already have locally
+        dispatch({
+          type: 'ADD_CONVERSATION_MESSAGE',
+          payload: { otherUserId: sentMsg.to_user, message: sentMsg }
+        });
       }
     );
 
@@ -801,8 +820,8 @@ function App() {
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: otherUserName || null, // will be enriched below
-          userAvatar: otherUserAvatar || null,
+          userName: otherUserName || 'Unknown User',
+          userAvatar: otherUserAvatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
           unreadCount: 0,
@@ -823,40 +842,7 @@ function App() {
       }
     });
     
-    // Enrich conversations with real profile data for any user whose name is missing
-    const convArray = Array.from(conversationMap.values());
-    const missingProfileIds = convArray
-      .filter(c => !c.userName || !c.userAvatar)
-      .map(c => c.userId)
-      .filter(Boolean);
-
-    if (missingProfileIds.length > 0) {
-      try {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, name, avatar_url')
-          .in('id', missingProfileIds);
-
-        if (profiles) {
-          const profileMap = {};
-          profiles.forEach(p => { profileMap[p.id] = p; });
-          convArray.forEach(conv => {
-            const p = profileMap[conv.userId];
-            if (p) {
-              conv.userName = conv.userName || p.name || p.id?.slice(0, 8) || 'User';
-              conv.userAvatar = conv.userAvatar || p.avatar_url || null;
-            } else if (!conv.userName) {
-              conv.userName = 'User';
-            }
-          });
-        }
-      } catch(e) {
-        // Fallback: just use what we have
-        convArray.forEach(conv => { if (!conv.userName) conv.userName = 'User'; });
-      }
-    }
-
-    const conversations = convArray
+    const conversations = Array.from(conversationMap.values())
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     
     dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
@@ -941,6 +927,39 @@ function App() {
     dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
   }, []);
 
+  // Load announcement/maintenance from platform_settings table
+  // Placed BEFORE early returns to comply with React Rules of Hooks
+  useEffect(() => {
+    const fetchPlatformSettings = async () => {
+      try {
+        const { data } = await supabase.from('platform_settings').select('*').eq('id', 'main').maybeSingle();
+        if (data) {
+          if (data.maintenance_mode) dispatch({ type: 'SET_MAINTENANCE_MODE', payload: true });
+          if (data.announcement_message) {
+            dispatch({ type: 'SET_ANNOUNCEMENT', payload: { message: data.announcement_message, type: data.announcement_type || 'info', id: data.id } });
+          }
+        }
+      } catch(e) { /* table may not exist */ }
+    };
+    fetchPlatformSettings();
+
+    // Subscribe to real-time platform_settings changes
+    const chan = supabase.channel('platform-settings-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'platform_settings' }, (payload) => {
+        const d = payload.new;
+        if (d) {
+          dispatch({ type: 'SET_MAINTENANCE_MODE', payload: !!d.maintenance_mode });
+          if (d.announcement_message) {
+            dispatch({ type: 'SET_ANNOUNCEMENT', payload: { message: d.announcement_message, type: d.announcement_type || 'info', id: Date.now() } });
+          } else {
+            dispatch({ type: 'CLEAR_ANNOUNCEMENT' });
+          }
+        }
+      })
+      .subscribe();
+    return () => supabase.removeChannel(chan);
+  }, []);
+
   if (isInitialLoading && !hasShownLoader) {
     return (
       <div className="dm-loader">
@@ -982,8 +1001,17 @@ function App() {
               <Toast key={n.id} notification={n} onClose={removeNotification} />
             ))}
           </div>
+          {state.announcement && (
+            <AnnouncementBanner
+              announcement={state.announcement}
+              onClose={() => dispatch({ type: 'CLEAR_ANNOUNCEMENT' })}
+            />
+          )}
           <Header />
           <main className="main-content">
+            {state.maintenanceMode && !state.isAdmin ? (
+              <MaintenancePage />
+            ) : (
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/marketplace" element={<Marketplace />} />
@@ -993,14 +1021,15 @@ function App() {
               <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
               <Route path="/profile/:userId" element={<UserProfile />} />
-              <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
               <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
             </Routes>
+            )}
           </main>
           <Footer />
+          <FloatingPWAButton />
         </div>
       </Router>
     </AppContext.Provider>
@@ -1039,6 +1068,50 @@ function Toast({ notification, onClose }) {
     </div>
   );
 }
+
+// ============================================
+// ANNOUNCEMENT BANNER
+// ============================================
+function AnnouncementBanner({ announcement, onClose }) {
+  const colorMap = {
+    info: { bg: '#dbeafe', border: '#3b82f6', text: '#1e40af', icon: 'ℹ️' },
+    success: { bg: '#d1fae5', border: '#10b981', text: '#065f46', icon: '✅' },
+    warning: { bg: '#fef3c7', border: '#f59e0b', text: '#92400e', icon: '⚠️' },
+    error: { bg: '#fee2e2', border: '#ef4444', text: '#991b1b', icon: '🚨' },
+  };
+  const c = colorMap[announcement.type] || colorMap.info;
+  return (
+    <div className="announcement-banner" style={{ background: c.bg, borderBottom: `2px solid ${c.border}`, color: c.text }}>
+      <div className="announcement-inner">
+        <span className="announcement-icon">{c.icon}</span>
+        <p className="announcement-text">{announcement.message}</p>
+        <button className="announcement-close" onClick={onClose} title="Dismiss" style={{ color: c.text }}>×</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// MAINTENANCE PAGE
+// ============================================
+function MaintenancePage() {
+  return (
+    <div className="maintenance-page">
+      <div className="maintenance-card">
+        <div className="maintenance-icon">🔧</div>
+        <h1>Under Maintenance</h1>
+        <p>We're making improvements to DevMarket. We'll be back shortly!</p>
+        <div className="maintenance-spinner">
+          <div className="spinner-ring"></div>
+          <div className="spinner-ring delay1"></div>
+          <div className="spinner-ring delay2"></div>
+        </div>
+        <p className="maintenance-hint">Thank you for your patience.</p>
+      </div>
+    </div>
+  );
+}
+
 
 // ============================================
 // CONFIRMATION DIALOG
@@ -1197,9 +1270,6 @@ function Header() {
               <>
                 <Link to="/favorites" className={`nav-link ${location.pathname === '/favorites' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">⭐</span> Favorites
-                </Link>
-                <Link to="/activity" className={`nav-link ${location.pathname === '/activity' ? 'active' : ''}`} onClick={closeAll}>
-                  <span className="nav-icon">📣</span> Activity
                 </Link>
                 <Link to="/messages" className={`nav-link ${location.pathname === '/messages' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">💬</span> Messages
@@ -1375,20 +1445,28 @@ function Header() {
 // MOBILE BOTTOM NAVIGATION
 // ============================================
 function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
-  const navItems = [
+  // Logged-in nav items
+  const loggedInItems = [
+    { to: '/', icon: '🏠', label: 'Home' },
+    { to: '/marketplace', icon: '🛒', label: 'Market' },
+    { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
+    { to: '/posts', icon: '📝', label: 'Posts' },
+    { to: '/favorites', icon: '⭐', label: 'Favorites' },
+  ];
+
+  // Logged-out nav items — clean equal-width layout
+  const loggedOutItems = [
     { to: '/', icon: '🏠', label: 'Home' },
     { to: '/marketplace', icon: '🛒', label: 'Market' },
     { to: '/advertise', icon: '📱', label: 'Advertise' },
     { to: '/code-sharing', icon: '💻', label: 'Code' },
     { to: '/posts', icon: '📝', label: 'Posts' },
-    ...(currentUser ? [
-      { to: '/activity', icon: '📣', label: 'Activity' },
-      { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
-    ] : []),
   ];
 
+  const navItems = currentUser ? loggedInItems : loggedOutItems;
+
   return (
-    <nav className="mobile-bottom-nav">
+    <nav className={`mobile-bottom-nav ${!currentUser ? 'mobile-bottom-nav--guest' : ''}`}>
       {navItems.map(item => (
         <Link
           key={item.to}
@@ -2047,7 +2125,6 @@ function AdminDashboard() {
               { key: 'autoApprove', label: 'Auto-Approve Listings', desc: 'New listings are automatically published without review' },
               { key: 'requireEmailVerification', label: 'Require Email Verification', desc: 'Users must verify email before posting content' },
               { key: 'allowMessages', label: 'Allow Direct Messages', desc: 'Enable users to message each other through the platform' },
-              { key: 'maintenanceMode', label: 'Maintenance Mode', desc: 'Temporarily disable public access for maintenance' }
             ].map(({ key, label, desc }) => (
               <div className="setting-item" key={key}>
                 <div className="setting-info">
@@ -2064,6 +2141,9 @@ function AdminDashboard() {
                 </label>
               </div>
             ))}
+            <p style={{fontSize:'0.8rem',color:'var(--gray-400)',marginTop:4}}>
+              💡 Maintenance Mode & Announcements are managed in the <strong>Announcements</strong> tab.
+            </p>
             <button 
               className="btn-primary" 
               onClick={handleSaveSettings}
@@ -2228,27 +2308,6 @@ function Messages() {
     return () => { if (presenceChannelRef.current) supabase.removeChannel(presenceChannelRef.current); };
   }, [state.currentUser]);
 
-  // Refresh conversations on mount to ensure names/avatars are up-to-date
-  useEffect(() => {
-    if (!state.currentUser) return;
-    const refreshConversations = async () => {
-      setLoadingMessages(true);
-      try {
-        const { data: msgsResult } = await supabase
-          .from('messages')
-          .select('*')
-          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
-          .order('created_at', { ascending: false });
-        if (msgsResult) {
-          dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
-          await buildConversationsLocal(msgsResult, state.currentUser.id);
-        }
-      } catch (e) {}
-      setLoadingMessages(false);
-    };
-    refreshConversations();
-  }, [state.currentUser?.id]); // eslint-disable-line
-
   // Typing indicator subscription for active conversation
   useEffect(() => {
     if (!state.activeConversation || !state.currentUser) return;
@@ -2349,36 +2408,32 @@ function Messages() {
         subject: 'Re: Conversation',
         message: optimisticMsg.message,
         read: false,
-        created_at: new Date().toISOString(),
-        // Store sender identity so recipient can show real name/avatar
-        from_name: state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User',
-        from_avatar: state.profile?.avatar_url || null,
+        created_at: new Date().toISOString()
       };
 
-      const { error } = await supabase.from('messages').insert([msgData]);
+      const { data: insertedMsg, error } = await supabase.from('messages').insert([msgData]).select().single();
       
-      if (!error) {
-        try {
-          await supabase.from('notifications').insert([{
-            user_id: replyingTo.userId,
-            message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
-            type: 'info',
-            read: false,
-            created_at: new Date().toISOString()
-          }]);
-        } catch (notifError) {}
-        
-        // Refresh messages
-        const { data: msgsResult } = await supabase
-          .from('messages')
-          .select('*')
-          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
-          .order('created_at', { ascending: false });
-        
-        if (msgsResult) {
-          dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
-          buildConversationsLocal(msgsResult, state.currentUser.id);
+      if (!error && insertedMsg) {
+        // Replace optimistic message with real one in active conversation
+        if (activeConv) {
+          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+            ...activeConv,
+            messages: [
+              ...(activeConv.messages || []).filter(m => m.id !== optimisticMsg.id),
+              insertedMsg
+            ],
+            lastMessage: insertedMsg.message,
+            lastMessageTime: insertedMsg.created_at
+          }});
         }
+        // Try to notify recipient (non-blocking)
+        supabase.from('notifications').insert([{
+          user_id: replyingTo.userId,
+          message: `💬 New message from ${state.profile?.name || state.currentUser.email?.split('@')[0] || 'User'}`,
+          type: 'info',
+          read: false,
+          created_at: new Date().toISOString()
+        }]).then(() => {}).catch(() => {});
       }
     } catch (error) {
       console.error('Error sending reply:', error);
@@ -2426,14 +2481,14 @@ function Messages() {
     setConvToDelete(null);
   };
 
-  const buildConversationsLocal = async (messages, userId) => {
+  const buildConversationsLocal = (messages, userId) => {
     const conversationMap = new Map();
     messages.forEach(msg => {
       const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || null,
+          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'Unknown User',
           userAvatar: msg.from_user === userId ? msg.to_avatar : msg.from_avatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
@@ -2449,36 +2504,7 @@ function Messages() {
         conv.lastMessageTime = msg.created_at;
       }
     });
-
-    const convArray = Array.from(conversationMap.values());
-
-    // Enrich missing names/avatars from profiles
-    const missingIds = convArray.filter(c => !c.userName || !c.userAvatar).map(c => c.userId).filter(Boolean);
-    if (missingIds.length > 0) {
-      try {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, name, avatar_url')
-          .in('id', missingIds);
-        if (profiles) {
-          const pm = {};
-          profiles.forEach(p => { pm[p.id] = p; });
-          convArray.forEach(conv => {
-            const p = pm[conv.userId];
-            if (p) {
-              conv.userName = conv.userName || p.name || 'User';
-              conv.userAvatar = conv.userAvatar || p.avatar_url || null;
-            } else if (!conv.userName) {
-              conv.userName = 'User';
-            }
-          });
-        }
-      } catch(e) {
-        convArray.forEach(conv => { if (!conv.userName) conv.userName = 'User'; });
-      }
-    }
-
-    const convs = convArray
+    const convs = Array.from(conversationMap.values())
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     dispatch({ type: 'SET_CONVERSATIONS', payload: convs });
     // Update active conversation if open
@@ -2493,7 +2519,7 @@ function Messages() {
     setReplyingTo(conv);
     setMobileShowChat(true);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
-    sessionStorage.setItem('activeConversationId', conv.userId);
+    window.__activeConversationId = conv.userId; // used by realtime handler to suppress notifications
     
     conv.messages.forEach(async (msg) => {
       if (!msg.read && msg.to_user === state.currentUser.id) {
@@ -2530,32 +2556,9 @@ function Messages() {
       <div className={`messenger-sidebar ${mobileShowChat ? 'mobile-hidden' : ''}`}>
         <div className="messenger-sidebar-header">
           <h2>💬 Messages</h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {state.realtimeConnected && (
-              <span className="live-badge">🟢 Live</span>
-            )}
-            <button
-              title="Refresh conversations"
-              onClick={async () => {
-                setLoadingMessages(true);
-                try {
-                  const { data: msgsResult } = await supabase
-                    .from('messages')
-                    .select('*')
-                    .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
-                    .order('created_at', { ascending: false });
-                  if (msgsResult) {
-                    dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
-                    await buildConversationsLocal(msgsResult, state.currentUser.id);
-                  }
-                } catch(e) {}
-                setLoadingMessages(false);
-              }}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: 'var(--gray-500)', padding: '4px', borderRadius: 'var(--radius-sm)' }}
-            >
-              🔄
-            </button>
-          </div>
+          {state.realtimeConnected && (
+            <span className="live-badge">🟢 Live</span>
+          )}
         </div>
 
         {loadingMessages ? (
@@ -2585,7 +2588,7 @@ function Messages() {
                 </div>
                 <div className="conv-info">
                   <div className="conv-row1">
-                    <strong className="conv-name">{conv.userName && conv.userName !== 'Unknown User' ? conv.userName : (conv.userId ? `User ${conv.userId.slice(0, 6)}` : 'User')}</strong>
+                    <strong className="conv-name">{conv.userName || 'Unknown User'}</strong>
                     <span className="conv-time">{formatMsgTime(conv.lastMessageTime)}</span>
                   </div>
                   <div className="conv-row2">
@@ -2620,7 +2623,7 @@ function Messages() {
                 <span className={`online-dot ${isOnline(activeConv.userId) ? 'online' : 'offline'}`}></span>
               </div>
               <div className="messenger-chat-info">
-                <strong>{activeConv.userName && activeConv.userName !== 'Unknown User' ? activeConv.userName : (activeConv.userId ? `User ${activeConv.userId.slice(0, 6)}` : 'User')}</strong>
+                <strong>{activeConv.userName || 'Unknown User'}</strong>
                 <p>{isOnline(activeConv.userId) ? '🟢 Active now' : '⚪ Offline'}</p>
               </div>
               <button
@@ -3237,272 +3240,6 @@ function UserProfile() {
 // ============================================
 // ACTIVITY FEED COMPONENT
 // ============================================
-function ActivityFeed() {
-  const { state, dispatch } = useAppContext();
-  const navigate = useNavigate();
-  const [activities, setActivities] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('all');
-
-  useEffect(() => {
-    if (state.currentUser) loadActivities();
-  }, [state.currentUser]);
-
-  const loadActivities = async () => {
-    setLoading(true);
-    try {
-      // Build activity from local state (listings, snippets, etc.)
-      const localActivities = [];
-      
-      // Recent listings
-      (state.listings || []).slice(0, 20).forEach(l => {
-        localActivities.push({
-          id: `listing-${l.id}`,
-          type: 'listing',
-          icon: '🛒',
-          user: l.seller || l.seller_name || 'Someone',
-          userId: l.user_id,
-          userAvatar: l.sellerAvatar || l.seller_avatar,
-          action: 'posted a new listing',
-          target: l.title,
-          targetId: l.id,
-          time: l.created_at || l.date,
-          likes: 0,
-          comments: [],
-          likedBy: []
-        });
-      });
-
-      // Recent snippets with likes
-      (state.codeSnippets || []).slice(0, 20).forEach(s => {
-        localActivities.push({
-          id: `snippet-${s.id}`,
-          type: 'snippet',
-          icon: '💻',
-          user: s.author || s.author_name || 'Someone',
-          userId: s.user_id,
-          userAvatar: s.authorAvatar || s.author_avatar,
-          action: 'shared a code snippet',
-          target: s.title,
-          targetId: s.id,
-          time: s.created_at || s.date,
-          likes: s.likes || 0,
-          comments: [],
-          likedBy: s.likedBy || []
-        });
-      });
-
-      // Try to load from DB activities table
-      try {
-        const { data: dbActivities } = await supabase
-          .from('activities')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(30);
-        
-        if (dbActivities && dbActivities.length > 0) {
-          dbActivities.forEach(a => {
-            localActivities.unshift({
-              id: `act-${a.id}`,
-              type: a.type,
-              icon: a.type === 'follow' ? '👤' : a.type === 'like' ? '❤️' : a.type === 'comment' ? '💬' : '📣',
-              user: a.user_name || 'User',
-              userId: a.user_id,
-              action: a.message || 'did something',
-              target: a.target || '',
-              time: a.created_at,
-              likes: 0,
-              comments: [],
-              likedBy: []
-            });
-          });
-        }
-      } catch(e) { /* activities table may not exist */ }
-
-      // Sort by time
-      localActivities.sort((a, b) => new Date(b.time) - new Date(a.time));
-      setActivities(localActivities.slice(0, 50));
-    } catch (error) {
-      console.error('Error loading activities:', error);
-    }
-    setLoading(false);
-  };
-
-  const handleLikeActivity = (activityId) => {
-    if (!state.currentUser) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to like', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
-      return;
-    }
-    const userId = state.currentUser.id;
-    setActivities(prev => prev.map(a => {
-      if (a.id !== activityId) return a;
-      const liked = a.likedBy?.includes(userId);
-      return {
-        ...a,
-        likes: liked ? a.likes - 1 : a.likes + 1,
-        likedBy: liked ? a.likedBy.filter(id => id !== userId) : [...(a.likedBy || []), userId]
-      };
-    }));
-  };
-
-  const handleComment = (activityId, comment) => {
-    if (!comment.trim()) return;
-    const userName = state.profile?.name || state.currentUser?.email || 'User';
-    setActivities(prev => prev.map(a => {
-      if (a.id !== activityId) return a;
-      return {
-        ...a,
-        comments: [...(a.comments || []), {
-          id: Date.now(),
-          user: userName,
-          text: comment,
-          time: new Date().toISOString()
-        }]
-      };
-    }));
-  };
-
-  const filtered = filter === 'all' ? activities : activities.filter(a => a.type === filter);
-
-  const formatTime = (time) => {
-    if (!time) return '';
-    const d = new Date(time);
-    const now = new Date();
-    const diff = (now - d) / 1000;
-    if (diff < 60) return 'just now';
-    if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
-    return `${Math.floor(diff/86400)}d ago`;
-  };
-
-  return (
-    <div className="activity-feed-page">
-      <div className="page-header">
-        <h1>📣 Activity Feed</h1>
-        <p>See what's happening in the DevMarket community</p>
-      </div>
-
-      <div className="activity-filters">
-        {['all', 'listing', 'snippet', 'follow', 'like'].map(f => (
-          <button
-            key={f}
-            className={`filter-chip ${filter === f ? 'active' : ''}`}
-            onClick={() => setFilter(f)}
-          >
-            {f === 'all' ? '🌐 All' : f === 'listing' ? '🛒 Listings' : f === 'snippet' ? '💻 Code' : f === 'follow' ? '👤 Follows' : '❤️ Likes'}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="loading-container"><div className="loading-spinner-large"></div><p>Loading feed...</p></div>
-      ) : filtered.length === 0 ? (
-        <div className="empty-state">
-          <span className="empty-icon">📣</span>
-          <h3>No activity yet</h3>
-          <p>Start exploring and activities will appear here!</p>
-        </div>
-      ) : (
-        <div className="activity-list">
-          {filtered.map(activity => (
-            <ActivityCard
-              key={activity.id}
-              activity={activity}
-              currentUser={state.currentUser}
-              onLike={handleLikeActivity}
-              onComment={handleComment}
-              formatTime={formatTime}
-              onViewProfile={(uid) => navigate(`/profile/${uid}`)}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ActivityCard({ activity, currentUser, onLike, onComment, formatTime, onViewProfile }) {
-  const [showComments, setShowComments] = useState(false);
-  const [commentText, setCommentText] = useState('');
-  const isLiked = activity.likedBy?.includes(currentUser?.id);
-
-  const handleSubmitComment = (e) => {
-    e.preventDefault();
-    if (!commentText.trim()) return;
-    onComment(activity.id, commentText);
-    setCommentText('');
-  };
-
-  const avatarUrl = activity.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activity.user || 'U')}&background=667eea&color=fff&size=40`;
-
-  return (
-    <div className="activity-card">
-      <div className="activity-header">
-        <img
-          src={avatarUrl}
-          alt={activity.user}
-          className="activity-avatar"
-          onClick={() => activity.userId && onViewProfile(activity.userId)}
-          style={{ cursor: activity.userId ? 'pointer' : 'default' }}
-        />
-        <div className="activity-meta">
-          <span
-            className="activity-user"
-            onClick={() => activity.userId && onViewProfile(activity.userId)}
-            style={{ cursor: activity.userId ? 'pointer' : 'default' }}
-          >
-            {activity.user}
-          </span>
-          <span className="activity-action"> {activity.action} </span>
-          {activity.target && <span className="activity-target">"{activity.target}"</span>}
-          <span className="activity-time"> · {formatTime(activity.time)}</span>
-        </div>
-        <span className="activity-icon-badge">{activity.icon}</span>
-      </div>
-
-      <div className="activity-actions">
-        <button
-          className={`activity-btn ${isLiked ? 'liked' : ''}`}
-          onClick={() => onLike(activity.id)}
-        >
-          {isLiked ? '❤️' : '🤍'} {activity.likes || 0}
-        </button>
-        <button
-          className="activity-btn"
-          onClick={() => setShowComments(!showComments)}
-        >
-          💬 {activity.comments?.length || 0}
-        </button>
-      </div>
-
-      {showComments && (
-        <div className="activity-comments">
-          {(activity.comments || []).map(c => (
-            <div key={c.id} className="comment-item">
-              <strong className="comment-user">{c.user}</strong>
-              <span className="comment-text"> {c.text}</span>
-              <span className="comment-time"> · {formatTime(c.time)}</span>
-            </div>
-          ))}
-          {currentUser && (
-            <form onSubmit={handleSubmitComment} className="comment-form">
-              <input
-                type="text"
-                placeholder="Add a comment..."
-                value={commentText}
-                onChange={e => setCommentText(e.target.value)}
-                className="comment-input"
-              />
-              <button type="submit" className="btn-primary btn-sm">Post</button>
-            </form>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================
 function Home() {
   const { state } = useAppContext();
   const navigate = useNavigate();
@@ -3631,9 +3368,7 @@ function ListingCard({ listing }) {
           message: message,
           listing_id: listing.id,
           read: false,
-          created_at: new Date().toISOString(),
-          from_name: state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User',
-          from_avatar: state.profile?.avatar_url || null,
+          created_at: new Date().toISOString()
         };
 
         await supabase.from('messages').insert([msgData]);
@@ -4457,9 +4192,7 @@ function AppCard({ app }) {
           subject: `Inquiry about ${app.appName}`,
           message: message,
           read: false,
-          created_at: new Date().toISOString(),
-          from_name: state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User',
-          from_avatar: state.profile?.avatar_url || null,
+          created_at: new Date().toISOString()
         }]);
         
         try {
@@ -5517,14 +5250,29 @@ function Settings() {
                     <input type="checkbox" checked={state.notificationsEnabled} onChange={async () => {
                       const newVal = !state.notificationsEnabled;
                       dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
+                      if (!newVal) {
+                        dispatch({ type: 'CLEAR_NOTIFICATIONS' });
+                        // Show feedback via a temporary direct state notification bypassing the guard
+                        setTimeout(() => {
+                          const el = document.getElementById('notif-status-msg');
+                          if (el) { el.textContent = '🔕 Notifications are now OFF'; el.style.color = 'var(--danger)'; }
+                        }, 50);
+                      } else {
+                        setTimeout(() => {
+                          const el = document.getElementById('notif-status-msg');
+                          if (el) { el.textContent = '🔔 Notifications are now ON'; el.style.color = 'var(--success)'; }
+                        }, 50);
+                      }
                       if (state.currentUser) {
                         try { await supabase.from('profiles').upsert({ id: state.currentUser.id, notifications_enabled: newVal, updated_at: new Date().toISOString() }, { onConflict: 'id' }); } catch(e) {}
                       }
-                      if (!newVal) dispatch({ type: 'CLEAR_NOTIFICATIONS' });
                     }} />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
+                <p id="notif-status-msg" style={{ fontSize: '0.8rem', marginTop: 4, fontWeight: 600, transition: 'color 0.3s', minHeight: '1.2em' }}>
+                  {state.notificationsEnabled ? '' : '🔕 Notifications are currently OFF'}
+                </p>
 
                 {state.notificationsEnabled && (
                   <div className="notification-settings">
@@ -5785,67 +5533,121 @@ function AdminPostsTab({ dispatch, state }) {
 }
 
 // ============================================
-// ADMIN ANNOUNCEMENTS TAB
+// ADMIN ANNOUNCEMENTS TAB — FULL IMPLEMENTATION
 // ============================================
 function AdminAnnouncementsTab({ dispatch, state }) {
-  const [announcements, setAnnouncements] = useState([]);
   const [form, setForm] = useState({ title: '', message: '', type: 'info' });
   const [submitting, setSubmitting] = useState(false);
+  const [maintenanceOn, setMaintenanceOn] = useState(state.maintenanceMode || false);
+  const [savingMaintenance, setSavingMaintenance] = useState(false);
+  const [activeAnnouncement, setActiveAnnouncement] = useState(state.announcement?.message || '');
+  const [announcements, setAnnouncements] = useState([]);
 
-  useEffect(() => { loadAnnouncements(); }, []);
+  useEffect(() => { loadRecentAnnouncements(); }, []);
 
-  const loadAnnouncements = async () => {
+  const loadRecentAnnouncements = async () => {
     try {
-      const { data } = await supabase.from('notifications').select('*').eq('is_announcement', true).order('created_at', { ascending: false }).limit(20);
+      const { data } = await supabase.from('notifications').select('*').eq('is_announcement', true).order('created_at', { ascending: false }).limit(10);
       if (data) setAnnouncements(data);
-    } catch (e) { setAnnouncements([]); }
+    } catch(e) {}
   };
 
-  const handleSend = async () => {
-    if (!form.title.trim() || !form.message.trim()) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Title and message are required', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-      return;
-    }
-    setSubmitting(true);
+  const savePlatformSettings = async (updates) => {
     try {
-      // Broadcast to all users via notifications table
+      await supabase.from('platform_settings').upsert({ id: 'main', ...updates, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    } catch(e) { console.error('platform_settings save failed:', e); }
+  };
+
+  const handleToggleMaintenance = async () => {
+    setSavingMaintenance(true);
+    const newVal = !maintenanceOn;
+    setMaintenanceOn(newVal);
+    dispatch({ type: 'SET_MAINTENANCE_MODE', payload: newVal });
+    await savePlatformSettings({ maintenance_mode: newVal });
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: newVal ? '🔧 Maintenance mode ON — users see maintenance page' : '✅ Maintenance mode OFF — site is live', type: newVal ? 'warning' : 'success', time: new Date().toLocaleTimeString(), read: false }});
+    setSavingMaintenance(false);
+  };
+
+  const handleSetAnnouncement = async () => {
+    if (!form.title.trim() && !form.message.trim()) return;
+    setSubmitting(true);
+    const fullMsg = form.title.trim() ? `${form.title}: ${form.message}` : form.message;
+    try {
+      // Save to platform_settings for real-time broadcast
+      await savePlatformSettings({ announcement_message: fullMsg, announcement_type: form.type });
+      // Also notify all users via notifications table
       const { data: allUsers } = await supabase.from('profiles').select('id').limit(500);
       if (allUsers && allUsers.length > 0) {
-        const notifs = allUsers.map(u => ({
-          user_id: u.id,
-          message: `📢 ${form.title}: ${form.message}`,
-          type: form.type,
-          is_announcement: true,
-          read: false,
-          created_at: new Date().toISOString()
-        }));
+        const notifs = allUsers.map(u => ({ user_id: u.id, message: `📢 ${fullMsg}`, type: form.type, is_announcement: true, read: false, created_at: new Date().toISOString() }));
         await supabase.from('notifications').insert(notifs);
       }
-      // Also show locally
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `📢 Announcement sent to ${allUsers?.length || 0} users!`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-      setAnnouncements(prev => [{ id: Date.now(), message: `${form.title}: ${form.message}`, type: form.type, created_at: new Date().toISOString() }, ...prev]);
+      dispatch({ type: 'SET_ANNOUNCEMENT', payload: { message: fullMsg, type: form.type, id: Date.now() } });
+      setActiveAnnouncement(fullMsg);
+      setAnnouncements(prev => [{ id: Date.now(), message: `📢 ${fullMsg}`, type: form.type, created_at: new Date().toISOString() }, ...prev]);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `📢 Announcement broadcast to ${allUsers?.length || 0} users`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
       setForm({ title: '', message: '', type: 'info' });
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not send announcement: ' + (e.message || ''), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+    } catch(e) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not send: ' + (e.message || ''), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
     }
     setSubmitting(false);
   };
 
+  const handleClearAnnouncement = async () => {
+    await savePlatformSettings({ announcement_message: null });
+    dispatch({ type: 'CLEAR_ANNOUNCEMENT' });
+    setActiveAnnouncement('');
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Announcement cleared', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+  };
+
   return (
-    <div>
-      <div className="admin-section-card" style={{marginBottom:20}}>
-        <div className="admin-section-header"><h3>📢 Send Platform Announcement</h3></div>
-        <div className="settings-form" style={{padding:'16px 0 0'}}>
+    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      {/* Maintenance Mode */}
+      <div className="admin-section-card">
+        <div className="admin-section-header"><h3>🔧 Maintenance Mode</h3></div>
+        <div className="settings-form" style={{padding:'12px 0 0'}}>
+          <div className="setting-item master-toggle">
+            <div className="setting-info">
+              <strong>Enable Maintenance Mode</strong>
+              <p>When ON, non-admin users see a maintenance page. You can still access the admin panel.</p>
+            </div>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={maintenanceOn} onChange={handleToggleMaintenance} disabled={savingMaintenance} />
+              <span className="toggle-slider"></span>
+            </label>
+          </div>
+          {maintenanceOn && (
+            <div className="maintenance-active-notice">
+              ⚠️ <strong>Maintenance mode is ACTIVE.</strong> Regular users cannot access the site right now.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Active Announcement */}
+      {activeAnnouncement && (
+        <div className="admin-section-card">
+          <div className="admin-section-header"><h3>📌 Active Announcement</h3></div>
+          <div style={{padding:'12px 0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+            <p style={{margin:0,fontSize:'0.9rem',color:'var(--gray-700)'}}>{activeAnnouncement}</p>
+            <button className="btn-sm" style={{background:'var(--danger)',color:'white',border:'none',cursor:'pointer',flexShrink:0}} onClick={handleClearAnnouncement}>🗑️ Clear</button>
+          </div>
+        </div>
+      )}
+
+      {/* Send Announcement */}
+      <div className="admin-section-card">
+        <div className="admin-section-header"><h3>📢 Send Announcement Banner</h3></div>
+        <div className="settings-form" style={{padding:'12px 0 0'}}>
           <div className="form-group">
-            <label>Announcement Title</label>
+            <label>Title (optional)</label>
             <div className="input-wrapper">
               <span className="input-icon">📢</span>
               <input type="text" value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="e.g., New Feature Available!" />
             </div>
           </div>
           <div className="form-group">
-            <label>Message</label>
-            <textarea value={form.message} onChange={e => setForm({...form, message: e.target.value})} placeholder="Write your announcement here..." rows={3} className="settings-textarea" />
+            <label>Message <span className="required">*</span></label>
+            <textarea value={form.message} onChange={e => setForm({...form, message: e.target.value})} placeholder="Write your announcement..." rows={3} className="settings-textarea" />
           </div>
           <div className="form-group">
             <label>Type</label>
@@ -5856,12 +5658,15 @@ function AdminAnnouncementsTab({ dispatch, state }) {
               <option value="error">🚨 Alert</option>
             </select>
           </div>
-          <button className="btn-primary" onClick={handleSend} disabled={submitting}>
-            {submitting ? '📤 Sending...' : '📤 Send to All Users'}
-          </button>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+            <button className="btn-primary" onClick={handleSetAnnouncement} disabled={submitting || (!form.title.trim() && !form.message.trim())}>
+              {submitting ? '📤 Sending...' : '📤 Broadcast to All Users'}
+            </button>
+          </div>
         </div>
       </div>
 
+      {/* Recent */}
       <div className="admin-section-card">
         <div className="admin-section-header"><h3>📋 Recent Announcements</h3></div>
         {announcements.length === 0 ? (
@@ -5889,6 +5694,7 @@ function AdminAnnouncementsTab({ dispatch, state }) {
 // ============================================
 function Footer() {
   const currentYear = new Date().getFullYear();
+  const { canInstall, install } = usePWAInstall();
   
   return (
     <footer className="footer">
@@ -5903,9 +5709,42 @@ function Footer() {
           <Link to="/advertise">Advertise</Link>
           <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
+        {canInstall && (
+          <button className="footer-pwa-btn" onClick={install}>
+            📲 Add to Home Screen
+          </button>
+        )}
         <p className="footer-copy">&copy; {currentYear} DevMarket</p>
       </div>
     </footer>
+  );
+}
+
+// ============================================
+// FLOATING PWA INSTALL BUTTON
+// ============================================
+function FloatingPWAButton() {
+  const { canInstall, install } = usePWAInstall();
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem('pwaDismissed') === '1'; } catch(e) { return false; }
+  });
+
+  if (!canInstall || dismissed) return null;
+
+  return (
+    <div className="pwa-float-banner">
+      <div className="pwa-float-content">
+        <span className="pwa-float-icon">📲</span>
+        <div className="pwa-float-text">
+          <strong>Install DevMarket</strong>
+          <p>Add to your home screen for the best experience</p>
+        </div>
+      </div>
+      <div className="pwa-float-actions">
+        <button className="pwa-float-install" onClick={install}>Install</button>
+        <button className="pwa-float-dismiss" onClick={() => { setDismissed(true); try { localStorage.setItem('pwaDismissed', '1'); } catch(e) {} }}>✕</button>
+      </div>
+    </div>
   );
 }
 

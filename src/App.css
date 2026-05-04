@@ -138,135 +138,36 @@ body.modal-open {
    ============================================ */
 .mobile-bottom-nav {
   display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--white);
+  border-top: 1px solid var(--gray-200);
+  z-index: var(--z-header);
+  padding: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.08);
 }
-
 @media (max-width: 768px) {
-  .desktop-nav {
-    display: none !important;
-  }
-
-  .mobile-bottom-nav {
-    display: flex;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: var(--z-header);
-    background: rgba(255,255,255,0.97);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border-top: 1px solid var(--gray-100);
-    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) 4px;
-    gap: 2px;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-
-  .mobile-bottom-nav::-webkit-scrollbar {
-    display: none;
-  }
-
-  .mobile-nav-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    padding: 6px 10px;
-    border-radius: var(--radius-lg);
-    text-decoration: none;
-    color: var(--gray-500);
-    font-size: 0.62rem;
-    font-weight: 500;
-    flex-shrink: 0;
-    transition: all var(--transition-fast);
-    min-width: 52px;
-  }
-
-  .mobile-nav-btn.active {
-    color: var(--primary);
-    background: linear-gradient(135deg, rgba(102,126,234,0.1), rgba(118,75,162,0.08));
-  }
-
-  .mobile-nav-icon {
-    position: relative;
-    font-size: 1.3rem;
-    line-height: 1;
-  }
-
-  .mobile-nav-badge {
-    position: absolute;
-    top: -4px;
-    right: -6px;
-    background: var(--danger);
-    color: white;
-    border-radius: var(--radius-full);
-    min-width: 16px;
-    height: 16px;
-    font-size: 0.6rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    padding: 0 3px;
-    border: 1.5px solid white;
-  }
-
-  .mobile-nav-label {
-    letter-spacing: 0.01em;
-  }
-
-  /* Push main content up so bottom nav doesn't cover it */
-  .main-content {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-  }
+  .desktop-nav { display: none !important; }
+  .mobile-bottom-nav { display: flex; }
 
   /* Compact toasts on mobile */
-  .toast-container {
-    top: 12px;
-    right: 12px;
-    left: 12px;
-    max-width: none;
-    gap: 8px;
-  }
-
-  .toast {
-    padding: 10px 14px;
-    font-size: 0.88rem;
-  }
-
-  .toast-message {
-    font-size: 0.85rem;
-  }
-
-  .toast-time {
-    font-size: 0.75rem;
-  }
-
-  .toast-icon {
-    font-size: 1rem;
-  }
+  .toast-container { top: 12px; right: 12px; left: 12px; max-width: none; gap: 8px; }
+  .toast { padding: 10px 14px; font-size: 0.88rem; }
+  .toast-message { font-size: 0.85rem; }
+  .toast-time { font-size: 0.75rem; }
+  .toast-icon { font-size: 1rem; }
 
   /* Compact notification dropdown on mobile */
-  .notifications-dropdown {
-    left: 8px;
-    right: 8px;
-    top: 72px;
-    max-height: 60vh;
-  }
+  .notifications-dropdown { left: 8px; right: 8px; top: 72px; max-height: 60vh; }
+  .notification-item { padding: 8px 12px; gap: 8px; }
+  .notification-body p { font-size: 0.82rem; }
+  .notification-body small { font-size: 0.72rem; }
 
-  .notification-item {
-    padding: 8px 12px;
-    gap: 8px;
-  }
-
-  .notification-body p {
-    font-size: 0.82rem;
-  }
-
-  .notification-body small {
-    font-size: 0.72rem;
-  }
+  /* Main content bottom padding */
+  .main-content { padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px)); }
 }
 
 /* Dark mode mobile nav */
@@ -275,12 +176,8 @@ body.modal-open {
   border-top-color: var(--gray-700);
 }
 
-.App.dark .mobile-nav-btn {
-  color: var(--gray-400);
-}
-
+/* Dark mode mobile nav item active state */
 .App.dark .mobile-nav-btn.active {
-  color: var(--primary-light);
   background: rgba(102,126,234,0.12);
 }
 
@@ -8157,28 +8054,11 @@ input:checked + .toggle-slider:before {
     width: 100%;
     min-width: unset;
     border-right: none;
-    height: 100%;
   }
   .messenger-sidebar.mobile-hidden { display: none; }
   .messenger-chat { display: none; }
-  .messenger-chat.mobile-show { display: flex; height: 100%; }
+  .messenger-chat.mobile-show { display: flex; }
   .messenger-back-btn { display: flex; }
-  /* Show del button on touch */
-  .conv-del-btn { opacity: 0.6; }
-  /* Larger touch targets */
-  .conv-item { padding: 12px 14px; }
-  .conv-avatar { width: 50px; height: 50px; }
-  .messenger-send-btn { width: 44px; height: 44px; font-size: 1.2rem; }
-  .msg-row { max-width: 85%; }
-}
-
-@media (max-width: 480px) {
-  .messenger-page {
-    height: calc(100dvh - 56px);
-  }
-  .messenger-sidebar-header h2 { font-size: 1rem; }
-  .messenger-input { font-size: 0.85rem; }
-  .msg-bubble { font-size: 0.875rem; padding: 9px 13px; }
 }
 
 /* Dark mode messenger */
@@ -8434,4 +8314,368 @@ input:checked + .toggle-slider:before {
   }
   .mobile-bottom-nav::-webkit-scrollbar { display: none; }
   .mobile-nav-btn { min-width: 60px; flex-shrink: 0; }
+}
+
+/* ============================================
+   ANNOUNCEMENT BANNER
+   ============================================ */
+.announcement-banner {
+  position: sticky;
+  top: 0;
+  z-index: calc(var(--z-header) + 10);
+  width: 100%;
+  padding: 0;
+  animation: slideDown 0.3s ease;
+}
+@keyframes slideDown {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.announcement-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.announcement-icon { font-size: 1.1rem; flex-shrink: 0; }
+.announcement-text {
+  flex: 1;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.4;
+  margin: 0;
+}
+.announcement-close {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  opacity: 0.7;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.announcement-close:hover { opacity: 1; }
+@media (max-width: 480px) {
+  .announcement-inner { padding: 8px 12px; gap: 8px; }
+  .announcement-text { font-size: 0.8rem; }
+}
+
+/* ============================================
+   MAINTENANCE PAGE
+   ============================================ */
+.maintenance-page {
+  min-height: calc(100vh - 64px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background: linear-gradient(135deg, #667eea08 0%, #764ba208 100%);
+}
+.maintenance-card {
+  background: var(--white);
+  border-radius: var(--radius-2xl);
+  padding: 60px 40px;
+  text-align: center;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: var(--shadow-xl);
+}
+.maintenance-icon {
+  font-size: 4rem;
+  margin-bottom: 20px;
+  animation: spin 4s linear infinite;
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  25% { transform: rotate(15deg); }
+  50% { transform: rotate(0deg); }
+  75% { transform: rotate(-15deg); }
+  100% { transform: rotate(0deg); }
+}
+.maintenance-card h1 {
+  font-size: 1.8rem;
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: 12px;
+}
+.maintenance-card p { color: var(--gray-500); line-height: 1.6; }
+.maintenance-hint { font-size: 0.85rem; color: var(--gray-400); margin-top: 20px; }
+.maintenance-spinner {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 28px 0 0;
+}
+.spinner-ring {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: pulse 1.2s ease-in-out infinite;
+  opacity: 0.8;
+}
+.spinner-ring.delay1 { animation-delay: 0.2s; background: var(--secondary); }
+.spinner-ring.delay2 { animation-delay: 0.4s; background: var(--primary-light); }
+
+/* ============================================
+   MAINTENANCE NOTICE (Admin panel)
+   ============================================ */
+.maintenance-active-notice {
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  color: #92400e;
+  margin-top: 8px;
+}
+
+/* ============================================
+   MOBILE BOTTOM NAV — GUEST (not logged in) IMPROVEMENTS
+   ============================================ */
+.mobile-bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--white);
+  border-top: 1px solid var(--gray-200);
+  z-index: var(--z-header);
+  padding: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.08);
+}
+@media (max-width: 768px) {
+  .mobile-bottom-nav { display: flex; }
+}
+/* Guest mode: equal width, clean, modern */
+.mobile-bottom-nav--guest {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-top: none;
+}
+.mobile-bottom-nav--guest .mobile-nav-btn {
+  color: rgba(255,255,255,0.8);
+}
+.mobile-bottom-nav--guest .mobile-nav-btn.active {
+  color: #fff;
+  background: rgba(255,255,255,0.15);
+}
+.mobile-bottom-nav--guest .mobile-nav-btn.active::after {
+  background: white;
+}
+.mobile-bottom-nav--guest .mobile-nav-label {
+  color: inherit;
+}
+
+.mobile-nav-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 4px 6px;
+  text-decoration: none;
+  color: var(--gray-500);
+  font-size: 0.62rem;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  position: relative;
+  min-width: 0;
+  border-top: 2px solid transparent;
+}
+.mobile-nav-btn.active {
+  color: var(--primary);
+  border-top-color: var(--primary);
+  background: rgba(102,126,234,0.06);
+}
+.mobile-nav-icon {
+  font-size: 1.25rem;
+  position: relative;
+  line-height: 1;
+}
+.mobile-nav-badge {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  background: var(--danger);
+  color: white;
+  font-size: 0.55rem;
+  font-weight: 700;
+  min-width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+}
+.mobile-nav-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+/* Dark mode mobile nav */
+.App.dark .mobile-bottom-nav {
+  background: var(--gray-900);
+  border-top-color: var(--gray-700);
+}
+.App.dark .mobile-nav-btn { color: var(--gray-400); }
+.App.dark .mobile-nav-btn.active { color: var(--primary-light); border-top-color: var(--primary-light); background: rgba(129,140,248,0.08); }
+
+/* ============================================
+   MESSAGING PAGE — MOBILE FIX
+   Input area fixed above bottom nav
+   ============================================ */
+@media (max-width: 768px) {
+  /* Messages page gets extra bottom padding so content clears the fixed input */
+  .messenger-page {
+    position: relative;
+    height: calc(100dvh - 56px - 58px); /* header minus mobile nav */
+    max-height: none;
+    border-radius: 0;
+    margin: 0;
+  }
+  .messenger-chat.mobile-show {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    position: relative;
+  }
+  /* Input area: fixed at bottom, sits above mobile nav */
+  .messenger-input-area {
+    position: sticky;
+    bottom: 0;
+    background: var(--white);
+    border-top: 1px solid var(--gray-100);
+    padding: 10px 12px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    z-index: 10;
+    box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+  }
+  /* Messages scroll area gets flex:1 so it fills space above input */
+  .messenger-messages {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  /* When keyboard opens on mobile, prevent layout jump */
+  .messenger-chat.mobile-show .messenger-messages {
+    padding-bottom: 8px;
+  }
+}
+@media (max-width: 480px) {
+  .messenger-input { font-size: 16px; /* prevents iOS zoom */ }
+}
+
+/* Dark mode messenger input */
+.App.dark .messenger-input-area {
+  background: var(--gray-900);
+  border-top-color: var(--gray-700);
+}
+
+/* ============================================
+   PWA FLOATING INSTALL BANNER
+   ============================================ */
+.pwa-float-banner {
+  position: fixed;
+  bottom: calc(58px + 12px + env(safe-area-inset-bottom, 0px));
+  left: 12px;
+  right: 12px;
+  background: var(--gray-900);
+  color: white;
+  border-radius: var(--radius-xl);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: var(--shadow-xl);
+  z-index: calc(var(--z-modal) - 1);
+  animation: slideUpIn 0.4s ease;
+  max-width: 480px;
+  margin: 0 auto;
+}
+@media (min-width: 768px) {
+  .pwa-float-banner {
+    bottom: 20px;
+    left: auto;
+    right: 20px;
+    width: 360px;
+  }
+}
+@keyframes slideUpIn {
+  from { transform: translateY(80px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.pwa-float-content { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.pwa-float-icon { font-size: 1.8rem; flex-shrink: 0; }
+.pwa-float-text strong { display: block; font-size: 0.9rem; font-weight: 700; }
+.pwa-float-text p { font-size: 0.75rem; color: rgba(255,255,255,0.7); margin: 2px 0 0; }
+.pwa-float-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.pwa-float-install {
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition);
+}
+.pwa-float-install:hover { opacity: 0.9; transform: scale(1.03); }
+.pwa-float-dismiss {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: white;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.pwa-float-dismiss:hover { background: rgba(255,255,255,0.25); }
+
+/* Footer PWA button */
+.footer-pwa-btn {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  color: white;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 8px 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  margin: 8px 0;
+}
+.footer-pwa-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+
+/* ============================================
+   MAIN CONTENT — mobile bottom padding
+   so content doesn't hide behind mobile nav
+   ============================================ */
+@media (max-width: 768px) {
+  .main-content {
+    padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  }
+  /* Exception: messages page manages its own bottom */
+  .main-content:has(.messenger-page) {
+    padding-bottom: 0;
+  }
 }
