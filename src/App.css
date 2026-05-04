@@ -8157,11 +8157,28 @@ input:checked + .toggle-slider:before {
     width: 100%;
     min-width: unset;
     border-right: none;
+    height: 100%;
   }
   .messenger-sidebar.mobile-hidden { display: none; }
   .messenger-chat { display: none; }
-  .messenger-chat.mobile-show { display: flex; }
+  .messenger-chat.mobile-show { display: flex; height: 100%; }
   .messenger-back-btn { display: flex; }
+  /* Show del button on touch */
+  .conv-del-btn { opacity: 0.6; }
+  /* Larger touch targets */
+  .conv-item { padding: 12px 14px; }
+  .conv-avatar { width: 50px; height: 50px; }
+  .messenger-send-btn { width: 44px; height: 44px; font-size: 1.2rem; }
+  .msg-row { max-width: 85%; }
+}
+
+@media (max-width: 480px) {
+  .messenger-page {
+    height: calc(100dvh - 56px);
+  }
+  .messenger-sidebar-header h2 { font-size: 1rem; }
+  .messenger-input { font-size: 0.85rem; }
+  .msg-bubble { font-size: 0.875rem; padding: 9px 13px; }
 }
 
 /* Dark mode messenger */

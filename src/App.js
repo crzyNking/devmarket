@@ -141,6 +141,9 @@ function appReducer(state, action) {
           if (c.userId === action.payload.otherUserId) {
             return {
               ...c,
+              // Update name/avatar if we now have better data
+              userName: c.userName && c.userName !== 'User' ? c.userName : (action.payload.message.from_name || c.userName),
+              userAvatar: c.userAvatar || action.payload.message.from_avatar || c.userAvatar,
               messages: [...c.messages, action.payload.message],
               lastMessage: action.payload.message.message,
               lastMessageTime: action.payload.message.created_at,
@@ -693,20 +696,38 @@ function App() {
         table: 'messages',
         filter: `to_user=eq.${userId}`
       },
-      (payload) => {
+      async (payload) => {
         const newMsg = payload.new;
         console.log('📨 New real-time message:', newMsg);
         
         dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
         
         const otherUserId = newMsg.from_user;
-        const otherUserName = newMsg.from_name || 'User';
+        let otherUserName = newMsg.from_name;
+        let otherUserAvatar = newMsg.from_avatar;
+
+        // If name/avatar not stored in message, fetch from profiles
+        if (!otherUserName || !otherUserAvatar) {
+          try {
+            const { data: senderProfile } = await supabase
+              .from('profiles')
+              .select('name, avatar_url')
+              .eq('id', otherUserId)
+              .single();
+            if (senderProfile) {
+              otherUserName = otherUserName || senderProfile.name || 'User';
+              otherUserAvatar = otherUserAvatar || senderProfile.avatar_url || null;
+            }
+          } catch(e) {}
+        }
+
+        otherUserName = otherUserName || 'User';
         
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
           payload: {
             otherUserId,
-            message: newMsg
+            message: { ...newMsg, from_name: otherUserName, from_avatar: otherUserAvatar }
           }
         });
         
@@ -716,7 +737,7 @@ function App() {
         const activeConvId = sessionStorage.getItem('activeConversationId');
         const isConversationOpen = activeConvId === otherUserId;
         
-        if (!isConversationOpen) {
+        if (!isConversationOpen && getPersistedNotificationsEnabled()) {
           dispatch({ type: 'ADD_NOTIFICATION', payload: {
             message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
             type: 'info',
@@ -737,6 +758,9 @@ function App() {
       },
       (payload) => {
         console.log('🔔 New real-time notification:', payload.new);
+        // Check persisted preference — getPersistedNotificationsEnabled reads localStorage
+        const notifEnabled = getPersistedNotificationsEnabled();
+        if (!notifEnabled) return;
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
           ...payload.new,
           read: false
@@ -766,7 +790,7 @@ function App() {
     dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
   }
 
-  function buildConversations(messages, userId) {
+  async function buildConversations(messages, userId) {
     const conversationMap = new Map();
     
     messages.forEach(msg => {
@@ -777,8 +801,8 @@ function App() {
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: otherUserName || 'Unknown User',
-          userAvatar: otherUserAvatar,
+          userName: otherUserName || null, // will be enriched below
+          userAvatar: otherUserAvatar || null,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
           unreadCount: 0,
@@ -799,7 +823,40 @@ function App() {
       }
     });
     
-    const conversations = Array.from(conversationMap.values())
+    // Enrich conversations with real profile data for any user whose name is missing
+    const convArray = Array.from(conversationMap.values());
+    const missingProfileIds = convArray
+      .filter(c => !c.userName || !c.userAvatar)
+      .map(c => c.userId)
+      .filter(Boolean);
+
+    if (missingProfileIds.length > 0) {
+      try {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, name, avatar_url')
+          .in('id', missingProfileIds);
+
+        if (profiles) {
+          const profileMap = {};
+          profiles.forEach(p => { profileMap[p.id] = p; });
+          convArray.forEach(conv => {
+            const p = profileMap[conv.userId];
+            if (p) {
+              conv.userName = conv.userName || p.name || p.id?.slice(0, 8) || 'User';
+              conv.userAvatar = conv.userAvatar || p.avatar_url || null;
+            } else if (!conv.userName) {
+              conv.userName = 'User';
+            }
+          });
+        }
+      } catch(e) {
+        // Fallback: just use what we have
+        convArray.forEach(conv => { if (!conv.userName) conv.userName = 'User'; });
+      }
+    }
+
+    const conversations = convArray
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     
     dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
@@ -2171,6 +2228,27 @@ function Messages() {
     return () => { if (presenceChannelRef.current) supabase.removeChannel(presenceChannelRef.current); };
   }, [state.currentUser]);
 
+  // Refresh conversations on mount to ensure names/avatars are up-to-date
+  useEffect(() => {
+    if (!state.currentUser) return;
+    const refreshConversations = async () => {
+      setLoadingMessages(true);
+      try {
+        const { data: msgsResult } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+          .order('created_at', { ascending: false });
+        if (msgsResult) {
+          dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
+          await buildConversationsLocal(msgsResult, state.currentUser.id);
+        }
+      } catch (e) {}
+      setLoadingMessages(false);
+    };
+    refreshConversations();
+  }, [state.currentUser?.id]); // eslint-disable-line
+
   // Typing indicator subscription for active conversation
   useEffect(() => {
     if (!state.activeConversation || !state.currentUser) return;
@@ -2271,7 +2349,10 @@ function Messages() {
         subject: 'Re: Conversation',
         message: optimisticMsg.message,
         read: false,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        // Store sender identity so recipient can show real name/avatar
+        from_name: state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User',
+        from_avatar: state.profile?.avatar_url || null,
       };
 
       const { error } = await supabase.from('messages').insert([msgData]);
@@ -2345,14 +2426,14 @@ function Messages() {
     setConvToDelete(null);
   };
 
-  const buildConversationsLocal = (messages, userId) => {
+  const buildConversationsLocal = async (messages, userId) => {
     const conversationMap = new Map();
     messages.forEach(msg => {
       const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'Unknown User',
+          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || null,
           userAvatar: msg.from_user === userId ? msg.to_avatar : msg.from_avatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
@@ -2368,7 +2449,36 @@ function Messages() {
         conv.lastMessageTime = msg.created_at;
       }
     });
-    const convs = Array.from(conversationMap.values())
+
+    const convArray = Array.from(conversationMap.values());
+
+    // Enrich missing names/avatars from profiles
+    const missingIds = convArray.filter(c => !c.userName || !c.userAvatar).map(c => c.userId).filter(Boolean);
+    if (missingIds.length > 0) {
+      try {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, name, avatar_url')
+          .in('id', missingIds);
+        if (profiles) {
+          const pm = {};
+          profiles.forEach(p => { pm[p.id] = p; });
+          convArray.forEach(conv => {
+            const p = pm[conv.userId];
+            if (p) {
+              conv.userName = conv.userName || p.name || 'User';
+              conv.userAvatar = conv.userAvatar || p.avatar_url || null;
+            } else if (!conv.userName) {
+              conv.userName = 'User';
+            }
+          });
+        }
+      } catch(e) {
+        convArray.forEach(conv => { if (!conv.userName) conv.userName = 'User'; });
+      }
+    }
+
+    const convs = convArray
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     dispatch({ type: 'SET_CONVERSATIONS', payload: convs });
     // Update active conversation if open
@@ -2420,9 +2530,32 @@ function Messages() {
       <div className={`messenger-sidebar ${mobileShowChat ? 'mobile-hidden' : ''}`}>
         <div className="messenger-sidebar-header">
           <h2>💬 Messages</h2>
-          {state.realtimeConnected && (
-            <span className="live-badge">🟢 Live</span>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {state.realtimeConnected && (
+              <span className="live-badge">🟢 Live</span>
+            )}
+            <button
+              title="Refresh conversations"
+              onClick={async () => {
+                setLoadingMessages(true);
+                try {
+                  const { data: msgsResult } = await supabase
+                    .from('messages')
+                    .select('*')
+                    .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+                    .order('created_at', { ascending: false });
+                  if (msgsResult) {
+                    dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
+                    await buildConversationsLocal(msgsResult, state.currentUser.id);
+                  }
+                } catch(e) {}
+                setLoadingMessages(false);
+              }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.9rem', color: 'var(--gray-500)', padding: '4px', borderRadius: 'var(--radius-sm)' }}
+            >
+              🔄
+            </button>
+          </div>
         </div>
 
         {loadingMessages ? (
@@ -2452,7 +2585,7 @@ function Messages() {
                 </div>
                 <div className="conv-info">
                   <div className="conv-row1">
-                    <strong className="conv-name">{conv.userName || 'Unknown User'}</strong>
+                    <strong className="conv-name">{conv.userName && conv.userName !== 'Unknown User' ? conv.userName : (conv.userId ? `User ${conv.userId.slice(0, 6)}` : 'User')}</strong>
                     <span className="conv-time">{formatMsgTime(conv.lastMessageTime)}</span>
                   </div>
                   <div className="conv-row2">
@@ -2487,7 +2620,7 @@ function Messages() {
                 <span className={`online-dot ${isOnline(activeConv.userId) ? 'online' : 'offline'}`}></span>
               </div>
               <div className="messenger-chat-info">
-                <strong>{activeConv.userName || 'Unknown User'}</strong>
+                <strong>{activeConv.userName && activeConv.userName !== 'Unknown User' ? activeConv.userName : (activeConv.userId ? `User ${activeConv.userId.slice(0, 6)}` : 'User')}</strong>
                 <p>{isOnline(activeConv.userId) ? '🟢 Active now' : '⚪ Offline'}</p>
               </div>
               <button
@@ -3498,7 +3631,9 @@ function ListingCard({ listing }) {
           message: message,
           listing_id: listing.id,
           read: false,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          from_name: state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User',
+          from_avatar: state.profile?.avatar_url || null,
         };
 
         await supabase.from('messages').insert([msgData]);
@@ -4322,7 +4457,9 @@ function AppCard({ app }) {
           subject: `Inquiry about ${app.appName}`,
           message: message,
           read: false,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          from_name: state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User',
+          from_avatar: state.profile?.avatar_url || null,
         }]);
         
         try {
