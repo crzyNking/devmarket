@@ -117,9 +117,7 @@ function appReducer(state, action) {
       // When notifications are disabled, block ALL incoming notifications
       // except those with _force: true (used for the toggle feedback itself)
       if (!state.notificationsEnabled && !action.payload._force) return state;
-      // Strip _force before storing so it doesn't pollute the notification object
-      const { _force, ...notifData } = action.payload;
-      const newNotif = { ...notifData, id: notifData.id || `n-${Date.now()}-${Math.random()}` };
+      const newNotif = { ...action.payload, id: action.payload.id || `n-${Date.now()}-${Math.random()}` };
       return { ...state, notifications: [newNotif, ...(state.notifications || [])].slice(0, 50) };
     }
     case 'REMOVE_NOTIFICATION': 
@@ -931,35 +929,20 @@ function App() {
       }
     }
 
-    // Show the full splash loader only on the very first visit per session.
-    // On subsequent page refreshes within the same session show a minimal spinner.
     if (!hasShownLoader) {
+      initialize().then(() => {
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+        setTimeout(() => setIsInitialLoading(false), 500);
+      });
+      
       const safetyTimeout = setTimeout(() => {
-        if (mounted) {
-          setIsInitialLoading(false);
-          sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setHasShownLoader(true);
-        }
+        setIsInitialLoading(false);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
       }, 6000);
-
-      initialize().then(() => {
-        if (mounted) {
-          sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setHasShownLoader(true);
-          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 400);
-        }
-        clearTimeout(safetyTimeout);
-      });
-
-      return () => {
-        mounted = false;
-        clearTimeout(safetyTimeout);
-      };
+      
+      return () => clearTimeout(safetyTimeout);
     } else {
-      // Already seen the splash — init quickly with mini-spinner
-      initialize().then(() => {
-        if (mounted) setIsInitialLoading(false);
-      });
+      initialize().then(() => setIsInitialLoading(false));
     }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -1994,26 +1977,6 @@ function AdminDashboard() {
     }
   };
 
-  const handleDemoteUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `👤 ${userName} has been moved back to Developer`, type: 'info', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not demote user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
-  const handleUnbanUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ ${userName} has been unbanned`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not unban user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
   if (!state.currentUser || !state.isAdmin) {
     return (
       <div className="admin-page">
@@ -2293,16 +2256,6 @@ function AdminDashboard() {
                           🛡️ Promote
                         </button>
                       )}
-                      {user.id !== state.currentUser.id && user.role === 'admin' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--warning)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleDemoteUser(user.id, user.name)}
-                          title="Move back to Developer"
-                        >
-                          👤 To Developer
-                        </button>
-                      )}
                       {user.id !== state.currentUser.id && user.role !== 'banned' && (
                         <button 
                           className="btn-sm" 
@@ -2313,13 +2266,7 @@ function AdminDashboard() {
                         </button>
                       )}
                       {user.role === 'banned' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleUnbanUser(user.id, user.name)}
-                        >
-                          ✅ Unban
-                        </button>
+                        <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
@@ -3147,29 +3094,17 @@ function Messages() {
                 const isMine = msg.from_user === state.currentUser.id;
                 const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
                 const isLast = isMine && i === activeMessages.length - 1;
-                // Always use the conversation's resolved name/avatar (populated from real profiles)
-                const senderName = isMine 
-                  ? (state.profile?.name || state.currentUser?.email?.split('@')[0] || 'You')
-                  : (activeConv.userName || msg.from_name || 'User');
-                const senderAvatar = isMine
-                  ? (state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`)
-                  : (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`);
                 return (
                   <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
                     {!isMine && (
                       <img
-                        src={showAvatar ? senderAvatar : undefined}
-                        alt={showAvatar ? senderName : ''}
+                        src={showAvatar ? (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`) : undefined}
+                        alt=""
                         className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
-                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`; }}
+                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
                       />
                     )}
                     <div className="msg-col">
-                      {!isMine && showAvatar && (
-                        <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginBottom: 2, display: 'block' }}>
-                          {senderName}
-                        </span>
-                      )}
                       <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
                         <p>{msg.message}</p>
                       </div>
@@ -3663,11 +3598,6 @@ function UserProfile() {
                 <span className="verified-badge" title="Verified Account">✓</span>
               )}
             </h1>
-            {profile.role && (
-              <span className="profile-role-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
-                {profile.role === 'admin' ? '🛡️' : profile.role === 'developer' ? '👨‍💻' : profile.role === 'banned' ? '🚫' : '👤'} {profile.role}
-              </span>
-            )}
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
@@ -5794,8 +5724,6 @@ function Settings() {
                   <label className="toggle-switch">
                     <input type="checkbox" checked={state.notificationsEnabled} onChange={async () => {
                       const newVal = !state.notificationsEnabled;
-                      // Persist to localStorage immediately (keeps setting across hard refresh)
-                      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(newVal)); } catch(e) {}
                       dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
                       if (!newVal) {
                         dispatch({ type: 'CLEAR_NOTIFICATIONS' });
@@ -5808,7 +5736,6 @@ function Settings() {
                         read: false,
                         _force: true
                       }});
-                      // Persist to Supabase so it survives logout + login on other devices
                       if (state.currentUser) {
                         try {
                           await supabase.from('profiles').upsert({
