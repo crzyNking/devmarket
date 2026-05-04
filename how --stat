@@ -1,0 +1,164 @@
+[1mdiff --git a/src/App.js b/src/App.js[m
+[1mindex 258def6..ef5c090 100644[m
+[1m--- a/src/App.js[m
+[1m+++ b/src/App.js[m
+[36m@@ -19,17 +19,21 @@[m [mfunction ModalPortal({ children }) {[m
+ }[m
+ [m
+ // ============================================[m
+[31m-// GLOBAL CONTEXT[m
+[32m+[m[32m// SPLIT CONTEXTS — prevents unnecessary re-renders[m
+[32m+[m[32m// Components that only dispatch actions import useAppDispatch[m
+[32m+[m[32m// and won't re-render when state changes.[m
+[32m+[m[32m// Components that need state import useAppState.[m
+[32m+[m[32m// useAppContext() is kept as a convenience alias.[m
+ // ============================================[m
+[32m+[m[32mconst AppStateContext = createContext();[m
+[32m+[m[32mconst AppDispatchContext = createContext();[m
+[32m+[m[32m// Legacy single context kept for backwards-compat — components that need both[m
+ const AppContext = createContext();[m
+ [m
+[31m-const getPersistedNotificationsEnabled = () => {[m
+[31m-  try {[m
+[31m-    const stored = localStorage.getItem('devMarketNotificationsEnabled');[m
+[31m-    if (stored !== null) return JSON.parse(stored);[m
+[31m-  } catch(e) {}[m
+[31m-  return true;[m
+[31m-};[m
+[32m+[m[32m// Notification enabled preference is loaded from Supabase profile (notifications_enabled column).[m
+[32m+[m[32m// localStorage is no longer used as a source of truth — Supabase is the single source.[m
+[32m+[m[32m// This default is only used before the profile is fetched.[m
+[32m+[m[32mconst getDefaultNotificationsEnabled = () => true;[m
+ [m
+ const initialState = {[m
+   listings: [],[m
+[36m@@ -55,7 +59,7 @@[m [mconst initialState = {[m
+   analyticsData: null,[m
+   isAdmin: false,[m
+   moderationQueue: [],[m
+[31m-  notificationsEnabled: getPersistedNotificationsEnabled(),[m
+[32m+[m[32m  notificationsEnabled: getDefaultNotificationsEnabled(),[m
+   announcement: null,[m
+   maintenanceMode: false,[m
+ };[m
+[36m@@ -74,8 +78,16 @@[m [mfunction appReducer(state, action) {[m
+       return { ...state, currentUser: action.payload };[m
+     case 'SET_PROFILE': [m
+       return { ...state, profile: action.payload };[m
+[31m-    case 'UPDATE_PROFILE': [m
+[31m-      return { ...state, profile: { ...state.profile, ...action.payload } };[m
+[32m+[m[32m    case 'UPDATE_PROFILE': {[m
+[32m+[m[32m      const updatedProfile = { ...state.profile, ...action.payload };[m
+[32m+[m[32m      // Keep currentUser in sync for fields that live in both slices[m
+[32m+[m[32m      const updatedCurrentUser = state.currentUser ? {[m
+[32m+[m[32m        ...state.currentUser,[m
+[32m+[m[32m        ...(action.payload.avatar_url !== undefined ? { avatar_url: action.payload.avatar_url } : {}),[m
+[32m+[m[32m        ...(action.payload.name !== undefined ? { name: action.payload.name } : {})[m
+[32m+[m[32m      } : state.currentUser;[m
+[32m+[m[32m      return { ...state, profile: updatedProfile, currentUser: updatedCurrentUser };[m
+[32m+[m[32m    }[m
+     case 'UPDATE_AVATAR':[m
+       return { [m
+         ...state, [m
+[36m@@ -111,7 +123,8 @@[m [mfunction appReducer(state, action) {[m
+     case 'SET_NOTIFICATIONS': [m
+       return { ...state, notifications: action.payload || [] };[m
+     case 'SET_NOTIFICATIONS_ENABLED':[m
+[31m-      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(action.payload)); } catch(e) {}[m
+[32m+[m[32m      // Supabase persistence is handled by the action dispatchers (Settings/loadProfile).[m
+[32m+[m[32m      // The reducer is pure — no side-effects.[m
+       return { ...state, notificationsEnabled: action.payload };[m
+     case 'ADD_NOTIFICATION': {[m
+       // When notifications are disabled, block ALL incoming notifications[m
+[36m@@ -241,8 +254,89 @@[m [mfunction appReducer(state, action) {[m
+ }[m
+ [m
+ // ============================================[m
+[31m-// SKELETON LOADER COMPONENTS[m
+[32m+[m[32m// INPUT SANITIZATION[m
+[32m+[m[32m// Strips leading/trailing whitespace, collapses internal whitespace,[m
+[32m+[m[32m// and removes common HTML injection vectors before data hits Supabase.[m
+ // ============================================[m
+[32m+[m[32mfunction sanitizeText(value, maxLength = 2000) {[m
+[32m+[m[32m  if (typeof value !== 'string') return '';[m
+[32m+[m[32m  return value[m
+[32m+[m[32m    .trim()[m
+[32m+[m[32m    .replace(/[\u0000-\u001F\u007F]/g, '') // strip control characters[m
+[32m+[m[32m    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '') // strip script tags[m
+[32m+[m[32m    .replace(/<[^>]*>/g, '') // strip remaining HTML tags[m
+[32m+[m[32m    .substring(0, maxLength);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction sanitizeUrl(value) {[m
+[32m+[m[32m  if (typeof value !== 'string') return '';[m
+[32m+[m[32m  const trimmed = value.trim();[m
+[32m+[m[32m  // Only allow http/https/ftp URLs[m
+[32m+[m[32m  if (trimmed && !/^https?:\/\//i.test(trimmed) && !/^ftp:\/\//i.test(trimmed)) return '';[m
+[32m+[m[32m  return trimmed.substring(0, 500);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m[32m// Wraps async Supabase calls with:[m
+[32m+[m[32m//   - proper loading state (no setTimeout hacks)[m
+[32m+[m[32m//   - standardised error feedback via notifications[m
+[32m+[m[32m//   - optional optimistic rollback callback[m
+[32m+[m[32m// Usage: const { execute, loading, error } = useSupabaseOp(dispatch);[m
+[32m+[m[32m// ============================================[m
+[32m+[m[32mfunction useSupabaseOp(dispatch) {[m
+[32m+[m[32m  const [loading, setLoading] = useState(false);[m
+[32m+[m[32m  const [error, setError] = useState(null);[m
+[32m+[m[32m  const mountedRef = useRef(true);[m
+[32m+[m
+[32m+[m[32m  useEffect(() => {[m
+[32m+[m[32m    mountedRef.current = true;[m
+[32m+[m[32m    return () => { mountedRef.current = false; };[m
+[32m+[m[32m  }, []);[m
+[32m+[m
+[32m+[m[32m  const execute = useCallback(async (operation, {[m[41m [m
+[32m+[m[32m    successMessage,[m[41m [m
+[32m+[m[32m    errorMessage,[m[41m [m
+[32m+[m[32m    onRollback[m[41m [m
+[32m+[m[32m  } = {}) => {[m
+[32m+[m[32m    if (!mountedRef.current) return { data: null, error: null };[m
+[32m+[m[32m    setLoading(true);[m
+[32m+[m[32m    setError(null);[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const result = await operation();[m
+[32m+[m[32m      // Supabase returns { data, error } — check for DB-level errors[m
+[32m+[m[32m      if (result && result.error) {[m
+[32m+[m[32m        throw result.error;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      if (mountedRef.current && successMessage) {[m
+[32m+[m[32m        dispatch({ type: 'ADD_NOTIFICATION', payload: {[m
+[32m+[m[32m          message: successMessage,[m
+[32m+[m[32m          type: 'success',[m
+[32m+[m[32m          time: new Date().toLocaleTimeString(),[m
+[32m+[m[32m          read: false[m
+[32m+[m[32m        }});[m
+[32m+[m[32m      }[m
+[32m+[m[32m      if (mountedRef.current) setLoading(false);[m
+[32m+[m[32m      return result || { data: null, error: null };[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      if (mountedRef.current) {[m
+[32m+[m[32m        setError(err);[m
+[32m+[m[32m        setLoading(false);[m
+[32m+[m[32m        if (onRollback) onRollback();[m
+[32m+[m[32m        dispatch({ type: 'ADD_NOTIFICATION', payload: {[m
+[32m+[m[32m          message: errorMessage || `❌ ${err.message || 'An error occurred'}`,[m
+[32m+[m[32m          type: 'error',[m
+[32m+[m[32m          time: new Date().toLocaleTimeString(),[m
+[32m+[m[32m          read: false[m
+[32m+[m[32m        }});[m
+[32m+[m[32m      }[m
+[32m+[m[32m      return { data: null, error: err };[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }, [dispatch]);[m
+[32m+[m
+[32m+[m[32m  return { execute, loading, error };[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+ function SkeletonCard() {[m
+   return ([m
+     <div className="skeleton-card">[m
+[36m@@ -840,7 +934,13 @@[m [m
