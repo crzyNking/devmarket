@@ -929,37 +929,34 @@ body.modal-open {
 }
 
 /* ============================================
-   MODAL STYLES
-   ============================================ */
-/* ============================================
-   AUTHENTICATION MODAL CENTERING FIX
+   MODAL STYLES — Portal-rendered, always above everything
    ============================================ */
 
-/* Ensure the modal overlay is properly centered */
+/* Base overlay — rendered on document.body via ReactDOM.createPortal
+   so it's NEVER trapped inside a header stacking context */
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0; /* top:0 right:0 bottom:0 left:0 */
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  /* z-index must beat header (100) and any dropdowns (200) */
+  z-index: 9000;
   animation: fadeIn 0.2s ease;
-  /* Safe padding: 20px desktop, respects notch/home indicator on iOS */
-  padding: max(20px, env(safe-area-inset-top, 20px))
+  /* Safe-area-aware padding so content never hides behind notch/home-indicator */
+  padding: max(24px, env(safe-area-inset-top, 24px))
            max(16px, env(safe-area-inset-right, 16px))
-           max(20px, env(safe-area-inset-bottom, 20px))
+           max(24px, env(safe-area-inset-bottom, 24px))
            max(16px, env(safe-area-inset-left, 16px));
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
-/* Auth Modal - perfectly centered on desktop and mobile */
+/* Auth Modal */
 .auth-modal {
   background: var(--white);
   border-radius: var(--radius-2xl);
@@ -968,91 +965,199 @@ body.modal-open {
   width: 100%;
   position: relative;
   animation: authModalIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  box-shadow: var(--shadow-2xl);
-  /* flex child centering — works inside the overlay flex container */
+  box-shadow: 0 32px 64px rgba(0,0,0,0.24);
+  /* margin:auto combined with flex centering on overlay = perfectly centered */
   margin: auto;
-  /* Clamp height so it never clips off screen */
-  max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px);
+  max-height: calc(100dvh - 48px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
 
-/* For short screens (landscape phones, older devices) */
-@media (max-height: 700px) {
+@keyframes authModalIn {
+  from { opacity: 0; transform: scale(0.92) translateY(16px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Short screens (landscape phones) */
+@media (max-height: 680px) {
   .auth-modal {
-    padding: 28px 24px;
-    max-height: calc(100vh - 24px);
+    padding: 24px 28px;
     border-radius: var(--radius-xl);
+    max-height: calc(100dvh - 24px);
   }
 }
 
-/* Small mobile — full-width with horizontal padding */
+/* Mobile */
 @media (max-width: 520px) {
   .modal-overlay {
-    padding: 16px;
-    padding-top: max(16px, env(safe-area-inset-top, 16px));
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 16px));
-    /* Keep items centered vertically; flex column lets the modal scroll if needed */
-    align-items: center;
+    padding: max(12px, env(safe-area-inset-top, 12px))
+             12px
+             max(12px, env(safe-area-inset-bottom, 12px))
+             12px;
   }
 
   .auth-modal {
     padding: 28px 20px;
-    /* Full width minus safe margins */
-    width: calc(100% - 0px);
-    max-width: 100%;
     border-radius: var(--radius-xl);
-    max-height: calc(100svh - 32px);
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 24px);
   }
 }
 
 @media (max-width: 380px) {
   .auth-modal {
-    padding: 24px 16px;
+    padding: 22px 16px;
   }
 }
 
-/* Smooth animation */
-@keyframes authModalIn {
-  from {
-    opacity: 0;
-    transform: scale(0.9) translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-/* Fixed position centering method (alternative) */
-.auth-modal-centered {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+/* Modal content (confirm dialogs, generic modals) */
+.modal-content {
   background: var(--white);
-  border-radius: var(--radius-2xl);
-  padding: 48px;
-  max-width: 460px;
-  width: 90%;
-  z-index: 2001;
-  animation: authModalIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  box-shadow: var(--shadow-2xl);
-  max-height: 90vh;
+  border-radius: var(--radius-xl);
+  padding: 28px;
+  max-width: 500px;
+  width: 100%;
+  position: relative;
+  animation: modalSlideUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 32px 64px rgba(0,0,0,0.2);
+  margin: auto;
+  max-height: calc(100dvh - 48px);
   overflow-y: auto;
 }
 
-/* Update the modal overlay to work with fixed position */
-.modal-overlay-fixed {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
-  z-index: 2000;
-  animation: fadeIn 0.2s ease;
+.modal-content.large {
+  max-width: 650px;
+}
+
+@keyframes modalSlideUp {
+  from { opacity: 0; transform: translateY(-16px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (max-width: 768px) {
+  .modal-content {
+    width: calc(100% - 0px);
+    max-width: 100%;
+    padding: 22px 18px;
+    border-radius: var(--radius-xl);
+    max-height: calc(100dvh - 24px);
+  }
+}
+
+/* Advanced Search Modal — bottom sheet on mobile */
+.advanced-search-modal {
+  /* desktop: regular centered modal sizing handled by modal-content parent */
+}
+
+@media (max-width: 768px) {
+  .modal-overlay:has(.advanced-search-modal) {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .advanced-search-modal {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
+    margin: 0 !important;
+    max-height: 88dvh !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 16px calc(20px + env(safe-area-inset-bottom, 0px)) !important;
+    box-sizing: border-box;
+    animation: slideUpSheet 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .search-filters-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .search-actions {
+    flex-direction: row;
+    gap: 10px;
+  }
+
+  .search-actions .btn-primary,
+  .search-actions .btn-secondary {
+    flex: 1;
+  }
+}
+
+@media (max-width: 480px) {
+  .advanced-search-modal {
+    max-height: 92dvh !important;
+  }
+
+  .search-filters-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@keyframes slideUpSheet {
+  from { transform: translateY(100%); opacity: 0.9; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.advanced-search-modal::before {
+  content: '';
+  display: block;
+  width: 40px;
+  height: 4px;
+  background: var(--gray-300);
+  border-radius: 2px;
+  margin: 0 auto 16px;
+}
+
+/* Avatar Picker Modal — bottom sheet on mobile */
+@media (max-width: 768px) {
+  .modal-overlay:has(.avatar-picker-modal) {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .avatar-picker-modal {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
+    margin: 0 !important;
+    max-height: 82dvh !important;
+    padding: 8px 16px calc(20px + env(safe-area-inset-bottom, 0px)) !important;
+    box-sizing: border-box !important;
+    animation: slideUpSheet 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .avatar-picker-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+}
+
+@media (max-width: 400px) {
+  .avatar-picker-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* iOS double-tap zoom prevention inside modals */
+.modal-overlay button,
+.modal-overlay input,
+.modal-overlay select,
+.modal-overlay textarea {
+  touch-action: manipulation;
 }
 
 /* Auth Header */
@@ -7312,503 +7417,342 @@ input:checked + .toggle-slider:before {
   }
 }
 
-/* iOS-specific: prevent double-tap zoom on buttons inside modals */
-.modal-overlay button,
-.modal-overlay input,
-.modal-overlay select {
-  touch-action: manipulation;
+
+
+/* ============================================
+   POSTS / SOCIAL FEED
+   ============================================ */
+.posts-page {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px 16px 32px;
 }
 
-/* ── 4. ADVANCED SEARCH MODAL — mobile ───────── */
-@media (max-width: 768px) {
-  .advanced-search-modal {
-    /* Bottom-sheet on mobile */
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    top: auto !important;
-    max-width: 100% !important;
-    width: 100% !important;
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
-    margin: 0 !important;
-    max-height: 88svh !important;
-    overflow-y: auto !important;
-    -webkit-overflow-scrolling: touch;
-    padding: 8px 16px calc(20px + env(safe-area-inset-bottom, 0px)) !important;
-    animation: slideUpSheet 0.32s cubic-bezier(0.32, 0.72, 0, 1);
-    /* Ensure no clipping */
-    box-sizing: border-box;
-  }
-
-  /* When advanced search is open, overlay aligns to bottom */
-  .modal-overlay:has(.advanced-search-modal) {
-    align-items: flex-end;
-    padding: 0;
-  }
-
-  .search-filters-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-
-  .advanced-search-header h2 {
-    font-size: 1.15rem;
-  }
-
-  .search-actions {
-    flex-direction: row;
-    gap: 10px;
-  }
-
-  .search-actions .btn-primary,
-  .search-actions .btn-secondary {
-    flex: 1;
-  }
+.posts-compose-trigger {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: var(--white);
+  border: 1.5px solid var(--gray-200);
+  border-radius: var(--radius-xl);
+  padding: 14px 18px;
+  cursor: pointer;
+  margin-bottom: 20px;
+  transition: all var(--transition-fast);
+  box-shadow: var(--shadow-sm);
+  text-align: left;
 }
 
-@media (max-width: 480px) {
-  .advanced-search-modal {
-    max-height: 90vh !important;
-    padding: 18px 14px calc(12px + var(--safe-bottom)) !important;
-  }
-
-  .search-filters-grid {
-    grid-template-columns: 1fr;
-  }
+.posts-compose-trigger:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-md);
 }
 
-@keyframes slideUpSheet {
-  from {
-    transform: translateY(100%);
-    opacity: 0.8;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-/* Drag handle pill for bottom sheet feel */
-.advanced-search-modal::before {
-  content: '';
-  display: block;
+.compose-avatar {
   width: 40px;
-  height: 4px;
-  background: var(--gray-300);
-  border-radius: 2px;
-  margin: 0 auto 16px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 2px solid var(--gray-200);
 }
 
-/* ── 5. MOBILE BOTTOM NAV — safe area ─────────── */
-.mobile-bottom-nav {
-  padding-bottom: var(--safe-bottom);
+.compose-placeholder {
+  flex: 1;
+  color: var(--gray-400);
+  font-size: 0.95rem;
 }
 
-/* ── 6. AVATAR PICKER MODAL — mobile ─────────── */
+.compose-icons {
+  font-size: 1.1rem;
+  color: var(--gray-400);
+}
+
+.posts-compose-card {
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow-md);
+  border: 1.5px solid var(--primary-light);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.compose-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--gray-800);
+}
+
+.compose-textarea {
+  width: 100%;
+  border: 1.5px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  font-size: 1rem;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 90px;
+  transition: border-color var(--transition-fast);
+  color: var(--gray-800);
+  background: var(--white);
+}
+
+.compose-textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+}
+
+.compose-media-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.compose-url-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1.5px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  font-size: 0.9rem;
+  font-family: inherit;
+  color: var(--gray-700);
+  background: var(--gray-50);
+  transition: border-color var(--transition-fast);
+}
+
+.compose-url-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--white);
+}
+
+.compose-preview {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  max-height: 200px;
+}
+
+.compose-preview img {
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+  display: block;
+}
+
+.compose-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* Post Feed */
+.posts-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.posts-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.post-skeleton {
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  display: flex;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.post-card {
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--gray-100);
+  transition: box-shadow var(--transition-fast);
+}
+
+.post-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.post-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.post-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--gray-100);
+  flex-shrink: 0;
+}
+
+.post-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.post-meta strong {
+  font-size: 0.95rem;
+  color: var(--gray-800);
+}
+
+.post-meta span {
+  font-size: 0.8rem;
+  color: var(--gray-400);
+}
+
+.post-delete-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--gray-300);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.post-delete-btn:hover {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
+.post-text {
+  font-size: 0.97rem;
+  line-height: 1.65;
+  color: var(--gray-700);
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.post-image-wrap {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 12px;
+  background: var(--gray-100);
+}
+
+.post-image {
+  width: 100%;
+  max-height: 420px;
+  object-fit: cover;
+  display: block;
+}
+
+.post-video-wrap {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 12px;
+  background: #000;
+  aspect-ratio: 16/9;
+}
+
+.post-iframe,
+.post-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: none;
+}
+
+.post-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--gray-100);
+  margin-top: 4px;
+}
+
+.post-like-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--gray-500);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  transition: all var(--transition-fast);
+  font-family: inherit;
+}
+
+.post-like-btn:hover {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
+/* Mobile Posts */
 @media (max-width: 768px) {
-  .avatar-picker-modal {
-    position: fixed !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    top: auto !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
-    margin: 0 !important;
-    max-height: 82svh !important;
-    padding: 8px 16px calc(20px + env(safe-area-inset-bottom, 0px)) !important;
-    box-sizing: border-box !important;
-    animation: slideUpSheet 0.3s cubic-bezier(0.32, 0.72, 0, 1);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
+  .posts-page {
+    padding: 16px 12px 24px;
   }
 
-  .modal-overlay:has(.avatar-picker-modal) {
-    align-items: flex-end;
-    padding: 0;
+  .post-card {
+    padding: 16px;
   }
 
-  .avatar-picker-grid {
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+  .compose-actions {
+    flex-direction: row;
   }
 }
 
-@media (max-width: 400px) {
-  .avatar-picker-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
+/* ── DARK MODE: Posts ── */
+.App.dark .post-card,
+.App.dark .posts-compose-card,
+.App.dark .posts-compose-trigger {
+  background: var(--gray-800);
+  border-color: var(--gray-700);
 }
 
-/* ── 7. GENERIC MODAL CONTENT — mobile ──────── */
-@media (max-width: 768px) {
-  .modal-content {
-    /* Stay centered inside the flex overlay */
-    margin: auto 16px;
-    max-height: calc(100svh - 32px);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    width: calc(100% - 32px);
-    max-width: 100%;
-    padding: 20px 18px;
-    border-radius: var(--radius-xl);
-  }
-
-  .modal-content.large {
-    margin-top: max(16px, env(safe-area-inset-top, 16px));
-    margin-bottom: max(16px, env(safe-area-inset-bottom, 16px));
-    max-height: calc(100svh - 32px);
-  }
+.App.dark .compose-textarea,
+.App.dark .compose-url-input {
+  background: var(--gray-700);
+  border-color: var(--gray-600);
+  color: var(--gray-100);
 }
 
-/* ── 8. PREVENT IOS SCROLL BOUNCE ON MODALS ─── */
-.modal-overlay {
-  overscroll-behavior: contain;
+.App.dark .post-text {
+  color: var(--gray-200);
 }
 
-/* ── 9. PROFILE PAGE — mobile ─────────────────── */
-@media (max-width: 768px) {
-  .profile-header-inner {
-    flex-wrap: wrap;
-    padding: 0 16px 16px;
-    gap: 12px;
-    margin-top: -40px;
-  }
-
-  .profile-info {
-    padding-top: 44px;
-    min-width: unset;
-    width: 100%;
-  }
-
-  .profile-header-actions {
-    padding-top: 0;
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .profile-stats-row {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .profile-stats-row .stat-box {
-    min-width: 80px;
-    padding: 12px 6px;
-  }
-
-  .profile-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    gap: 0;
-    border-radius: var(--radius);
-    padding: 3px;
-  }
-
-  .profile-tab {
-    flex-shrink: 0;
-    padding: 9px 12px;
-    font-size: 0.82rem;
-  }
+.App.dark .post-meta strong {
+  color: var(--gray-100);
 }
 
-/* ── 10. TOUCH TARGETS — minimum 44px ──────────
-   Apple HIG / Google Material: all tap targets ≥ 44px */
-@media (max-width: 768px) {
-  .btn-follow,
-  .btn-primary,
-  .btn-secondary,
-  .filter-chip,
-  .profile-tab,
-  .mobile-nav-btn,
-  .icon-button,
-  .btn-login {
-    min-height: 44px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  /* Comment input on mobile */
-  .comment-input {
-    font-size: 16px; /* Prevents iOS auto-zoom on focus */
-    min-height: 44px;
-  }
-
-  /* All inputs — prevent iOS auto-zoom (must be 16px+) */
-  input[type="text"],
-  input[type="email"],
-  input[type="password"],
-  input[type="search"],
-  textarea,
-  select {
-    font-size: 16px !important;
-  }
+.App.dark .post-footer {
+  border-top-color: var(--gray-700);
 }
 
-/* ── 11. ACTIVITY FEED — mobile ───────────────── */
-@media (max-width: 768px) {
-  .activity-feed-page {
-    padding: 16px 12px;
-  }
-
-  .activity-filters {
-    gap: 6px;
-    padding-bottom: 4px;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    padding-bottom: 4px;
-    /* hide scrollbar */
-    scrollbar-width: none;
-  }
-  .activity-filters::-webkit-scrollbar { display: none; }
-
-  .filter-chip {
-    flex-shrink: 0;
-    padding: 8px 12px;
-    font-size: 0.8rem;
-    white-space: nowrap;
-  }
-
-  .activity-card {
-    padding: 12px 14px;
-  }
-
-  .activity-avatar {
-    width: 36px;
-    height: 36px;
-  }
-
-  .activity-meta {
-    font-size: 0.87rem;
-  }
-}
-
-/* ── 12. CONFIRM DIALOG — mobile ──────────────── */
-@media (max-width: 480px) {
-  .modal-content[style*="maxWidth: '420px'"],
-  .modal-content[style*="max-width: 420px"] {
-    margin: 16px;
-    padding: 24px 18px !important;
-  }
-}
-
-/* ── 13. DARK MODE modal fixes ─────────────────── */
-.App.dark .advanced-search-modal::before {
-  background: var(--gray-600);
-}
-
+/* ── DARK MODE: modals ── */
+.App.dark .advanced-search-modal::before,
 .App.dark .avatar-picker-modal::before {
   background: var(--gray-600);
 }
 
-/* ============================================================
-   RESPONSIVE IMPROVEMENTS — Tablet & All Screens
-   ============================================================ */
-
-/* ── Tablet (769px–1023px) ── */
-@media (min-width: 769px) and (max-width: 1023px) {
-  .header-container {
-    padding: 0 16px;
-    gap: 8px;
-  }
-
-  .nav-link {
-    padding: 8px 10px;
-    font-size: 0.85rem;
-  }
-
-  .hero {
-    gap: 32px;
-    padding: 40px 0;
-  }
-
-  .hero-content h1 {
-    font-size: 2.5rem;
-  }
-
-  .listings-grid,
-  .app-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .home-page,
-  .marketplace-page,
-  .advertise-page,
-  .code-sharing-page,
-  .messages-page,
-  .profile-page,
-  .favorites-page,
-  .settings-page {
-    padding: 24px 16px;
-  }
-
-  .auth-modal {
-    max-width: 440px;
-    padding: 36px 40px;
-  }
-}
-
-/* ── All mobile (≤768px) general improvements ── */
-@media (max-width: 768px) {
-  .hero {
-    grid-template-columns: 1fr;
-    gap: 24px;
-    padding: 32px 0 24px;
-    text-align: center;
-  }
-
-  .hero-content h1 {
-    font-size: 2rem;
-  }
-
-  .hero-buttons {
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-
-  .hero-stats {
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-
-  .hero-visual {
-    display: none;
-  }
-
-  .home-page,
-  .marketplace-page,
-  .advertise-page,
-  .code-sharing-page,
-  .profile-page,
-  .favorites-page,
-  .settings-page {
-    padding: 16px 12px;
-  }
-
-  .page-header {
-    margin-bottom: 24px;
-  }
-
-  .page-header h1 {
-    font-size: 1.6rem;
-  }
-
-  .page-header p {
-    font-size: 0.95rem;
-  }
-
-  .listings-grid,
-  .app-grid {
-    grid-template-columns: 1fr;
-  }
-
-  /* Prevent body scroll when any modal is open */
-  body.modal-open {
-    overflow: hidden;
-    position: fixed;
-    width: 100%;
-  }
-
-  /* Sign-in button compact */
-  .btn-login {
-    padding: 9px 14px;
-    font-size: 0.85rem;
-  }
-
-  .user-name {
-    display: none; /* hide name on mobile, show avatar only */
-  }
-
-  /* Stats grid 2-col on mobile */
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-  }
-
-  /* Settings page full-width on mobile */
-  .settings-content {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-sidebar {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 12px;
-  }
-
-  .settings-nav-btn {
-    flex: 1;
-    min-width: 120px;
-    font-size: 0.8rem;
-    padding: 8px 10px;
-  }
-}
-
-/* ── Small mobile (≤480px) ── */
-@media (max-width: 480px) {
-  .hero-content h1 {
-    font-size: 1.7rem;
-  }
-
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .form-row {
-    grid-template-columns: 1fr;
-  }
-
-  .social-login {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .auth-divider {
-    margin: 14px 0;
-  }
-
-  .search-filters-grid {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-}
-
-/* ── Very small (≤360px) ── */
-@media (max-width: 360px) {
-  .logo-text p {
-    display: none;
-  }
-
-  .hero-content h1 {
-    font-size: 1.5rem;
-  }
-
-  .header-container {
-    padding: 0 10px;
-    gap: 4px;
-  }
-}
-
-/* ============================================================
-   ERROR STATE & LOADING STATE IMPROVEMENTS
-   ============================================================ */
-
-/* Loading skeleton improvements */
-.skeleton-card {
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  background: var(--white);
-  box-shadow: var(--shadow-sm);
-}
-
+/* Skeleton shimmer */
 .skeleton {
   background: linear-gradient(90deg, var(--gray-100) 25%, var(--gray-200) 50%, var(--gray-100) 75%);
   background-size: 200% 100%;
@@ -7817,63 +7761,6 @@ input:checked + .toggle-slider:before {
 }
 
 @keyframes shimmer {
-  0% { background-position: 200% 0; }
+  0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
-}
-
-/* Error banner */
-.error-banner {
-  background: var(--danger-light);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: var(--radius-lg);
-  padding: 14px 18px;
-  color: var(--danger);
-  font-size: 0.9rem;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-/* Saving indicator */
-.saving-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.85rem;
-  color: var(--gray-500);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-/* Avatar save state indicator in avatar upload */
-.avatar-save-status {
-  font-size: 0.75rem;
-  text-align: center;
-  margin-top: 4px;
-  min-height: 16px;
-  transition: color var(--transition);
-}
-
-.avatar-save-status.success { color: var(--success); }
-.avatar-save-status.error { color: var(--danger); }
-.avatar-save-status.saving { color: var(--gray-400); }
-
-/* ── iOS safe area for modals — explicit support ── */
-@supports (padding: env(safe-area-inset-top)) {
-  .modal-overlay {
-    padding-top: max(20px, env(safe-area-inset-top));
-    padding-bottom: max(20px, env(safe-area-inset-bottom));
-    padding-left: max(16px, env(safe-area-inset-left));
-    padding-right: max(16px, env(safe-area-inset-right));
-  }
-
-  .modal-overlay:has(.advanced-search-modal),
-  .modal-overlay:has(.avatar-picker-modal) {
-    padding: 0;
-  }
 }
