@@ -115,7 +115,9 @@ function appReducer(state, action) {
       return { ...state, notificationsEnabled: action.payload };
     case 'ADD_NOTIFICATION': 
       if (!state.notificationsEnabled) return state;
-      return { ...state, notifications: [{...action.payload, id: Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
+      // Note: Supabase persistence for notifications is handled in individual action callers
+      // so we only update local state here to keep the reducer pure
+      return { ...state, notifications: [{...action.payload, id: action.payload.id || Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
     case 'REMOVE_NOTIFICATION': 
       return { ...state, notifications: (state.notifications || []).filter(n => n.id !== action.payload) };
     case 'CLEAR_NOTIFICATIONS': 
@@ -1278,6 +1280,9 @@ function Header() {
                 <Link to="/posts" className={`nav-link ${location.pathname === '/posts' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">📝</span> Posts
                 </Link>
+                <Link to="/analytics" className={`nav-link ${location.pathname === '/analytics' ? 'active' : ''}`} onClick={closeAll}>
+                  <span className="nav-icon">📊</span> Dashboard
+                </Link>
               </>
             )}
           </nav>
@@ -1445,16 +1450,16 @@ function Header() {
 // MOBILE BOTTOM NAVIGATION
 // ============================================
 function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
-  // Logged-in nav items
+  // Logged-in nav items — Favorites removed, Advertise + Code added next to Market
   const loggedInItems = [
     { to: '/', icon: '🏠', label: 'Home' },
     { to: '/marketplace', icon: '🛒', label: 'Market' },
+    { to: '/advertise', icon: '📱', label: 'Advertise' },
+    { to: '/code-sharing', icon: '💻', label: 'Code' },
     { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
-    { to: '/posts', icon: '📝', label: 'Posts' },
-    { to: '/favorites', icon: '⭐', label: 'Favorites' },
   ];
 
-  // Logged-out nav items — clean equal-width layout
+  // Logged-out nav items — same layout
   const loggedOutItems = [
     { to: '/', icon: '🏠', label: 'Home' },
     { to: '/marketplace', icon: '🛒', label: 'Market' },
@@ -1698,17 +1703,122 @@ function AdminDashboard() {
     maintenanceMode: false
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
-  const [hideConfirm, setHideConfirm] = useState(null); // { id, title }
-  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, title, type: 'listing'|'user' }
+  const [hideConfirm, setHideConfirm] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  // New: Platform Stats, Activity Feed, Reports
+  const [platformStats, setPlatformStats] = useState(null);
+  const [loadingPlatformStats, setLoadingPlatformStats] = useState(false);
+  const [activityFeed, setActivityFeed] = useState([]);
+  const [loadingActivity, setLoadingActivity] = useState(false);
+  const [reports, setReports] = useState([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [reportResolved, setReportResolved] = useState({});
 
   useEffect(() => {
-    if (activeTab === 'users' && users.length === 0) {
-      loadUsers();
-    }
-    if (activeTab === 'overview') {
-      loadStats();
-    }
+    if (activeTab === 'users' && users.length === 0) loadUsers();
+    if (activeTab === 'overview') loadStats();
+    if (activeTab === 'platform') loadPlatformStats();
+    if (activeTab === 'activity') loadActivityFeed();
+    if (activeTab === 'reports') loadReports();
   }, [activeTab]);
+
+  const loadPlatformStats = async () => {
+    setLoadingPlatformStats(true);
+    try {
+      const [usersRes, listingsRes, msgsRes, appsRes, snippetsRes] = await Promise.all([
+        supabase.from('profiles').select('id,created_at,role', { count: 'exact' }),
+        supabase.from('listings').select('id,created_at,views,hidden', { count: 'exact' }),
+        supabase.from('messages').select('id,created_at,read', { count: 'exact' }),
+        supabase.from('apps').select('id,created_at,downloads', { count: 'exact' }),
+        supabase.from('code_snippets').select('id,created_at,likes', { count: 'exact' })
+      ]);
+      const now = new Date();
+      const day7 = new Date(now - 7 * 86400000);
+      const day30 = new Date(now - 30 * 86400000);
+      const newUsersWeek = (usersRes.data || []).filter(u => new Date(u.created_at) > day7).length;
+      const newUsersMonth = (usersRes.data || []).filter(u => new Date(u.created_at) > day30).length;
+      const activeListings = (listingsRes.data || []).filter(l => !l.hidden).length;
+      const hiddenListings = (listingsRes.data || []).filter(l => l.hidden).length;
+      const totalViews = (listingsRes.data || []).reduce((s, l) => s + (l.views || 0), 0);
+      const unreadMsgs = (msgsRes.data || []).filter(m => !m.read).length;
+      const totalDownloads = (appsRes.data || []).reduce((s, a) => s + (a.downloads || 0), 0);
+      const totalLikes = (snippetsRes.data || []).reduce((s, sn) => s + (sn.likes || 0), 0);
+      const adminCount = (usersRes.data || []).filter(u => u.role === 'admin').length;
+      setPlatformStats({
+        totalUsers: usersRes.data?.length || 0,
+        newUsersWeek,
+        newUsersMonth,
+        adminCount,
+        totalListings: listingsRes.data?.length || 0,
+        activeListings,
+        hiddenListings,
+        totalViews,
+        totalMessages: msgsRes.data?.length || 0,
+        unreadMsgs,
+        totalApps: appsRes.data?.length || 0,
+        totalDownloads,
+        totalSnippets: snippetsRes.data?.length || 0,
+        totalLikes
+      });
+    } catch(e) { console.error('Platform stats error:', e); }
+    setLoadingPlatformStats(false);
+  };
+
+  const loadActivityFeed = async () => {
+    setLoadingActivity(true);
+    try {
+      // Combine recent listings, messages, and user signups as activity
+      const [listingsRes, usersRes] = await Promise.all([
+        supabase.from('listings').select('id,title,user_id,seller_name,created_at,hidden').order('created_at', { ascending: false }).limit(20),
+        supabase.from('profiles').select('id,name,email,created_at,role').order('created_at', { ascending: false }).limit(10)
+      ]);
+      const activities = [];
+      (listingsRes.data || []).forEach(l => activities.push({
+        id: `listing-${l.id}`, type: 'listing', icon: '🛒',
+        title: `New listing: "${l.title}"`,
+        user: l.seller_name || 'Unknown', created_at: l.created_at,
+        meta: l.hidden ? '🙈 Hidden' : '✅ Live'
+      }));
+      (usersRes.data || []).forEach(u => activities.push({
+        id: `user-${u.id}`, type: 'signup', icon: '👤',
+        title: `New user joined`,
+        user: u.name || u.email?.split('@')[0] || 'User', created_at: u.created_at,
+        meta: u.role
+      }));
+      activities.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      setActivityFeed(activities.slice(0, 30));
+    } catch(e) {}
+    setLoadingActivity(false);
+  };
+
+  const loadReports = async () => {
+    setLoadingReports(true);
+    try {
+      const { data } = await supabase.from('reports')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      setReports(data || []);
+    } catch(e) {
+      // reports table may not exist — generate mock from flagged listings
+      const flagged = (state.listings || []).filter(l => l.flagged || l.hidden);
+      setReports(flagged.map(l => ({
+        id: `mock-${l.id}`, listing_id: l.id, listing_title: l.title,
+        reason: 'Flagged by system', status: l.hidden ? 'actioned' : 'pending',
+        created_at: l.created_at, reporter_name: 'System'
+      })));
+    }
+    setLoadingReports(false);
+  };
+
+  const handleResolveReport = async (reportId) => {
+    try {
+      await supabase.from('reports').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', reportId);
+    } catch(e) {}
+    setReportResolved(prev => ({ ...prev, [reportId]: true }));
+    setReports(prev => prev.map(r => r.id === reportId ? { ...r, status: 'resolved' } : r));
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Report marked resolved', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+  };
 
   const loadStats = async () => {
     try {
@@ -1841,6 +1951,9 @@ function AdminDashboard() {
 
   const tabs = [
     { id: 'overview', label: '📊 Overview' },
+    { id: 'platform', label: '🔢 Platform Stats' },
+    { id: 'activity', label: '📡 Activity Feed' },
+    { id: 'reports', label: '🚩 Reports' },
     { id: 'users', label: '👥 Users' },
     { id: 'listings', label: '🛒 Listings' },
     { id: 'posts', label: '📝 Posts' },
@@ -1911,6 +2024,143 @@ function AdminDashboard() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'platform' && (
+        <div className="admin-platform-stats">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <h2 style={{ margin: 0 }}>🔢 Platform Statistics</h2>
+            <button className="btn-sm btn-secondary" onClick={loadPlatformStats}>🔄 Refresh</button>
+          </div>
+          {loadingPlatformStats ? (
+            <div style={{ textAlign: 'center', padding: 60, color: 'var(--gray-400)' }}>Loading stats…</div>
+          ) : platformStats ? (
+            <>
+              <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 16, marginBottom: 24 }}>
+                {[
+                  { icon: '👥', value: platformStats.totalUsers, label: 'Total Users', sub: `+${platformStats.newUsersWeek} this week`, color: '#667eea' },
+                  { icon: '📅', value: platformStats.newUsersMonth, label: 'New Users (30d)', sub: `${platformStats.adminCount} admin(s)`, color: '#3b82f6' },
+                  { icon: '🛒', value: platformStats.totalListings, label: 'Total Listings', sub: `${platformStats.activeListings} live, ${platformStats.hiddenListings} hidden`, color: '#f59e0b' },
+                  { icon: '👁️', value: platformStats.totalViews, label: 'Total Views', sub: 'across all listings', color: '#ec4899' },
+                  { icon: '💬', value: platformStats.totalMessages, label: 'Messages', sub: `${platformStats.unreadMsgs} unread`, color: '#ef4444' },
+                  { icon: '📱', value: platformStats.totalApps, label: 'Apps', sub: `${platformStats.totalDownloads} downloads`, color: '#10b981' },
+                  { icon: '💻', value: platformStats.totalSnippets, label: 'Snippets', sub: `${platformStats.totalLikes} likes`, color: '#8b5cf6' },
+                ].map((s, i) => (
+                  <div key={i} className="stat-card kpi-card" style={{ borderTop: `3px solid ${s.color}` }}>
+                    <span className="stat-icon">{s.icon}</span>
+                    <h3 style={{ color: s.color }}>{s.value}</h3>
+                    <p>{s.label}</p>
+                    <small style={{ color: 'var(--gray-400)' }}>{s.sub}</small>
+                  </div>
+                ))}
+              </div>
+              <div className="admin-section-card">
+                <h3 style={{ marginBottom: 16 }}>📊 Health Overview</h3>
+                <div className="platform-health-grid">
+                  <div className="health-metric">
+                    <div className="health-label">User Retention (new/total)</div>
+                    <div className="health-bar-wrap"><div className="health-bar" style={{ width: `${platformStats.totalUsers > 0 ? Math.round((platformStats.newUsersMonth / platformStats.totalUsers) * 100) : 0}%`, background: '#667eea' }}></div></div>
+                    <div className="health-value">{platformStats.totalUsers > 0 ? Math.round((platformStats.newUsersMonth / platformStats.totalUsers) * 100) : 0}% growth</div>
+                  </div>
+                  <div className="health-metric">
+                    <div className="health-label">Listing Activity (live/total)</div>
+                    <div className="health-bar-wrap"><div className="health-bar" style={{ width: `${platformStats.totalListings > 0 ? Math.round((platformStats.activeListings / platformStats.totalListings) * 100) : 0}%`, background: '#10b981' }}></div></div>
+                    <div className="health-value">{platformStats.totalListings > 0 ? Math.round((platformStats.activeListings / platformStats.totalListings) * 100) : 0}% active</div>
+                  </div>
+                  <div className="health-metric">
+                    <div className="health-label">Message Read Rate</div>
+                    <div className="health-bar-wrap"><div className="health-bar" style={{ width: `${platformStats.totalMessages > 0 ? Math.round(((platformStats.totalMessages - platformStats.unreadMsgs) / platformStats.totalMessages) * 100) : 0}%`, background: '#f59e0b' }}></div></div>
+                    <div className="health-value">{platformStats.totalMessages > 0 ? Math.round(((platformStats.totalMessages - platformStats.unreadMsgs) / platformStats.totalMessages) * 100) : 0}% read</div>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <button className="btn-primary" onClick={loadPlatformStats}>Load Platform Stats</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'activity' && (
+        <div className="admin-activity">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <h2 style={{ margin: 0 }}>📡 User Activity Monitor</h2>
+            <button className="btn-sm btn-secondary" onClick={loadActivityFeed}>🔄 Refresh</button>
+          </div>
+          {loadingActivity ? (
+            <div style={{ textAlign: 'center', padding: 60, color: 'var(--gray-400)' }}>Loading activity…</div>
+          ) : activityFeed.length === 0 ? (
+            <div className="empty-state"><span className="empty-icon">📡</span><h3>No activity yet</h3></div>
+          ) : (
+            <div className="admin-section-card">
+              <div className="activity-feed-list">
+                {activityFeed.map(item => (
+                  <div key={item.id} className="activity-feed-row">
+                    <div className="activity-feed-icon" style={{ background: item.type === 'signup' ? 'var(--info-light)' : 'var(--success-light)' }}>
+                      {item.icon}
+                    </div>
+                    <div className="activity-feed-body">
+                      <p><strong>{item.user}</strong> — {item.title}</p>
+                      <small style={{ color: 'var(--gray-400)' }}>{new Date(item.created_at).toLocaleString()}</small>
+                    </div>
+                    <span className="activity-feed-meta" style={{
+                      background: item.meta === '✅ Live' ? 'var(--success-light)' : item.meta === '🙈 Hidden' ? 'var(--warning-light)' : 'var(--gray-100)',
+                      color: item.meta === '✅ Live' ? 'var(--success)' : item.meta === '🙈 Hidden' ? 'var(--warning)' : 'var(--gray-600)'
+                    }}>{item.meta}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'reports' && (
+        <div className="admin-reports">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <h2 style={{ margin: 0 }}>🚩 Reports &amp; Moderation</h2>
+            <button className="btn-sm btn-secondary" onClick={loadReports}>🔄 Refresh</button>
+          </div>
+          {loadingReports ? (
+            <div style={{ textAlign: 'center', padding: 60, color: 'var(--gray-400)' }}>Loading reports…</div>
+          ) : reports.length === 0 ? (
+            <div className="empty-state"><span className="empty-icon">✅</span><h3>No reports</h3><p>Nothing flagged yet — platform looks clean!</p></div>
+          ) : (
+            <div className="admin-section-card">
+              <div className="admin-table-header" style={{ gridTemplateColumns: '1fr 1fr 120px 120px' }}>
+                <span>Item</span><span>Reason / Reporter</span><span>Status</span><span>Action</span>
+              </div>
+              {reports.map(report => (
+                <div key={report.id} className="admin-table-row" style={{ gridTemplateColumns: '1fr 1fr 120px 120px' }}>
+                  <div>
+                    <strong>{report.listing_title || report.target_id || 'Unknown'}</strong>
+                    <br /><small style={{ color: 'var(--gray-400)' }}>{new Date(report.created_at).toLocaleDateString()}</small>
+                  </div>
+                  <div>
+                    <span>{report.reason || 'No reason given'}</span>
+                    <br /><small style={{ color: 'var(--gray-400)' }}>By: {report.reporter_name || 'Anonymous'}</small>
+                  </div>
+                  <span className={`report-status ${report.status || 'pending'}`} style={{
+                    padding: '4px 10px', borderRadius: 'var(--radius-full)', fontSize: '0.78rem',
+                    background: report.status === 'resolved' ? 'var(--success-light)' : report.status === 'actioned' ? 'var(--warning-light)' : 'var(--danger-light)',
+                    color: report.status === 'resolved' ? 'var(--success)' : report.status === 'actioned' ? 'var(--warning)' : 'var(--danger)'
+                  }}>{report.status || 'pending'}</span>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {report.status !== 'resolved' && (
+                      <button className="btn-sm btn-secondary" onClick={() => handleResolveReport(report.id)}>✅ Resolve</button>
+                    )}
+                    {report.listing_id && (
+                      <button className="btn-sm" style={{ background: 'var(--danger-light)', color: 'var(--danger)', border: 'none', borderRadius: 'var(--radius-sm)', padding: '4px 10px', cursor: 'pointer', fontSize: '0.78rem' }}
+                        onClick={() => handleHideListing(report.listing_id, report.listing_title || 'this listing')}>🙈 Hide</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -2177,6 +2427,29 @@ function AdminDashboard() {
 // ============================================
 function AnalyticsPage() {
   const { state } = useAppContext();
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [extraStats, setExtraStats] = useState(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+
+  useEffect(() => {
+    if (state.currentUser) loadExtraStats();
+  }, [state.currentUser]);
+
+  const loadExtraStats = async () => {
+    if (!state.currentUser) return;
+    setLoadingStats(true);
+    try {
+      const [viewsRes, convRes] = await Promise.all([
+        supabase.from('listings').select('id,title,views,created_at').eq('user_id', state.currentUser.id),
+        supabase.from('messages').select('id,read,created_at').eq('to_user', state.currentUser.id)
+      ]);
+      setExtraStats({
+        listingViews: viewsRes.data || [],
+        inboxMessages: convRes.data || []
+      });
+    } catch(e) {}
+    setLoadingStats(false);
+  };
 
   if (!state.currentUser) {
     return (
@@ -2194,66 +2467,199 @@ function AnalyticsPage() {
   const userApps = (state.apps || []).filter(a => a.user_id === state.currentUser.id);
   const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
   const userMessages = (state.messages || []).filter(m => m.to_user === state.currentUser.id);
+  const totalViews = userListings.reduce((sum, l) => sum + (l.views || 0), 0);
+  const unreadMsgs = userMessages.filter(m => !m.read).length;
+  const totalLikes = userSnippets.reduce((sum, s) => sum + (s.likes || 0), 0);
+  const totalDownloads = userApps.reduce((sum, a) => sum + (a.downloads || 0), 0);
+  const maxViews = Math.max(...userListings.map(l => l.views || 0), 1);
+
+  const kpiCards = [
+    { icon: '👁️', value: totalViews, label: 'Total Views', sub: `across ${userListings.length} listing${userListings.length !== 1 ? 's' : ''}`, color: '#667eea' },
+    { icon: '💬', value: userMessages.length, label: 'Messages Received', sub: `${unreadMsgs} unread`, color: '#10b981' },
+    { icon: '⭐', value: state.favorites?.length || 0, label: 'Saved Favorites', sub: 'across marketplace', color: '#f59e0b' },
+    { icon: '❤️', value: totalLikes, label: 'Code Likes', sub: `${userSnippets.length} snippet${userSnippets.length !== 1 ? 's' : ''}`, color: '#ef4444' },
+    { icon: '📱', value: userApps.length, label: 'Apps Listed', sub: `${totalDownloads} downloads`, color: '#8b5cf6' },
+    { icon: '👥', value: (state.followers || []).length, label: 'Followers', sub: `following ${(state.follows || []).length}`, color: '#3b82f6' },
+  ];
 
   return (
     <div className="analytics-page">
       <div className="page-header">
-        <h1>📊 Your Analytics</h1>
-        <p>Track your activity and engagement</p>
+        <h1>📊 Your Dashboard</h1>
+        <p>Track performance, messages, and growth</p>
       </div>
 
-      <div className="stats-grid">
-        <div className="stat-card">
-          <span className="stat-icon">🛒</span>
-          <h3>{userListings.length}</h3>
-          <p>Your Listings</p>
-          <small>{userListings.reduce((sum, l) => sum + (l.views || 0), 0)} total views</small>
-        </div>
-        <div className="stat-card">
-          <span className="stat-icon">📱</span>
-          <h3>{userApps.length}</h3>
-          <p>Your Apps</p>
-          <small>{userApps.reduce((sum, a) => sum + (a.downloads || 0), 0)} downloads</small>
-        </div>
-        <div className="stat-card">
-          <span className="stat-icon">💻</span>
-          <h3>{userSnippets.length}</h3>
-          <p>Code Snippets</p>
-          <small>{userSnippets.reduce((sum, s) => sum + (s.likes || 0), 0)} total likes</small>
-        </div>
-        <div className="stat-card">
-          <span className="stat-icon">💬</span>
-          <h3>{userMessages.length}</h3>
-          <p>Messages Received</p>
-          <small>{userMessages.filter(m => !m.read).length} unread</small>
-        </div>
+      <div className="dashboard-tabs">
+        {[
+          { id: 'dashboard', label: '🏠 Overview' },
+          { id: 'listings', label: '🛒 Listings' },
+          { id: 'messages', label: '💬 Messages' },
+        ].map(t => (
+          <button key={t.id} className={`admin-tab ${activeTab === t.id ? 'active' : ''}`} onClick={() => setActiveTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <div className="analytics-charts">
-        <div className="chart-container">
-          <h3>Listing Performance</h3>
-          <div className="chart-placeholder">
-            <div className="bar-chart">
-              {userListings.slice(0, 5).map((listing, i) => (
-                <div key={i} className="bar-item">
-                  <div className="bar-label">{listing.title?.substring(0, 20)}</div>
-                  <div className="bar-wrapper">
-                    <div 
-                      className="bar-fill" 
-                      style={{ 
-                        width: `${Math.min((listing.views || 0) * 10, 100)}%`,
-                        background: `hsl(${240 + i * 30}, 70%, 60%)`
-                      }}
-                    >
-                      <span>{listing.views || 0} views</span>
+      {activeTab === 'dashboard' && (
+        <>
+          <div className="stats-grid dashboard-kpi-grid">
+            {kpiCards.map((k, i) => (
+              <div key={i} className="stat-card kpi-card" style={{ borderTop: `3px solid ${k.color}` }}>
+                <span className="stat-icon">{k.icon}</span>
+                <h3 style={{ color: k.color }}>{loadingStats ? '…' : k.value}</h3>
+                <p>{k.label}</p>
+                <small style={{ color: 'var(--gray-400)' }}>{k.sub}</small>
+              </div>
+            ))}
+          </div>
+
+          <div className="dashboard-panels">
+            <div className="dash-panel">
+              <div className="dash-panel-header">
+                <h3>🛒 Recent Listings</h3>
+                <Link to="/marketplace" className="btn-sm btn-secondary">Browse All</Link>
+              </div>
+              {userListings.length === 0 ? (
+                <div className="dash-empty"><span>🛒</span><p>No listings yet</p><Link to="/marketplace" className="btn-primary btn-sm">Create One</Link></div>
+              ) : (
+                <div className="dash-listing-list">
+                  {userListings.slice(0, 5).map(l => (
+                    <div key={l.id} className="dash-listing-row">
+                      <div className="dash-listing-thumb" style={{ background: 'var(--gray-100)' }}>
+                        {l.imageUrl ? <img src={l.imageUrl} alt={l.title} onError={e => e.target.style.display='none'} /> : <span>🛒</span>}
+                      </div>
+                      <div className="dash-listing-meta">
+                        <strong>{l.title}</strong>
+                        <span className="price-tag">${l.price || 0}</span>
+                      </div>
+                      <div className="dash-listing-stats">
+                        <span className="dash-stat-pill">👁️ {l.views || 0}</span>
+                        <span className={`dash-stat-pill ${l.hidden ? 'hidden-pill' : 'visible-pill'}`}>{l.hidden ? '🙈 Hidden' : '👁 Live'}</span>
+                      </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-              ))}
+              )}
+            </div>
+
+            <div className="dash-panel">
+              <div className="dash-panel-header">
+                <h3>💬 Recent Messages</h3>
+                <Link to="/messages" className="btn-sm btn-secondary">Open Inbox</Link>
+              </div>
+              {userMessages.length === 0 ? (
+                <div className="dash-empty"><span>💬</span><p>No messages yet</p></div>
+              ) : (
+                <div className="dash-msg-list">
+                  {userMessages.slice(0, 5).map((m, i) => (
+                    <div key={i} className={`dash-msg-row ${!m.read ? 'unread' : ''}`}>
+                      <div className="dash-msg-avatar">
+                        <img src={m.from_avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(m.from_name || 'U')}&background=667eea&color=fff&size=36`}
+                          alt={m.from_name} onError={e => { e.target.src = 'https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=36'; }} />
+                      </div>
+                      <div className="dash-msg-body">
+                        <strong>{m.from_name || 'Unknown'}</strong>
+                        <p>{(m.message || '').substring(0, 60)}{m.message?.length > 60 ? '…' : ''}</p>
+                      </div>
+                      {!m.read && <span className="dash-unread-dot"></span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {activeTab === 'listings' && (
+        <div className="analytics-charts">
+          <div className="chart-container">
+            <h3>📊 Listing Performance by Views</h3>
+            {userListings.length === 0 ? (
+              <div className="dash-empty"><span>🛒</span><p>No listings to show</p></div>
+            ) : (
+              <div className="bar-chart enhanced-bar-chart">
+                {userListings.slice(0, 10).map((listing, i) => {
+                  const pct = maxViews > 0 ? Math.round(((listing.views || 0) / maxViews) * 100) : 0;
+                  const colors = ['#667eea','#10b981','#f59e0b','#ef4444','#8b5cf6','#3b82f6','#ec4899','#14b8a6','#f97316','#6366f1'];
+                  return (
+                    <div key={listing.id} className="bar-item">
+                      <div className="bar-label" title={listing.title}>{listing.title?.substring(0, 22) || 'Untitled'}</div>
+                      <div className="bar-wrapper">
+                        <div className="bar-fill" style={{ width: `${Math.max(pct, 4)}%`, background: colors[i % colors.length] }}>
+                          <span>{listing.views || 0} views</span>
+                        </div>
+                      </div>
+                      <div className="bar-meta">
+                        <span className={listing.hidden ? 'hidden-pill' : 'visible-pill'}>{listing.hidden ? '🙈' : '✅'}</span>
+                        <span>${listing.price || 0}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="chart-container">
+            <h3>💬 Engagement Summary</h3>
+            <div className="engage-grid">
+              <div className="engage-card" style={{ borderColor: '#667eea' }}>
+                <span style={{ fontSize: '2rem' }}>👁️</span>
+                <h4>{totalViews}</h4>
+                <p>Total Views</p>
+              </div>
+              <div className="engage-card" style={{ borderColor: '#10b981' }}>
+                <span style={{ fontSize: '2rem' }}>💬</span>
+                <h4>{userMessages.length}</h4>
+                <p>Inquiries</p>
+              </div>
+              <div className="engage-card" style={{ borderColor: '#f59e0b' }}>
+                <span style={{ fontSize: '2rem' }}>⭐</span>
+                <h4>{state.favorites?.length || 0}</h4>
+                <p>Saved by You</p>
+              </div>
+              <div className="engage-card" style={{ borderColor: '#ef4444' }}>
+                <span style={{ fontSize: '2rem' }}>❤️</span>
+                <h4>{totalLikes}</h4>
+                <p>Code Likes</p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {activeTab === 'messages' && (
+        <div className="chart-container">
+          <div className="dash-panel-header" style={{ marginBottom: '16px' }}>
+            <h3>💬 All Received Messages</h3>
+            <Link to="/messages" className="btn-sm btn-primary">Reply in Inbox</Link>
+          </div>
+          {userMessages.length === 0 ? (
+            <div className="dash-empty"><span>📭</span><p>No messages received yet</p></div>
+          ) : (
+            <div className="dash-msg-list full-msg-list">
+              {userMessages.map((m, i) => (
+                <div key={i} className={`dash-msg-row ${!m.read ? 'unread' : ''}`}>
+                  <div className="dash-msg-avatar">
+                    <img src={m.from_avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(m.from_name || 'U')}&background=667eea&color=fff&size=36`}
+                      alt={m.from_name} onError={e => { e.target.src = 'https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=36'; }} />
+                  </div>
+                  <div className="dash-msg-body">
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <strong>{m.from_name || 'Unknown'}</strong>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>{new Date(m.created_at).toLocaleDateString()}</span>
+                    </div>
+                    <p style={{ margin: 0 }}>{m.message}</p>
+                    {m.subject && <small style={{ color: 'var(--gray-400)' }}>Re: {m.subject}</small>}
+                  </div>
+                  {!m.read && <span className="dash-unread-dot"></span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3405,6 +3811,17 @@ function ListingCard({ listing }) {
     } else {
       setShowContact(!showContact);
     }
+  };
+
+  // Track listing view on expand/contact (non-blocking, best-effort)
+  const trackView = async () => {
+    if (!listing?.id) return;
+    try {
+      await supabase.rpc('increment_listing_views', { listing_id: listing.id }).then(() => {}).catch(() => {
+        // Fallback: direct update if RPC doesn't exist
+        supabase.from('listings').update({ views: (listing.views || 0) + 1 }).eq('id', listing.id).then(() => {}).catch(() => {});
+      });
+    } catch(e) {}
   };
 
   const toggleFavorite = async () => {
