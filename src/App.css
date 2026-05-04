@@ -8991,3 +8991,72 @@ input:checked + .toggle-slider:before {
 .App.dark .messenger-chat-info strong {
   color: var(--gray-100);
 }
+/* ============================================
+   ADMIN — Role action buttons
+   ============================================ */
+.admin-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.role-badge.role-developer { background: #dbeafe; color: #1e40af; }
+.role-badge.role-admin     { background: #ede9fe; color: #6d28d9; }
+.role-badge.role-banned    { background: #fee2e2; color: #991b1b; }
+.role-badge.role-designer  { background: #fef3c7; color: #92400e; }
+.role-badge.role-freelancer{ background: #d1fae5; color: #065f46; }
+
+/* ============================================
+   MESSAGES — Sender name above bubble
+   ============================================ */
+.msg-col > span {
+  font-size: 0.72rem;
+  color: var(--gray-400);
+  margin-bottom: 2px;
+  display: block;
+}
+.msg-row.mine .msg-col > span { text-align: right; }
+
+/* ============================================
+   USER PROFILE — Role badge on public view
+   ============================================ */
+.profile-role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--gray-100);
+  color: var(--gray-600);
+  margin-bottom: 8px;
+}
+
+/* ============================================
+   REFRESH LOADING — faster mini loader
+   ============================================ */
+.dm-mini-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  padding: 20px;
+}
+.dm-mini-loader__inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.1rem;
+  color: var(--gray-400);
+}
+.dm-mini-loader__ring {
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--gray-200);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
