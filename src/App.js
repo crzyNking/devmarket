@@ -31,14 +31,6 @@ const getPersistedNotificationsEnabled = () => {
   return true;
 };
 
-const hasPersistedNotificationsEnabled = () => {
-  try {
-    return localStorage.getItem('devMarketNotificationsEnabled') !== null;
-  } catch (e) {
-    return false;
-  }
-};
-
 const initialState = {
   listings: [],
   apps: [],
@@ -551,14 +543,15 @@ function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
-  const [hasShownLoader, setHasShownLoader] = useState(() => {
-    try {
-      return sessionStorage.getItem('devMarketLoaderShown') === 'true';
-    } catch (e) {
-      return false;
-    }
-  });
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [hasShownLoader, setHasShownLoader] = useState(false);
+
+  useEffect(() => {
+    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
+    if (loaderShown) {
+      setHasShownLoader(true);
+    }
+  }, []);
 
   async function loadPublicData() {
     try {
@@ -629,10 +622,8 @@ function App() {
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
-        // Keep local preference authoritative so notification OFF survives refreshes.
-        if (hasPersistedNotificationsEnabled()) {
-          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: getPersistedNotificationsEnabled() });
-        } else if (profile.notifications_enabled !== undefined && profile.notifications_enabled !== null) {
+        // Load notification preference from Supabase
+        if (profile.notifications_enabled !== undefined && profile.notifications_enabled !== null) {
           dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: profile.notifications_enabled });
         }
       } else {
@@ -909,7 +900,6 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
-    let finished = false;
 
     async function initialize() {
       try {
@@ -936,25 +926,21 @@ function App() {
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
         }
-      } finally {
-        finished = true;
       }
     }
 
-    // Always keep a safety fallback to avoid infinite loader on refresh.
-    const safetyTimeout = setTimeout(() => {
-      if (!mounted || finished) return;
-      setIsInitialLoading(false);
-      try { sessionStorage.setItem('devMarketLoaderShown', 'true'); } catch (e) {}
-      setHasShownLoader(true);
-    }, 7000);
-
     if (!hasShownLoader) {
       initialize().then(() => {
-        try { sessionStorage.setItem('devMarketLoaderShown', 'true'); } catch (e) {}
-        setHasShownLoader(true);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
         setTimeout(() => setIsInitialLoading(false), 500);
       });
+      
+      const safetyTimeout = setTimeout(() => {
+        setIsInitialLoading(false);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+      }, 6000);
+      
+      return () => clearTimeout(safetyTimeout);
     } else {
       initialize().then(() => setIsInitialLoading(false));
     }
@@ -975,7 +961,6 @@ function App() {
 
     return () => {
       mounted = false;
-      clearTimeout(safetyTimeout);
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
@@ -1992,27 +1977,6 @@ function AdminDashboard() {
     }
   };
 
-  const handleSetUserRole = async (userId, userName, role) => {
-    try {
-      await supabase.from('profiles').update({ role, updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role } : u));
-      dispatch({
-        type: 'ADD_NOTIFICATION',
-        payload: {
-          message: role === 'developer' ? `👨‍💻 ${userName} is now a Developer` :
-            role === 'admin' ? `🛡️ ${userName} is now an Admin` :
-            role === 'banned' ? `🚫 ${userName} has been banned` :
-            `✅ ${userName} role updated`,
-          type: role === 'banned' ? 'warning' : 'success',
-          time: new Date().toLocaleTimeString(),
-          read: false
-        }
-      });
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not update role for ${userName}`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
   if (!state.currentUser || !state.isAdmin) {
     return (
       <div className="admin-page">
@@ -2292,15 +2256,6 @@ function AdminDashboard() {
                           🛡️ Promote
                         </button>
                       )}
-                      {user.id !== state.currentUser.id && user.role === 'admin' && (
-                        <button
-                          className="btn-sm"
-                          style={{ background: 'var(--warning)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleSetUserRole(user.id, user.name || 'User', 'developer')}
-                        >
-                          👨‍💻 Set Developer
-                        </button>
-                      )}
                       {user.id !== state.currentUser.id && user.role !== 'banned' && (
                         <button 
                           className="btn-sm" 
@@ -2311,13 +2266,7 @@ function AdminDashboard() {
                         </button>
                       )}
                       {user.role === 'banned' && (
-                        <button
-                          className="btn-sm"
-                          style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleSetUserRole(user.id, user.name || 'User', 'developer')}
-                        >
-                          ✅ Unban to Developer
-                        </button>
+                        <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
@@ -2910,10 +2859,6 @@ function Messages() {
       const msgData = {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
-        from_name: state.profile?.name || state.currentUser.email?.split('@')[0] || 'User',
-        from_avatar: state.profile?.avatar_url || null,
-        to_name: replyingTo.userName || 'User',
-        to_avatar: replyingTo.userAvatar || null,
         subject: 'Re: Conversation',
         message: optimisticMsg.message,
         read: false,
@@ -3160,11 +3105,6 @@ function Messages() {
                       />
                     )}
                     <div className="msg-col">
-                      {!isMine && showAvatar && (
-                        <small style={{ color: 'var(--gray-400)', marginLeft: 6, marginBottom: 4, display: 'inline-block' }}>
-                          {activeConv.userName || msg.from_name || 'User'}
-                        </small>
-                      )}
                       <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
                         <p>{msg.message}</p>
                       </div>
@@ -3642,7 +3582,6 @@ function UserProfile() {
 
   const displayName = profile.name || 'Anonymous User';
   const avatarUrl = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`;
-  const profileRole = (profile.role || 'user').toLowerCase();
 
   return (
     <div className="profile-page">
@@ -3659,11 +3598,6 @@ function UserProfile() {
                 <span className="verified-badge" title="Verified Account">✓</span>
               )}
             </h1>
-            <p style={{ marginTop: 6 }}>
-              <span className={`role-badge role-${profileRole}`}>
-                {profileRole === 'admin' ? '🛡️' : profileRole === 'developer' ? '👨‍💻' : profileRole === 'banned' ? '🚫' : '👤'} {profileRole}
-              </span>
-            </p>
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
@@ -3894,10 +3828,6 @@ function ListingCard({ listing }) {
         const msgData = {
           from_user: state.currentUser.id,
           to_user: listing.user_id,
-          from_name: state.profile?.name || state.currentUser.email?.split('@')[0] || 'User',
-          from_avatar: state.profile?.avatar_url || null,
-          to_name: listing.seller_name || listing.seller || 'User',
-          to_avatar: listing.seller_avatar || listing.sellerAvatar || null,
           subject: `Inquiry about ${listing.title}`,
           message: message,
           listing_id: listing.id,
@@ -4734,10 +4664,6 @@ function AppCard({ app }) {
         await supabase.from('messages').insert([{
           from_user: state.currentUser.id,
           to_user: app.user_id,
-          from_name: state.profile?.name || state.currentUser.email?.split('@')[0] || 'User',
-          from_avatar: state.profile?.avatar_url || null,
-          to_name: app.developer_name || app.developer || 'User',
-          to_avatar: app.developer_avatar || app.developerAvatar || null,
           subject: `Inquiry about ${app.appName}`,
           message: message,
           read: false,
@@ -5414,26 +5340,6 @@ function Settings() {
     });
   }, [state.profile, state.currentUser]);
 
-  useEffect(() => {
-    setNotificationPrefs({
-      emailNotifications: state.profile?.notif_email ?? true,
-      pushNotifications: state.profile?.notif_push ?? false,
-      marketingEmails: state.profile?.notif_marketing ?? false,
-      listingUpdates: state.profile?.notif_listings ?? true,
-      messageAlerts: state.profile?.notif_messages ?? true,
-      favoritesActivity: state.profile?.notif_favorites ?? true,
-      weeklyDigest: state.profile?.notif_digest ?? false
-    });
-    setPrivacySettings({
-      profileVisibility: state.profile?.privacy_visibility || 'public',
-      showEmail: state.profile?.privacy_show_email ?? false,
-      showActivity: state.profile?.privacy_show_activity ?? true,
-      allowMessages: state.profile?.privacy_allow_messages ?? true,
-      showOnlineStatus: state.profile?.privacy_online ?? true,
-      indexableProfile: state.profile?.privacy_indexable ?? true,
-    });
-  }, [state.profile]);
-
   if (!state.currentUser) {
     return (
       <div className="settings-page">
@@ -5526,7 +5432,6 @@ function Settings() {
         updated_at: new Date().toISOString()
       };
       await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
-      dispatch({ type: 'UPDATE_PROFILE', payload: updateData });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
     } catch (e) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
@@ -5820,7 +5725,6 @@ function Settings() {
                     <input type="checkbox" checked={state.notificationsEnabled} onChange={async () => {
                       const newVal = !state.notificationsEnabled;
                       dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
-                      dispatch({ type: 'UPDATE_PROFILE', payload: { notifications_enabled: newVal } });
                       if (!newVal) {
                         dispatch({ type: 'CLEAR_NOTIFICATIONS' });
                       }
@@ -5839,15 +5743,7 @@ function Settings() {
                             notifications_enabled: newVal,
                             updated_at: new Date().toISOString()
                           }, { onConflict: 'id' });
-                        } catch(e) {
-                          dispatch({ type: 'ADD_NOTIFICATION', payload: {
-                            message: '⚠️ Could not sync notification toggle to server',
-                            type: 'warning',
-                            time: new Date().toLocaleTimeString(),
-                            read: false,
-                            _force: true
-                          }});
-                        }
+                        } catch(e) {}
                       }
                     }} />
                     <span className="toggle-slider"></span>
