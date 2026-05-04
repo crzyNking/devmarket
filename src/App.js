@@ -2,11 +2,21 @@
 // src/App.js (COMPLETE ENHANCED VERSION - FIXED)
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
+import ReactDOM from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
 import { realtimeManager } from './utils/realtime';
 import { analytics } from './utils/analytics';
 import './App.css';
+
+// ============================================
+// MODAL PORTAL — renders outside header stacking context
+// This is the ONLY correct way to fix z-index issues caused
+// by position:sticky headers creating new stacking contexts.
+// ============================================
+function ModalPortal({ children }) {
+  return ReactDOM.createPortal(children, document.body);
+}
 
 // ============================================
 // GLOBAL CONTEXT
@@ -69,7 +79,6 @@ function appReducer(state, action) {
       return { 
         ...state, 
         profile: { ...state.profile, avatar_url: action.payload },
-        // Also update currentUser so header avatar reflects change immediately
         currentUser: state.currentUser ? { ...state.currentUser, avatar_url: action.payload } : state.currentUser
       };
     case 'SET_LISTINGS': 
@@ -259,13 +268,11 @@ const PRESET_AVATARS = [
 
 function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' }) {
   const [showPicker, setShowPicker] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(''); // '', 'saving', 'saved', 'error'
-  // Derive selected from currentAvatar URL so it reflects persisted value after reload
+  const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
   const selectedAvatarId = PRESET_AVATARS.find(av => av.url === currentAvatar)?.id || 
     (currentAvatar?.includes('ui-avatars') ? 'generated' : null);
   const [selected, setSelected] = useState(selectedAvatarId);
 
-  // Keep selected in sync when currentAvatar changes (e.g. after DB reload)
   useEffect(() => {
     const matchedId = PRESET_AVATARS.find(av => av.url === currentAvatar)?.id ||
       (currentAvatar?.includes('ui-avatars') ? 'generated' : null);
@@ -300,43 +307,44 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
         <div className="avatar-upload-overlay"><span>📷</span><span>Change</span></div>
       </div>
       {saveStatus && (
-        <div className={`avatar-save-status ${saveStatus}`}>
+        <p className={`avatar-save-status ${saveStatus}`} style={{ fontSize: '0.72rem', textAlign: 'center', marginTop: 4 }}>
           {saveStatus === 'saving' && '⏳ Saving...'}
           {saveStatus === 'saved' && '✅ Saved!'}
-          {saveStatus === 'error' && '❌ Save failed'}
-        </div>
+          {saveStatus === 'error' && '❌ Failed'}
+        </p>
       )}
 
       {showPicker && (
-        <div className="modal-overlay" onClick={() => setShowPicker(false)}>
-          <div className="avatar-picker-modal" onClick={e => e.stopPropagation()}>
-            <div className="avatar-picker-header">
-              <h3>🖼️ Choose Your Avatar</h3>
-              <button className="btn-close" onClick={() => setShowPicker(false)}>✕</button>
-            </div>
-            <p className="avatar-picker-desc">Select one of the avatars below as your profile picture</p>
-            <div className="avatar-picker-grid">
-              {PRESET_AVATARS.map(av => (
+        <ModalPortal>
+          <div className="modal-overlay" onClick={() => setShowPicker(false)}>
+            <div className="avatar-picker-modal" onClick={e => e.stopPropagation()}>
+              <div className="avatar-picker-header">
+                <h3>🖼️ Choose Your Avatar</h3>
+                <button className="btn-close" onClick={() => setShowPicker(false)}>✕</button>
+              </div>
+              <p className="avatar-picker-desc">Select one of the avatars below as your profile picture</p>
+              <div className="avatar-picker-grid">
+                {PRESET_AVATARS.map(av => (
+                  <div
+                    key={av.id}
+                    className={`avatar-option ${selected === av.id ? 'selected' : ''}`}
+                    onClick={() => handleSelect(av)}
+                  >
+                    <img src={av.url} alt={av.label} onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${av.label}&background=667eea&color=fff&size=80`; }} />
+                    <span>{av.label}</span>
+                  </div>
+                ))}
                 <div
-                  key={av.id}
-                  className={`avatar-option ${selected === av.id ? 'selected' : ''}`}
-                  onClick={() => handleSelect(av)}
+                  className="avatar-option"
+                  onClick={() => handleSelect({ id: 'generated', url: `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200` })}
                 >
-                  <img src={av.url} alt={av.label} onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${av.label}&background=667eea&color=fff&size=80`; }} />
-                  <span>{av.label}</span>
+                  <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=80`} alt="Initials" />
+                  <span>🔤 Initials</span>
                 </div>
-              ))}
-              {/* Generated from name */}
-              <div
-                className="avatar-option"
-                onClick={() => handleSelect({ id: 'generated', url: `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200` })}
-              >
-                <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=80`} alt="Initials" />
-                <span>🔤 Initials</span>
               </div>
             </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
     </div>
   );
@@ -570,15 +578,6 @@ function App() {
       dispatch({ type: 'SET_APPS', payload: [] });
       dispatch({ type: 'SET_CODE_SNIPPETS', payload: [] });
       dispatch({ type: 'SET_DATA_LOADED', payload: true });
-      // Show user-friendly error only if it's a network/config issue
-      if (error?.message?.includes('fetch') || error?.message?.includes('network') || error?.message?.includes('NetworkError')) {
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '⚠️ Could not load data. Please check your connection.', 
-          type: 'warning', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      }
     }
   }
 
@@ -592,7 +591,6 @@ function App() {
 
       if (profile) {
         dispatch({ type: 'SET_PROFILE', payload: profile });
-        // Merge DB profile into currentUser so avatar_url is always the DB value
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
         // Load notification preference from Supabase
@@ -627,18 +625,6 @@ function App() {
       }
     } catch (error) {
       console.error('Error loading profile:', error);
-      // Set a minimal fallback profile so the app doesn't break
-      const meta = user.user_metadata || {};
-      const fallbackProfile = {
-        id: user.id,
-        name: meta.name || meta.full_name || user.email?.split('@')[0] || 'User',
-        email: user.email,
-        role: 'developer',
-        bio: '',
-        avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || user.email?.split('@')[0] || 'User')}&background=667eea&color=fff&size=200`
-      };
-      dispatch({ type: 'SET_PROFILE', payload: fallbackProfile });
-      dispatch({ type: 'SET_USER', payload: { ...user, ...fallbackProfile } });
     }
   }
 
@@ -693,12 +679,6 @@ function App() {
       setupRealtimeSubscriptions(userId);
     } catch (error) {
       console.error('Error loading user data:', error);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '⚠️ Some user data could not be loaded. Try refreshing.', 
-        type: 'warning', 
-        time: new Date().toLocaleTimeString(), 
-        read: false 
-      }});
     }
   }
 
@@ -952,6 +932,7 @@ function App() {
               <Route path="/marketplace" element={<Marketplace />} />
               <Route path="/advertise" element={<Advertise />} />
               <Route path="/code-sharing" element={<CodeSharing />} />
+              <Route path="/posts" element={<Posts />} />
               <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
               <Route path="/profile/:userId" element={<UserProfile />} />
@@ -1125,8 +1106,7 @@ function Header() {
   };
 
   const userDisplayName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
-  // Use profile.avatar_url as source of truth — it's the value persisted in DB
-  const userAvatar = state.profile?.avatar_url || state.currentUser?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
+  const userAvatar = state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(userDisplayName)}&background=667eea&color=fff&size=40`;
 
   const closeAll = () => {
     setShowUserMenu(false);
@@ -1300,14 +1280,22 @@ function Header() {
             </div>
           </>
         )}
-        {showAuth && <AuthModal setShowAuth={setShowAuth} authMode={authMode} setAuthMode={setAuthMode} />}
+      </header>
+
+      {/* Modals rendered via Portal — completely outside header stacking context */}
+      {showAuth && (
+        <ModalPortal>
+          <AuthModal setShowAuth={setShowAuth} authMode={authMode} setAuthMode={setAuthMode} />
+        </ModalPortal>
+      )}
+      <ModalPortal>
         <AdvancedSearch 
           isOpen={showAdvancedSearch} 
           onClose={() => setShowAdvancedSearch(false)} 
           onSearch={handleAdvancedSearch}
           searchType="all"
         />
-      </header>
+      </ModalPortal>
 
       {/* Mobile Bottom Navigation Row */}
       <MobileNav location={location} unreadMessages={unreadMessages} currentUser={state.currentUser} isAdmin={state.isAdmin} />
@@ -1332,15 +1320,11 @@ function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
   const navItems = [
     { to: '/', icon: '🏠', label: 'Home' },
     { to: '/marketplace', icon: '🛒', label: 'Market' },
-    { to: '/advertise', icon: '📱', label: 'Advertise' },
     { to: '/code-sharing', icon: '💻', label: 'Code' },
+    { to: '/posts', icon: '📝', label: 'Posts' },
     ...(currentUser ? [
-      { to: '/favorites', icon: '⭐', label: 'Favorites' },
-      { to: '/activity', icon: '📣', label: 'Activity' },
       { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
-      { to: '/profile', icon: '👤', label: 'Profile' },
     ] : []),
-    ...(isAdmin ? [{ to: '/admin', icon: '🛡️', label: 'Admin' }] : []),
   ];
 
   return (
@@ -1577,6 +1561,7 @@ function AdminDashboard() {
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [hideConfirm, setHideConfirm] = useState(null); // { id, title }
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, title, type: 'listing'|'user' }
 
   useEffect(() => {
     if (activeTab === 'users' && users.length === 0) {
@@ -1610,19 +1595,28 @@ function AdminDashboard() {
   };
 
   const handleDeleteListing = async (listingId, title) => {
+    // Show confirmation — actual delete happens in confirmDelete
+    setDeleteConfirm({ id: listingId, title, type: 'listing' });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirm) return;
     try {
-      await supabase.from('listings').delete().eq('id', listingId);
-      dispatch({ type: 'DELETE_LISTING', payload: listingId });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: `🗑️ Listing "${title}" removed`, type: 'success', 
-        time: new Date().toLocaleTimeString(), read: false 
-      }});
+      if (deleteConfirm.type === 'listing') {
+        await supabase.from('listings').delete().eq('id', deleteConfirm.id);
+        dispatch({ type: 'DELETE_LISTING', payload: deleteConfirm.id });
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: `🗑️ Listing "${deleteConfirm.title}" deleted`, type: 'success', 
+          time: new Date().toLocaleTimeString(), read: false 
+        }});
+      }
     } catch (e) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Could not remove listing', type: 'error', 
+        message: '❌ Could not delete. Please try again.', type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
       }});
     }
+    setDeleteConfirm(null);
   };
 
   const handleHideListing = async (listingId, title) => {
@@ -1703,6 +1697,7 @@ function AdminDashboard() {
   ];
 
   return (
+    <>
     <div className="admin-page">
       <div className="page-header">
         <h1>🛡️ Admin Dashboard</h1>
@@ -1989,6 +1984,20 @@ function AdminDashboard() {
         </div>
       )}
     </div>
+
+    {/* Admin confirmation dialogs — rendered via portal so they're above everything */}
+    <ModalPortal>
+      <ConfirmDialog
+        isOpen={!!deleteConfirm}
+        title="⚠️ Delete Listing"
+        message={`Are you absolutely sure you want to permanently delete "${deleteConfirm?.title}"? This cannot be undone and the listing will be gone forever.`}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteConfirm(null)}
+        confirmText="Yes, Delete Forever"
+        type="danger"
+      />
+    </ModalPortal>
+    </>
   );
 }
 
@@ -2518,71 +2527,33 @@ function Profile() {
   const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
 
   const handleAvatarUpdate = async (avatarUrl) => {
-    // Save the previous avatar for rollback on failure
     const previousAvatar = state.profile?.avatar_url;
     // Optimistically update UI immediately
     dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
     try {
-      const { error } = await supabase.from('profiles').upsert({
-        id: state.currentUser.id,
-        name: state.profile?.name || '',
-        email: state.currentUser.email || '',
-        bio: state.profile?.bio || '',
-        website: state.profile?.website || '',
-        github: state.profile?.github || '',
-        twitter: state.profile?.twitter || '',
-        role: state.profile?.role || 'developer',
+      const { error } = await supabase.from('profiles').update({
         avatar_url: avatarUrl,
         updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
+      }).eq('id', state.currentUser.id);
 
       if (error) {
-        console.error('Error saving avatar to DB:', error);
-        // Rollback optimistic update
+        // Rollback on failure
         dispatch({ type: 'UPDATE_AVATAR', payload: previousAvatar });
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: '❌ Could not save avatar. Please try again.', 
-          type: 'error', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
+          type: 'error', time: new Date().toLocaleTimeString(), read: false 
         }});
-        throw new Error(error.message);
+        return;
       }
-
-      // Verify persisted by re-fetching from DB
-      try {
-        const { data: freshProfile } = await supabase
-          .from('profiles')
-          .select('avatar_url')
-          .eq('id', state.currentUser.id)
-          .single();
-        if (freshProfile && freshProfile.avatar_url !== avatarUrl) {
-          // DB didn't save — rollback
-          dispatch({ type: 'UPDATE_AVATAR', payload: previousAvatar });
-          dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-            message: '⚠️ Avatar may not have saved correctly. Try again.', 
-            type: 'warning', 
-            time: new Date().toLocaleTimeString(), 
-            read: false 
-          }});
-          throw new Error('Avatar verification failed');
-        }
-      } catch (_) { /* non-critical: verification failed, optimistic value stays */ }
-
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '✅ Profile picture updated and saved!', 
-        type: 'success', 
-        time: new Date().toLocaleTimeString(), 
-        read: false 
+        message: '✅ Profile picture saved!', 
+        type: 'success', time: new Date().toLocaleTimeString(), read: false 
       }});
     } catch (error) {
-      console.error('Could not save avatar:', error);
       dispatch({ type: 'UPDATE_AVATAR', payload: previousAvatar });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Network error. Avatar not saved. Please check your connection.', 
-        type: 'error', 
-        time: new Date().toLocaleTimeString(), 
-        read: false 
+        message: '❌ Network error — avatar not saved.', 
+        type: 'error', time: new Date().toLocaleTimeString(), read: false 
       }});
     }
   };
@@ -5396,3 +5367,278 @@ function Footer() {
 }
 
 export default App;
+
+// ============================================
+// POSTS COMPONENT — Social Feed
+// ============================================
+function Posts() {
+  const { state, dispatch } = useAppContext();
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCompose, setShowCompose] = useState(false);
+  const [newPost, setNewPost] = useState({ text: '', imageUrl: '', videoUrl: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [deletePostConfirm, setDeletePostConfirm] = useState(null);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    loadPosts();
+  }, []);
+
+  const loadPosts = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('posts')
+        .select('*, profile:user_id(name, avatar_url)')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (!error && data) {
+        setPosts(data);
+      } else {
+        // Table may not exist yet — show empty state gracefully
+        setPosts([]);
+      }
+    } catch (_) {
+      setPosts([]);
+    }
+    setLoading(false);
+  };
+
+  const handleSubmitPost = async () => {
+    if (!newPost.text.trim() && !newPost.imageUrl.trim() && !newPost.videoUrl.trim()) return;
+    if (!state.currentUser) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🔒 Please sign in to post', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { data, error } = await supabase.from('posts').insert({
+        user_id: state.currentUser.id,
+        author_name: state.profile?.name || state.currentUser.email?.split('@')[0] || 'User',
+        author_avatar: state.profile?.avatar_url || '',
+        text: newPost.text.trim(),
+        image_url: newPost.imageUrl.trim() || null,
+        video_url: newPost.videoUrl.trim() || null,
+        likes: 0,
+        created_at: new Date().toISOString()
+      }).select().single();
+      if (error) throw error;
+      setPosts(prev => [data, ...prev]);
+      setNewPost({ text: '', imageUrl: '', videoUrl: '' });
+      setShowCompose(false);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Post published!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+    } catch (err) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not publish post. Make sure the posts table is created in Supabase.', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+    }
+    setSubmitting(false);
+  };
+
+  const handleLikePost = async (post) => {
+    if (!state.currentUser) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🔒 Sign in to like posts', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
+      return;
+    }
+    const newLikes = (post.likes || 0) + 1;
+    setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: newLikes } : p));
+    try {
+      await supabase.from('posts').update({ likes: newLikes }).eq('id', post.id);
+    } catch (_) {
+      setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: post.likes } : p));
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (!deletePostConfirm) return;
+    try {
+      await supabase.from('posts').delete().eq('id', deletePostConfirm.id);
+      setPosts(prev => prev.filter(p => p.id !== deletePostConfirm.id));
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🗑️ Post deleted', type: 'info', time: new Date().toLocaleTimeString(), read: false }});
+    } catch (_) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not delete post', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+    }
+    setDeletePostConfirm(null);
+  };
+
+  const isVideo = (url) => url && (url.includes('youtube') || url.includes('youtu.be') || url.includes('vimeo') || /\.(mp4|webm|ogg)$/i.test(url));
+  const getYoutubeEmbed = (url) => {
+    const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/))([\w-]+)/);
+    return match ? `https://www.youtube.com/embed/${match[1]}` : null;
+  };
+
+  return (
+    <div className="posts-page">
+      <div className="page-header">
+        <h1>📝 Community Posts</h1>
+        <p>Share updates, ideas, images and videos with the DevMarket community</p>
+      </div>
+
+      {/* Compose Button */}
+      {state.currentUser && !showCompose && (
+        <button className="posts-compose-trigger" onClick={() => setShowCompose(true)}>
+          <img 
+            src={state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(state.profile?.name || 'U')}&background=667eea&color=fff&size=40`}
+            alt="You"
+            className="compose-avatar"
+            onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=40`; }}
+          />
+          <span className="compose-placeholder">What's on your mind?</span>
+          <span className="compose-icons">📷 🎥</span>
+        </button>
+      )}
+
+      {/* Compose Form */}
+      {showCompose && (
+        <div className="posts-compose-card">
+          <div className="compose-header">
+            <img 
+              src={state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(state.profile?.name || 'U')}&background=667eea&color=fff&size=40`}
+              alt="You"
+              className="compose-avatar"
+            />
+            <strong>{state.profile?.name || state.currentUser?.email?.split('@')[0]}</strong>
+          </div>
+          <textarea
+            className="compose-textarea"
+            placeholder="Share something with the community... What are you working on? Any cool discoveries? 🚀"
+            value={newPost.text}
+            onChange={e => setNewPost({...newPost, text: e.target.value})}
+            rows={4}
+          />
+          <div className="compose-media-inputs">
+            <input
+              type="url"
+              placeholder="📷 Image URL (paste a link to an image)"
+              value={newPost.imageUrl}
+              onChange={e => setNewPost({...newPost, imageUrl: e.target.value})}
+              className="compose-url-input"
+            />
+            <input
+              type="url"
+              placeholder="🎥 Video URL (YouTube, Vimeo, or .mp4 link)"
+              value={newPost.videoUrl}
+              onChange={e => setNewPost({...newPost, videoUrl: e.target.value})}
+              className="compose-url-input"
+            />
+          </div>
+          {newPost.imageUrl && (
+            <div className="compose-preview">
+              <img src={newPost.imageUrl} alt="Preview" onError={e => e.target.style.display='none'} />
+            </div>
+          )}
+          <div className="compose-actions">
+            <button className="btn-secondary btn-sm" onClick={() => { setShowCompose(false); setNewPost({ text: '', imageUrl: '', videoUrl: '' }); }}>
+              Cancel
+            </button>
+            <button 
+              className="btn-primary btn-sm" 
+              onClick={handleSubmitPost} 
+              disabled={submitting || (!newPost.text.trim() && !newPost.imageUrl && !newPost.videoUrl)}
+            >
+              {submitting ? '⏳ Posting...' : '🚀 Post'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Posts Feed */}
+      {loading ? (
+        <div className="posts-loading">
+          {[1,2,3].map(i => (
+            <div key={i} className="post-skeleton">
+              <div className="skeleton" style={{width:40, height:40, borderRadius:'50%'}}></div>
+              <div style={{flex:1, display:'flex', flexDirection:'column', gap:8}}>
+                <div className="skeleton" style={{height:14, width:'40%'}}></div>
+                <div className="skeleton" style={{height:14, width:'80%'}}></div>
+                <div className="skeleton" style={{height:14, width:'60%'}}></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : posts.length === 0 ? (
+        <div className="empty-state" style={{marginTop:48}}>
+          <span className="empty-icon">📝</span>
+          <h3>No posts yet</h3>
+          <p>Be the first to share something with the community!</p>
+          {!state.currentUser && <p style={{color:'var(--gray-400)', fontSize:'0.9rem'}}>Sign in to start posting.</p>}
+          {state.currentUser && <button className="btn-primary" onClick={() => setShowCompose(true)}>✍️ Create First Post</button>}
+        </div>
+      ) : (
+        <div className="posts-feed">
+          {posts.map(post => (
+            <div key={post.id} className="post-card">
+              <div className="post-header">
+                <img
+                  src={post.author_avatar || post.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(post.author_name || 'U')}&background=667eea&color=fff&size=40`}
+                  alt={post.author_name}
+                  className="post-avatar"
+                  onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=40`; }}
+                />
+                <div className="post-meta">
+                  <strong>{post.author_name || post.profile?.name || 'User'}</strong>
+                  <span>{new Date(post.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                </div>
+                {state.currentUser?.id === post.user_id && (
+                  <button 
+                    className="post-delete-btn" 
+                    onClick={() => setDeletePostConfirm({ id: post.id, text: post.text })}
+                    title="Delete post"
+                  >
+                    🗑️
+                  </button>
+                )}
+              </div>
+
+              {post.text && <p className="post-text">{post.text}</p>}
+
+              {post.image_url && !isVideo(post.image_url) && (
+                <div className="post-image-wrap">
+                  <img 
+                    src={post.image_url} 
+                    alt="Post" 
+                    className="post-image"
+                    onError={e => e.target.parentElement.style.display='none'}
+                  />
+                </div>
+              )}
+
+              {post.video_url && (
+                <div className="post-video-wrap">
+                  {getYoutubeEmbed(post.video_url) ? (
+                    <iframe
+                      src={getYoutubeEmbed(post.video_url)}
+                      title="video"
+                      frameBorder="0"
+                      allowFullScreen
+                      className="post-iframe"
+                    />
+                  ) : (
+                    <video src={post.video_url} controls className="post-video" />
+                  )}
+                </div>
+              )}
+
+              <div className="post-footer">
+                <button className="post-like-btn" onClick={() => handleLikePost(post)}>
+                  ❤️ <span>{post.likes || 0}</span>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ModalPortal>
+        <ConfirmDialog
+          isOpen={!!deletePostConfirm}
+          title="Delete Post"
+          message="Are you sure you want to delete this post? This cannot be undone."
+          onConfirm={handleDeletePost}
+          onCancel={() => setDeletePostConfirm(null)}
+          confirmText="Delete"
+          type="danger"
+        />
+      </ModalPortal>
+    </div>
+  );
+}
