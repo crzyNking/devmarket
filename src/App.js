@@ -19,21 +19,17 @@ function ModalPortal({ children }) {
 }
 
 // ============================================
-// SPLIT CONTEXTS — prevents unnecessary re-renders
-// Components that only dispatch actions import useAppDispatch
-// and won't re-render when state changes.
-// Components that need state import useAppState.
-// useAppContext() is kept as a convenience alias.
+// GLOBAL CONTEXT
 // ============================================
-const AppStateContext = createContext();
-const AppDispatchContext = createContext();
-// Legacy single context kept for backwards-compat — components that need both
 const AppContext = createContext();
 
-// Notification enabled preference is loaded from Supabase profile (notifications_enabled column).
-// localStorage is no longer used as a source of truth — Supabase is the single source.
-// This default is only used before the profile is fetched.
-const getDefaultNotificationsEnabled = () => true;
+const getPersistedNotificationsEnabled = () => {
+  try {
+    const stored = localStorage.getItem('devMarketNotificationsEnabled');
+    if (stored !== null) return JSON.parse(stored);
+  } catch(e) {}
+  return true;
+};
 
 const initialState = {
   listings: [],
@@ -59,7 +55,7 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: getDefaultNotificationsEnabled(),
+  notificationsEnabled: getPersistedNotificationsEnabled(),
   announcement: null,
   maintenanceMode: false,
 };
@@ -78,16 +74,8 @@ function appReducer(state, action) {
       return { ...state, currentUser: action.payload };
     case 'SET_PROFILE': 
       return { ...state, profile: action.payload };
-    case 'UPDATE_PROFILE': {
-      const updatedProfile = { ...state.profile, ...action.payload };
-      // Keep currentUser in sync for fields that live in both slices
-      const updatedCurrentUser = state.currentUser ? {
-        ...state.currentUser,
-        ...(action.payload.avatar_url !== undefined ? { avatar_url: action.payload.avatar_url } : {}),
-        ...(action.payload.name !== undefined ? { name: action.payload.name } : {})
-      } : state.currentUser;
-      return { ...state, profile: updatedProfile, currentUser: updatedCurrentUser };
-    }
+    case 'UPDATE_PROFILE': 
+      return { ...state, profile: { ...state.profile, ...action.payload } };
     case 'UPDATE_AVATAR':
       return { 
         ...state, 
@@ -123,8 +111,7 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
     case 'SET_NOTIFICATIONS_ENABLED':
-      // Supabase persistence is handled by the action dispatchers (Settings/loadProfile).
-      // The reducer is pure — no side-effects.
+      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(action.payload)); } catch(e) {}
       return { ...state, notificationsEnabled: action.payload };
     case 'ADD_NOTIFICATION': {
       // When notifications are disabled, block ALL incoming notifications
@@ -254,89 +241,8 @@ function appReducer(state, action) {
 }
 
 // ============================================
-// INPUT SANITIZATION
-// Strips leading/trailing whitespace, collapses internal whitespace,
-// and removes common HTML injection vectors before data hits Supabase.
+// SKELETON LOADER COMPONENTS
 // ============================================
-function sanitizeText(value, maxLength = 2000) {
-  if (typeof value !== 'string') return '';
-  return value
-    .trim()
-    .replace(/[\u0000-\u001F\u007F]/g, '') // strip control characters
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '') // strip script tags
-    .replace(/<[^>]*>/g, '') // strip remaining HTML tags
-    .substring(0, maxLength);
-}
-
-function sanitizeUrl(value) {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  // Only allow http/https/ftp URLs
-  if (trimmed && !/^https?:\/\//i.test(trimmed) && !/^ftp:\/\//i.test(trimmed)) return '';
-  return trimmed.substring(0, 500);
-}
-
-
-// Wraps async Supabase calls with:
-//   - proper loading state (no setTimeout hacks)
-//   - standardised error feedback via notifications
-//   - optional optimistic rollback callback
-// Usage: const { execute, loading, error } = useSupabaseOp(dispatch);
-// ============================================
-function useSupabaseOp(dispatch) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  const execute = useCallback(async (operation, { 
-    successMessage, 
-    errorMessage, 
-    onRollback 
-  } = {}) => {
-    if (!mountedRef.current) return { data: null, error: null };
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await operation();
-      // Supabase returns { data, error } — check for DB-level errors
-      if (result && result.error) {
-        throw result.error;
-      }
-      if (mountedRef.current && successMessage) {
-        dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          message: successMessage,
-          type: 'success',
-          time: new Date().toLocaleTimeString(),
-          read: false
-        }});
-      }
-      if (mountedRef.current) setLoading(false);
-      return result || { data: null, error: null };
-    } catch (err) {
-      if (mountedRef.current) {
-        setError(err);
-        setLoading(false);
-        if (onRollback) onRollback();
-        dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          message: errorMessage || `❌ ${err.message || 'An error occurred'}`,
-          type: 'error',
-          time: new Date().toLocaleTimeString(),
-          read: false
-        }});
-      }
-      return { data: null, error: err };
-    }
-  }, [dispatch]);
-
-  return { execute, loading, error };
-}
-
-
 function SkeletonCard() {
   return (
     <div className="skeleton-card">
@@ -934,13 +840,7 @@ function App() {
     dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
   }
 
-  // Sequence counter — only the latest buildConversations invocation wins.
-  // This prevents a slower earlier call from overwriting a faster later call.
-  const buildConversationsSeq = useRef(0);
-
   async function buildConversations(messages, userId) {
-    const seq = ++buildConversationsSeq.current;
-
     const conversationMap = new Map();
     
     // Collect all unique other user IDs first
@@ -1004,10 +904,7 @@ function App() {
     const conversations = Array.from(conversationMap.values())
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     
-    // Only commit if this is still the latest invocation
-    if (seq === buildConversationsSeq.current) {
-      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
-    }
+    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
   }
 
   useEffect(() => {
@@ -1041,10 +938,11 @@ function App() {
       }
     }
 
-    // Safety timeout to force-dismiss the loader (only on first visit)
-    let safetyTimeout = null;
+    // Show the full splash loader only on the very first visit per session.
+    // On subsequent page refreshes within the same session show a minimal spinner.
     if (!hasShownLoader) {
-      safetyTimeout = setTimeout(() => {
+      // Safety timeout: max 2.5s before we force-dismiss the loader
+      const safetyTimeout = setTimeout(() => {
         if (mounted) {
           setIsInitialLoading(false);
           sessionStorage.setItem('devMarketLoaderShown', 'true');
@@ -1053,7 +951,7 @@ function App() {
       }, 2500);
 
       initialize().then(() => {
-        if (safetyTimeout) clearTimeout(safetyTimeout);
+        clearTimeout(safetyTimeout);
         if (mounted) {
           sessionStorage.setItem('devMarketLoaderShown', 'true');
           setHasShownLoader(true);
@@ -1061,6 +959,11 @@ function App() {
           setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 200);
         }
       });
+
+      return () => {
+        mounted = false;
+        clearTimeout(safetyTimeout);
+      };
     } else {
       // Already seen the splash — init quickly, no spinner shown to user
       initialize().then(() => {
@@ -1084,10 +987,8 @@ function App() {
       }
     });
 
-    // Cleanup always runs regardless of which branch was taken above
     return () => {
       mounted = false;
-      if (safetyTimeout) clearTimeout(safetyTimeout);
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
@@ -1166,8 +1067,6 @@ function App() {
 
   return (
     <AppContext.Provider value={{ state, dispatch }}>
-      <AppStateContext.Provider value={state}>
-        <AppDispatchContext.Provider value={dispatch}>
       <Router>
         <div className={`App ${state.theme}`}>
           <div className="toast-container">
@@ -1206,8 +1105,6 @@ function App() {
           <FloatingPWAButton />
         </div>
       </Router>
-        </AppDispatchContext.Provider>
-      </AppStateContext.Provider>
     </AppContext.Provider>
   );
 }
@@ -1329,16 +1226,6 @@ function ProtectedRoute({ children }) {
 
 function useAppContext() {
   return useContext(AppContext);
-}
-
-/** Use when a component only needs to read state (avoids dispatch identity churn). */
-function useAppState() {
-  return useContext(AppStateContext);
-}
-
-/** Use when a component only dispatches actions (won't re-render on state changes). */
-function useAppDispatch() {
-  return useContext(AppDispatchContext);
 }
 
 // ============================================
@@ -1632,23 +1519,8 @@ function Header() {
 
 // ============================================
 // MOBILE BOTTOM NAVIGATION
-// Only renders on mobile viewports (≤768 px).
 // ============================================
-function useMobileViewport() {
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches);
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 768px)');
-    const handler = (e) => setIsMobile(e.matches);
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
-  return isMobile;
-}
-
 function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
-  const isMobile = useMobileViewport();
-  // Don't render anything on desktop — no DOM nodes, no event listeners
-  if (!isMobile) return null;
   // Logged-in nav items — Favorites removed, Advertise + Code added next to Market
   const loggedInItems = [
     { to: '/', icon: '🏠', label: 'Home' },
@@ -2907,8 +2779,7 @@ function Messages() {
   const [replyingTo, setReplyingTo] = useState(null);
   const [replyMessage, setReplyMessage] = useState('');
   const [sending, setSending] = useState(false);
-  // Derive loading from app init state — no more manual timeout-based flags
-  const loadingMessages = !state.initialized;
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [convToDelete, setConvToDelete] = useState(null);
   const [deletingConv, setDeletingConv] = useState(false);
@@ -3021,7 +2892,7 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
-    const msgText = sanitizeText(replyMessage.trim(), 2000);
+    const msgText = replyMessage.trim();
     const senderName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
     const senderAvatar = state.profile?.avatar_url || null;
 
@@ -3093,19 +2964,13 @@ function Messages() {
           created_at: new Date().toISOString()
         }]).catch(() => {});
       } else if (error) {
-        // Rollback optimistic update on error — cover both state slices
+        // Rollback optimistic update on error
         if (activeConv) {
           dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
             ...activeConv,
             messages: (activeConv.messages || []).filter(m => m.id !== optimisticMsg.id)
           }});
         }
-        // Also roll back the conversations list lastMessage/time
-        dispatch({ type: 'UPDATE_CONVERSATION', payload: {
-          userId: replyingTo.userId,
-          lastMessage: activeConv?.lastMessage,
-          lastMessageTime: activeConv?.lastMessageTime
-        }});
         dispatch({ type: 'ADD_NOTIFICATION', payload: { 
           message: '❌ Failed to send message', type: 'error', 
           time: new Date().toLocaleTimeString(), read: false 
@@ -3119,12 +2984,6 @@ function Messages() {
           messages: (activeConv.messages || []).filter(m => m.id !== optimisticMsg.id)
         }});
       }
-      // Also roll back the conversations list lastMessage/time
-      dispatch({ type: 'UPDATE_CONVERSATION', payload: {
-        userId: replyingTo.userId,
-        lastMessage: activeConv?.lastMessage,
-        lastMessageTime: activeConv?.lastMessageTime
-      }});
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: '❌ Failed to send message', type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
@@ -4132,8 +3991,8 @@ function ListingCard({ listing }) {
         const msgData = {
           from_user: state.currentUser.id,
           to_user: listing.user_id,
-          subject: sanitizeText(`Inquiry about ${listing.title}`, 200),
-          message: sanitizeText(message, 2000),
+          subject: `Inquiry about ${listing.title}`,
+          message: message,
           listing_id: listing.id,
           read: false,
           created_at: new Date().toISOString()
@@ -5663,12 +5522,12 @@ function Settings() {
     try {
       const { error } = await supabase.from('profiles').upsert({
         id: state.currentUser.id,
-        name: sanitizeText(profileForm.name, 100),
-        bio: sanitizeText(profileForm.bio, 500),
-        website: sanitizeUrl(profileForm.website),
-        github: sanitizeText(profileForm.github, 100),
-        twitter: sanitizeText(profileForm.twitter, 100),
-        linkedin: sanitizeText(profileForm.linkedin, 100),
+        name: profileForm.name,
+        bio: profileForm.bio,
+        website: profileForm.website,
+        github: profileForm.github,
+        twitter: profileForm.twitter,
+        linkedin: profileForm.linkedin,
         role: profileForm.role,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
