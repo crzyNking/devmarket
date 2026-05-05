@@ -19,21 +19,17 @@ function ModalPortal({ children }) {
 }
 
 // ============================================
-// SPLIT CONTEXTS — prevents unnecessary re-renders
-// Components that only dispatch actions import useAppDispatch
-// and won't re-render when state changes.
-// Components that need state import useAppState.
-// useAppContext() is kept as a convenience alias.
+// GLOBAL CONTEXT
 // ============================================
-const AppStateContext = createContext();
-const AppDispatchContext = createContext();
-// Legacy single context kept for backwards-compat — components that need both
 const AppContext = createContext();
 
-// Notification enabled preference is loaded from Supabase profile (notifications_enabled column).
-// localStorage is no longer used as a source of truth — Supabase is the single source.
-// This default is only used before the profile is fetched.
-const getDefaultNotificationsEnabled = () => true;
+const getPersistedNotificationsEnabled = () => {
+  try {
+    const stored = localStorage.getItem('devMarketNotificationsEnabled');
+    if (stored !== null) return JSON.parse(stored);
+  } catch(e) {}
+  return true;
+};
 
 const initialState = {
   listings: [],
@@ -59,7 +55,7 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: getDefaultNotificationsEnabled(),
+  notificationsEnabled: getPersistedNotificationsEnabled(),
   announcement: null,
   maintenanceMode: false,
 };
@@ -78,16 +74,8 @@ function appReducer(state, action) {
       return { ...state, currentUser: action.payload };
     case 'SET_PROFILE': 
       return { ...state, profile: action.payload };
-    case 'UPDATE_PROFILE': {
-      const updatedProfile = { ...state.profile, ...action.payload };
-      // Keep currentUser in sync for fields that live in both slices
-      const updatedCurrentUser = state.currentUser ? {
-        ...state.currentUser,
-        ...(action.payload.avatar_url !== undefined ? { avatar_url: action.payload.avatar_url } : {}),
-        ...(action.payload.name !== undefined ? { name: action.payload.name } : {})
-      } : state.currentUser;
-      return { ...state, profile: updatedProfile, currentUser: updatedCurrentUser };
-    }
+    case 'UPDATE_PROFILE': 
+      return { ...state, profile: { ...state.profile, ...action.payload } };
     case 'UPDATE_AVATAR':
       return { 
         ...state, 
@@ -123,19 +111,13 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS': 
       return { ...state, notifications: action.payload || [] };
     case 'SET_NOTIFICATIONS_ENABLED':
-      // Supabase persistence is handled by the action dispatchers (Settings/loadProfile).
-      // The reducer is pure — no side-effects.
+      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(action.payload)); } catch(e) {}
       return { ...state, notificationsEnabled: action.payload };
     case 'ADD_NOTIFICATION': {
       // When notifications are disabled, block ALL incoming notifications
       // except those with _force: true (used for the toggle feedback itself)
       if (!state.notificationsEnabled && !action.payload._force) return state;
-      // Strip _force before storing so it doesn't pollute the notification object
-      const { _force, ...notifData } = action.payload;
-      const newNotif = { ...notifData, id: notifData.id || `n-${Date.now()}-${Math.random()}` };
-      // Deduplicate: if a notification with the same id already exists, skip
-      const alreadyExists = (state.notifications || []).some(n => n.id === newNotif.id);
-      if (alreadyExists) return state;
+      const newNotif = { ...action.payload, id: action.payload.id || `n-${Date.now()}-${Math.random()}` };
       return { ...state, notifications: [newNotif, ...(state.notifications || [])].slice(0, 50) };
     }
     case 'REMOVE_NOTIFICATION': 
@@ -207,6 +189,23 @@ function appReducer(state, action) {
       return { ...state, messages: (state.messages || []).map(m => m.id === action.payload ? { ...m, read: true } : m) };
     case 'DELETE_MESSAGE': 
       return { ...state, messages: (state.messages || []).filter(m => m.id !== action.payload) };
+    // Soft-delete conversation for current user only:
+    // action.payload = { currentUserId, otherUserId }
+    case 'DELETE_CONVERSATION_FOR_USER': {
+      const { currentUserId, otherUserId } = action.payload;
+      const filtered = (state.messages || []).filter(m => {
+        const involves = (m.from_user === currentUserId && m.to_user === otherUserId) ||
+                         (m.from_user === otherUserId && m.to_user === currentUserId);
+        return !involves;
+      });
+      const filteredConvs = (state.conversations || []).filter(c => c.userId !== otherUserId);
+      return {
+        ...state,
+        messages: filtered,
+        conversations: filteredConvs,
+        activeConversation: state.activeConversation?.userId === otherUserId ? null : state.activeConversation
+      };
+    }
     case 'SET_FAVORITES': 
       return { ...state, favorites: action.payload || [] };
     case 'TOGGLE_FAVORITE': {
@@ -254,89 +253,8 @@ function appReducer(state, action) {
 }
 
 // ============================================
-// INPUT SANITIZATION
-// Strips leading/trailing whitespace, collapses internal whitespace,
-// and removes common HTML injection vectors before data hits Supabase.
+// SKELETON LOADER COMPONENTS
 // ============================================
-function sanitizeText(value, maxLength = 2000) {
-  if (typeof value !== 'string') return '';
-  return value
-    .trim()
-    .replace(/[\u0000-\u001F\u007F]/g, '') // strip control characters
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '') // strip script tags
-    .replace(/<[^>]*>/g, '') // strip remaining HTML tags
-    .substring(0, maxLength);
-}
-
-function sanitizeUrl(value) {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  // Only allow http/https/ftp URLs
-  if (trimmed && !/^https?:\/\//i.test(trimmed) && !/^ftp:\/\//i.test(trimmed)) return '';
-  return trimmed.substring(0, 500);
-}
-
-
-// Wraps async Supabase calls with:
-//   - proper loading state (no setTimeout hacks)
-//   - standardised error feedback via notifications
-//   - optional optimistic rollback callback
-// Usage: const { execute, loading, error } = useSupabaseOp(dispatch);
-// ============================================
-function useSupabaseOp(dispatch) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  const execute = useCallback(async (operation, { 
-    successMessage, 
-    errorMessage, 
-    onRollback 
-  } = {}) => {
-    if (!mountedRef.current) return { data: null, error: null };
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await operation();
-      // Supabase returns { data, error } — check for DB-level errors
-      if (result && result.error) {
-        throw result.error;
-      }
-      if (mountedRef.current && successMessage) {
-        dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          message: successMessage,
-          type: 'success',
-          time: new Date().toLocaleTimeString(),
-          read: false
-        }});
-      }
-      if (mountedRef.current) setLoading(false);
-      return result || { data: null, error: null };
-    } catch (err) {
-      if (mountedRef.current) {
-        setError(err);
-        setLoading(false);
-        if (onRollback) onRollback();
-        dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          message: errorMessage || `❌ ${err.message || 'An error occurred'}`,
-          type: 'error',
-          time: new Date().toLocaleTimeString(),
-          read: false
-        }});
-      }
-      return { data: null, error: err };
-    }
-  }, [dispatch]);
-
-  return { execute, loading, error };
-}
-
-
 function SkeletonCard() {
   return (
     <div className="skeleton-card">
@@ -642,15 +560,11 @@ function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
 // ============================================
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [hasShownLoader, setHasShownLoader] = useState(false);
-
-  useEffect(() => {
-    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
-    if (loaderShown) {
-      setHasShownLoader(true);
-    }
-  }, []);
+  // On hard refresh within same tab session: skip the splash screen
+  const [isInitialLoading, setIsInitialLoading] = useState(
+    !sessionStorage.getItem('devMarketLoaderShown')
+  );
+  const hasShownLoader = !!sessionStorage.getItem('devMarketLoaderShown');
 
   async function loadPublicData() {
     try {
@@ -721,9 +635,13 @@ function App() {
         dispatch({ type: 'SET_PROFILE', payload: profile });
         dispatch({ type: 'SET_USER', payload: { ...user, ...profile } });
         dispatch({ type: 'SET_IS_ADMIN', payload: profile.role === 'admin' });
-        // Load notification preference from Supabase
-        if (profile.notifications_enabled !== undefined && profile.notifications_enabled !== null) {
-          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: profile.notifications_enabled });
+        // Always restore notification preference from Supabase (source of truth)
+        // This ensures the toggle survives refresh
+        const dbVal = profile.notifications_enabled;
+        if (dbVal !== undefined && dbVal !== null) {
+          // Update both localStorage and state from DB value
+          try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(dbVal)); } catch(e) {}
+          dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: dbVal });
         }
       } else {
         const meta = user.user_metadata || {};
@@ -773,8 +691,7 @@ function App() {
 
       if (msgsResult.data) {
         dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        // Build conversations asynchronously — this fetches real profile names
-        buildConversations(msgsResult.data, userId);
+        await buildConversations(msgsResult.data, userId);
       }
 
       if (favsResult.data) {
@@ -841,8 +758,37 @@ function App() {
             }
           } catch (_) {}
         }
+
+        // Check if this user had previously deleted the conversation with the sender.
+        // If they did, the new message starts a FRESH conversation (deletedAt check).
+        let deletedAt = null;
+        try {
+          const { data: delRec } = await supabase
+            .from('deleted_conversations')
+            .select('deleted_at')
+            .eq('user_id', userId)
+            .eq('other_user_id', newMsg.from_user)
+            .maybeSingle();
+          if (delRec) {
+            deletedAt = delRec.deleted_at;
+            // This is a new message AFTER deletion — clear the deletion record
+            // so the conversation starts fresh
+            if (new Date(newMsg.created_at) > new Date(deletedAt)) {
+              await supabase.from('deleted_conversations')
+                .delete()
+                .eq('user_id', userId)
+                .eq('other_user_id', newMsg.from_user);
+              deletedAt = null; // treated as fresh
+            }
+          }
+        } catch (_) {}
         
         const enrichedMsg = { ...newMsg, from_name: fromName || 'User', from_avatar: fromAvatar };
+        
+        // Only add if message is after deletion threshold (or no deletion)
+        if (deletedAt && new Date(newMsg.created_at) <= new Date(deletedAt)) {
+          return; // Skip messages before deletion
+        }
         
         dispatch({ type: 'ADD_MESSAGE', payload: enrichedMsg });
         
@@ -881,14 +827,11 @@ function App() {
         filter: `user_id=eq.${userId}`
       },
       (payload) => {
-        const newNotif = payload.new;
-        // ADD_NOTIFICATION reducer already checks notificationsEnabled.
-        // Dispatch with the DB id so the deduplication in the reducer works.
+        // ADD_NOTIFICATION reducer already checks notificationsEnabled,
+        // so this dispatch is safe — it will be ignored if notifications are OFF
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
-          ...newNotif,
-          id: newNotif.id,  // use real DB id for dedup
-          read: newNotif.read || false,
-          time: new Date(newNotif.created_at).toLocaleTimeString()
+          ...payload.new,
+          read: false
         }});
       }
     );
@@ -934,13 +877,7 @@ function App() {
     dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
   }
 
-  // Sequence counter — only the latest buildConversations invocation wins.
-  // This prevents a slower earlier call from overwriting a faster later call.
-  const buildConversationsSeq = useRef(0);
-
   async function buildConversations(messages, userId) {
-    const seq = ++buildConversationsSeq.current;
-
     const conversationMap = new Map();
     
     // Collect all unique other user IDs first
@@ -949,6 +886,22 @@ function App() {
       const otherId = msg.from_user === userId ? msg.to_user : msg.from_user;
       otherUserIds.add(otherId);
     });
+
+    // Fetch soft-deleted conversations for this user
+    let deletedSet = new Set();
+    try {
+      const { data: deleted } = await supabase
+        .from('deleted_conversations')
+        .select('other_user_id, deleted_at')
+        .eq('user_id', userId);
+      if (deleted) {
+        deleted.forEach(d => deletedSet.set ? deletedSet.add(d.other_user_id) : null);
+        // Map deleted_at so we only show messages AFTER deletion
+        deleted.forEach(d => {
+          deletedSet[d.other_user_id] = d.deleted_at;
+        });
+      }
+    } catch (_) {}
 
     // Batch-fetch all profiles for other users
     let profilesMap = new Map();
@@ -966,7 +919,13 @@ function App() {
     
     messages.forEach(msg => {
       const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      // Prefer real DB profile name over embedded from_name/to_name fields
+      
+      // If the conversation was deleted, only include messages AFTER deletion time
+      const deletedAt = deletedSet[otherUserId];
+      if (deletedAt && new Date(msg.created_at) <= new Date(deletedAt)) {
+        return; // Skip messages before/at deletion time
+      }
+
       const profile = profilesMap.get(otherUserId);
       const otherUserName = profile?.name || (msg.from_user === userId ? msg.to_name : msg.from_name) || 'User';
       const otherUserAvatar = profile?.avatar_url || (msg.from_user === userId ? msg.to_avatar : msg.from_avatar);
@@ -984,7 +943,6 @@ function App() {
       }
       
       const conv = conversationMap.get(otherUserId);
-      // Update name/avatar from real profile if we have it (in case earlier msg had null)
       if (profile) {
         conv.userName = profile.name || conv.userName;
         conv.userAvatar = profile.avatar_url || conv.userAvatar;
@@ -1004,10 +962,7 @@ function App() {
     const conversations = Array.from(conversationMap.values())
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     
-    // Only commit if this is still the latest invocation
-    if (seq === buildConversationsSeq.current) {
-      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
-    }
+    dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
   }
 
   useEffect(() => {
@@ -1041,33 +996,21 @@ function App() {
       }
     }
 
-    // Safety timeout to force-dismiss the loader (only on first visit)
-    let safetyTimeout = null;
     if (!hasShownLoader) {
-      safetyTimeout = setTimeout(() => {
-        if (mounted) {
-          setIsInitialLoading(false);
-          sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setHasShownLoader(true);
-        }
-      }, 2500);
-
       initialize().then(() => {
-        if (safetyTimeout) clearTimeout(safetyTimeout);
-        if (mounted) {
-          sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setHasShownLoader(true);
-          // Small delay for smooth fade-out animation
-          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 200);
-        }
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+        setTimeout(() => setIsInitialLoading(false), 500);
       });
+      
+      const safetyTimeout = setTimeout(() => {
+        setIsInitialLoading(false);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+      }, 4000);
+      
+      return () => clearTimeout(safetyTimeout);
     } else {
-      // Already seen the splash — init quickly, no spinner shown to user
-      initialize().then(() => {
-        if (mounted) setIsInitialLoading(false);
-      });
-      // Don't block the UI on repeated refreshes
       setIsInitialLoading(false);
+      initialize();
     }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -1084,10 +1027,8 @@ function App() {
       }
     });
 
-    // Cleanup always runs regardless of which branch was taken above
     return () => {
       mounted = false;
-      if (safetyTimeout) clearTimeout(safetyTimeout);
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
@@ -1159,15 +1100,18 @@ function App() {
   }
 
   if (isInitialLoading && hasShownLoader) {
-    // On repeat visits, don't block render — just show the app immediately
-    // The auth/data loads in the background via useEffect
-    return null;
+    return (
+      <div className="dm-mini-loader">
+        <div className="dm-mini-loader__inner">
+          <div className="dm-mini-loader__ring"></div>
+          <span>🚀</span>
+        </div>
+      </div>
+    );
   }
 
   return (
     <AppContext.Provider value={{ state, dispatch }}>
-      <AppStateContext.Provider value={state}>
-        <AppDispatchContext.Provider value={dispatch}>
       <Router>
         <div className={`App ${state.theme}`}>
           <div className="toast-container">
@@ -1206,8 +1150,6 @@ function App() {
           <FloatingPWAButton />
         </div>
       </Router>
-        </AppDispatchContext.Provider>
-      </AppStateContext.Provider>
     </AppContext.Provider>
   );
 }
@@ -1329,16 +1271,6 @@ function ProtectedRoute({ children }) {
 
 function useAppContext() {
   return useContext(AppContext);
-}
-
-/** Use when a component only needs to read state (avoids dispatch identity churn). */
-function useAppState() {
-  return useContext(AppStateContext);
-}
-
-/** Use when a component only dispatches actions (won't re-render on state changes). */
-function useAppDispatch() {
-  return useContext(AppDispatchContext);
 }
 
 // ============================================
@@ -1632,23 +1564,8 @@ function Header() {
 
 // ============================================
 // MOBILE BOTTOM NAVIGATION
-// Only renders on mobile viewports (≤768 px).
 // ============================================
-function useMobileViewport() {
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches);
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 768px)');
-    const handler = (e) => setIsMobile(e.matches);
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
-  return isMobile;
-}
-
 function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
-  const isMobile = useMobileViewport();
-  // Don't render anything on desktop — no DOM nodes, no event listeners
-  if (!isMobile) return null;
   // Logged-in nav items — Favorites removed, Advertise + Code added next to Market
   const loggedInItems = [
     { to: '/', icon: '🏠', label: 'Home' },
@@ -2132,7 +2049,7 @@ function AdminDashboard() {
     try {
       await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
       setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `👤 ${userName} has been moved back to Developer`, type: 'info', time: new Date().toLocaleTimeString(), read: false }});
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `👤 ${userName} set back to Developer`, type: 'info', time: new Date().toLocaleTimeString(), read: false }});
     } catch (e) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not demote user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
     }
@@ -2432,9 +2349,8 @@ function AdminDashboard() {
                           className="btn-sm" 
                           style={{ background: 'var(--warning)', color: 'white', border: 'none', cursor: 'pointer' }}
                           onClick={() => handleDemoteUser(user.id, user.name)}
-                          title="Move back to Developer"
                         >
-                          👤 To Developer
+                          👤 Set Developer
                         </button>
                       )}
                       {user.id !== state.currentUser.id && user.role !== 'banned' && (
@@ -2447,13 +2363,16 @@ function AdminDashboard() {
                         </button>
                       )}
                       {user.role === 'banned' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleUnbanUser(user.id, user.name)}
-                        >
-                          ✅ Unban
-                        </button>
+                        <>
+                          <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
+                          <button
+                            className="btn-sm"
+                            style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
+                            onClick={() => handleUnbanUser(user.id, user.name)}
+                          >
+                            ✅ Unban
+                          </button>
+                        </>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
@@ -2907,8 +2826,7 @@ function Messages() {
   const [replyingTo, setReplyingTo] = useState(null);
   const [replyMessage, setReplyMessage] = useState('');
   const [sending, setSending] = useState(false);
-  // Derive loading from app init state — no more manual timeout-based flags
-  const loadingMessages = !state.initialized;
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [convToDelete, setConvToDelete] = useState(null);
   const [deletingConv, setDeletingConv] = useState(false);
@@ -3021,49 +2939,34 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
-    const msgText = sanitizeText(replyMessage.trim(), 2000);
-    const senderName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
-    const senderAvatar = state.profile?.avatar_url || null;
-
     const optimisticMsg = {
       id: `temp-${Date.now()}`,
       from_user: state.currentUser.id,
       to_user: replyingTo.userId,
-      from_name: senderName,
-      from_avatar: senderAvatar,
-      to_name: replyingTo.userName,
-      to_avatar: replyingTo.userAvatar,
       subject: 'Re: Conversation',
-      message: msgText,
+      message: replyMessage,
       read: false,
       created_at: new Date().toISOString(),
       _optimistic: true
     };
 
-    setReplyMessage('');
-
-    // Optimistically update BOTH activeConversation AND conversations list
+    // Optimistically update UI
     if (activeConv) {
-      const updatedConv = {
+      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
         ...activeConv,
         messages: [...(activeConv.messages || []), optimisticMsg],
-        lastMessage: msgText,
+        lastMessage: replyMessage,
         lastMessageTime: optimisticMsg.created_at
-      };
-      dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: updatedConv });
-      dispatch({ type: 'UPDATE_CONVERSATION', payload: { userId: replyingTo.userId, lastMessage: msgText, lastMessageTime: optimisticMsg.created_at } });
+      }});
     }
+    setReplyMessage('');
 
     try {
       const msgData = {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
-        from_name: senderName,
-        from_avatar: senderAvatar,
-        to_name: replyingTo.userName,
-        to_avatar: replyingTo.userAvatar,
         subject: 'Re: Conversation',
-        message: msgText,
+        message: optimisticMsg.message,
         read: false,
         created_at: new Date().toISOString()
       };
@@ -3071,60 +2974,29 @@ function Messages() {
       const { data: insertedMsg, error } = await supabase.from('messages').insert([msgData]).select().single();
       
       if (!error && insertedMsg) {
-        // Replace optimistic message with real one
+        // Replace optimistic message with real one in active conversation
         if (activeConv) {
-          const withReal = {
+          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
             ...activeConv,
             messages: [
               ...(activeConv.messages || []).filter(m => m.id !== optimisticMsg.id),
               insertedMsg
-            ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+            ],
             lastMessage: insertedMsg.message,
             lastMessageTime: insertedMsg.created_at
-          };
-          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: withReal });
+          }});
         }
-        // Non-blocking notification to recipient
+        // Try to notify recipient (non-blocking)
         supabase.from('notifications').insert([{
           user_id: replyingTo.userId,
-          message: `💬 New message from ${senderName}`,
+          message: `💬 New message from ${state.profile?.name || state.currentUser.email?.split('@')[0] || 'User'}`,
           type: 'info',
           read: false,
           created_at: new Date().toISOString()
-        }]).catch(() => {});
-      } else if (error) {
-        // Rollback optimistic update on error — cover both state slices
-        if (activeConv) {
-          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-            ...activeConv,
-            messages: (activeConv.messages || []).filter(m => m.id !== optimisticMsg.id)
-          }});
-        }
-        // Also roll back the conversations list lastMessage/time
-        dispatch({ type: 'UPDATE_CONVERSATION', payload: {
-          userId: replyingTo.userId,
-          lastMessage: activeConv?.lastMessage,
-          lastMessageTime: activeConv?.lastMessageTime
-        }});
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: '❌ Failed to send message', type: 'error', 
-          time: new Date().toLocaleTimeString(), read: false 
-        }});
+        }]).then(() => {}).catch(() => {});
       }
     } catch (error) {
       console.error('Error sending reply:', error);
-      if (activeConv) {
-        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-          ...activeConv,
-          messages: (activeConv.messages || []).filter(m => m.id !== optimisticMsg.id)
-        }});
-      }
-      // Also roll back the conversations list lastMessage/time
-      dispatch({ type: 'UPDATE_CONVERSATION', payload: {
-        userId: replyingTo.userId,
-        lastMessage: activeConv?.lastMessage,
-        lastMessageTime: activeConv?.lastMessageTime
-      }});
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: '❌ Failed to send message', type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
@@ -3138,22 +3010,31 @@ function Messages() {
     if (!convToDelete) return;
     setDeletingConv(true);
     try {
-      // Delete all messages between these two users
-      await supabase.from('messages').delete()
-        .or(
-          `and(from_user.eq.${state.currentUser.id},to_user.eq.${convToDelete.userId}),and(from_user.eq.${convToDelete.userId},to_user.eq.${state.currentUser.id})`
-        );
+      const myId = state.currentUser.id;
+      const otherId = convToDelete.userId;
 
-      // Remove from conversations state
-      dispatch({ type: 'SET_CONVERSATIONS', payload: conversations.filter(c => c.userId !== convToDelete.userId) });
-      dispatch({ type: 'SET_MESSAGES', payload: (state.messages || []).filter(m => 
-        !(m.from_user === convToDelete.userId || m.to_user === convToDelete.userId)
-      )});
-      
-      if (activeConv?.userId === convToDelete.userId) {
-        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: null });
-        setReplyingTo(null);
+      // Record a "deleted_conversation" marker in the DB so if the other user 
+      // messages again, only a fresh conversation is shown to THIS user.
+      // We soft-delete by inserting a record into a deleted_conversations table
+      // (falls back gracefully if table doesn't exist).
+      try {
+        await supabase.from('deleted_conversations').upsert([{
+          user_id: myId,
+          other_user_id: otherId,
+          deleted_at: new Date().toISOString()
+        }], { onConflict: 'user_id,other_user_id' });
+      } catch (_) {
+        // Table may not exist yet — that's OK, local state is still wiped
       }
+
+      // Remove only from THIS user's local state (not deleting from DB for other user)
+      dispatch({
+        type: 'DELETE_CONVERSATION_FOR_USER',
+        payload: { currentUserId: myId, otherUserId: otherId }
+      });
+      setReplyingTo(null);
+      setMobileShowChat(false);
+
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: '🗑️ Conversation deleted', type: 'success', 
         time: new Date().toLocaleTimeString(), read: false 
@@ -3327,11 +3208,11 @@ function Messages() {
               {activeMessages.map((msg, i) => {
                 const isMine = msg.from_user === state.currentUser.id;
                 const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
+                const showName = !isMine && showAvatar;
                 const isLast = isMine && i === activeMessages.length - 1;
-                // Always use the conversation's resolved name/avatar (populated from real profiles)
-                const senderName = isMine 
+                const senderName = isMine
                   ? (state.profile?.name || state.currentUser?.email?.split('@')[0] || 'You')
-                  : (activeConv.userName || msg.from_name || 'User');
+                  : (activeConv.userName || 'User');
                 const senderAvatar = isMine
                   ? (state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`)
                   : (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`);
@@ -3340,16 +3221,14 @@ function Messages() {
                     {!isMine && (
                       <img
                         src={showAvatar ? senderAvatar : undefined}
-                        alt={showAvatar ? senderName : ''}
+                        alt=""
                         className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
-                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`; }}
+                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
                       />
                     )}
                     <div className="msg-col">
-                      {!isMine && showAvatar && (
-                        <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginBottom: 2, display: 'block' }}>
-                          {senderName}
-                        </span>
+                      {showName && (
+                        <span className="msg-sender-name">{senderName}</span>
                       )}
                       <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
                         <p>{msg.message}</p>
@@ -3366,6 +3245,13 @@ function Messages() {
                         )}
                       </div>
                     </div>
+                    {isMine && (
+                      <img
+                        src={showAvatar ? undefined : undefined}
+                        alt=""
+                        style={{ display: 'none' }}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -3809,16 +3695,9 @@ function UserProfile() {
 
   if (loading) return (
     <div className="profile-page">
-      <div className="profile-header-card" style={{ minHeight: 280 }}>
-        <div className="profile-cover"></div>
-        <div className="profile-header-inner">
-          <div className="skeleton" style={{ width: 100, height: 100, borderRadius: '50%', flexShrink: 0 }}></div>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div className="skeleton" style={{ height: 22, width: '40%' }}></div>
-            <div className="skeleton" style={{ height: 14, width: '25%' }}></div>
-            <div className="skeleton" style={{ height: 14, width: '70%' }}></div>
-          </div>
-        </div>
+      <div className="loading-container">
+        <div className="loading-spinner-large"></div>
+        <p>Loading profile...</p>
       </div>
     </div>
   );
@@ -3836,73 +3715,53 @@ function UserProfile() {
   const displayName = profile.name || 'Anonymous User';
   const avatarUrl = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`;
 
-  const roleIcon = profile.role === 'admin' ? '🛡️' 
-    : profile.role === 'developer' ? '👨‍💻' 
-    : profile.role === 'designer' ? '🎨' 
-    : profile.role === 'freelancer' ? '💼' 
-    : '👤';
-
-  const handleMessageUser = () => {
-    // Navigate to messages; the realtime conversation will appear once user sends from listing or via compose
-    navigate('/messages');
+  const roleBadge = {
+    admin: { icon: '🛡️', label: 'Admin', color: '#667eea', bg: '#ede9fe' },
+    developer: { icon: '👨‍💻', label: 'Developer', color: '#10b981', bg: '#d1fae5' },
+    designer: { icon: '🎨', label: 'Designer', color: '#f59e0b', bg: '#fef3c7' },
+    freelancer: { icon: '💼', label: 'Freelancer', color: '#3b82f6', bg: '#dbeafe' },
+    startup: { icon: '🚀', label: 'Startup', color: '#8b5cf6', bg: '#ede9fe' },
+    banned: { icon: '🚫', label: 'Banned', color: '#ef4444', bg: '#fee2e2' },
   };
+  const badge = roleBadge[profile.role] || { icon: '👤', label: profile.role || 'Member', color: '#6b7280', bg: '#f3f4f6' };
 
   return (
     <div className="profile-page">
       <div className="profile-header-card">
-        <div className="profile-cover" style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 50%, #10b981 100%)' }}></div>
+        <div className="profile-cover"></div>
         <div className="profile-header-inner">
           <div className="avatar-container-static">
-            <img 
-              src={avatarUrl} 
-              alt={displayName} 
-              className="avatar-large" 
-              onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=667eea&color=fff&size=120`; }}
-            />
-            {profile.privacy_online !== false && (
-              <span className="avatar-online-ring" title="May be online"></span>
-            )}
+            <img src={avatarUrl} alt={displayName} className="avatar-large" />
           </div>
           <div className="profile-info">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <h1 style={{ margin: 0 }}>
-                {displayName}
-                {profile.verified && (
-                  <span className="verified-badge" title="Verified Account"> ✓</span>
-                )}
-              </h1>
-            </div>
-            {profile.role && (
-              <span className="profile-role-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4, marginBottom: 8 }}>
-                {roleIcon} {profile.role}
-              </span>
-            )}
+            <h1>
+              {displayName}
+              {profile.verified && (
+                <span className="verified-badge" title="Verified Account">✓</span>
+              )}
+            </h1>
+            {/* Role Badge */}
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              background: badge.bg, color: badge.color,
+              padding: '4px 12px', borderRadius: 'var(--radius-full)',
+              fontSize: '0.8rem', fontWeight: 600, marginBottom: 8
+            }}>
+              {badge.icon} {badge.label}
+            </span>
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
-                <a href={profile.website.startsWith('http') ? profile.website : `https://${profile.website}`} target="_blank" rel="noopener noreferrer" className="profile-link">
-                  🌐 Website
-                </a>
+                <a href={profile.website} target="_blank" rel="noopener noreferrer" className="profile-link">🌐 Website</a>
               )}
               {profile.github && (
-                <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">
-                  ⚡ GitHub
-                </a>
+                <a href={`https://github.com/${profile.github}`} target="_blank" rel="noopener noreferrer" className="profile-link">⚡ GitHub</a>
               )}
               {profile.twitter && (
-                <a href={`https://twitter.com/${profile.twitter.replace('@', '')}`} target="_blank" rel="noopener noreferrer" className="profile-link">
-                  𝕏 Twitter
-                </a>
+                <a href={`https://twitter.com/${profile.twitter.replace('@','')}`} target="_blank" rel="noopener noreferrer" className="profile-link">𝕏 Twitter</a>
               )}
               {profile.linkedin && (
-                <a href={`https://linkedin.com/in/${profile.linkedin}`} target="_blank" rel="noopener noreferrer" className="profile-link">
-                  💼 LinkedIn
-                </a>
-              )}
-              {profile.privacy_show_email && profile.email && (
-                <a href={`mailto:${profile.email}`} className="profile-link">
-                  📧 Email
-                </a>
+                <a href={`https://linkedin.com/in/${profile.linkedin}`} target="_blank" rel="noopener noreferrer" className="profile-link">💼 LinkedIn</a>
               )}
             </div>
           </div>
@@ -3916,14 +3775,12 @@ function UserProfile() {
                 >
                   {followLoading ? '...' : isFollowing ? '✓ Following' : '+ Follow'}
                 </button>
-                {profile.privacy_allow_messages !== false && (
-                  <button
-                    className="btn-secondary"
-                    onClick={handleMessageUser}
-                  >
-                    💬 Message
-                  </button>
-                )}
+                <button
+                  className="btn-secondary"
+                  onClick={() => navigate('/messages')}
+                >
+                  💬 Message
+                </button>
               </>
             )}
           </div>
@@ -3932,10 +3789,6 @@ function UserProfile() {
           <div className="stat-box">
             <h3>{userPosts.listings.length}</h3>
             <p>Listings</p>
-          </div>
-          <div className="stat-box">
-            <h3>{userPosts.apps.length}</h3>
-            <p>Apps</p>
           </div>
           <div className="stat-box">
             <h3>{userPosts.snippets.length}</h3>
@@ -4132,8 +3985,8 @@ function ListingCard({ listing }) {
         const msgData = {
           from_user: state.currentUser.id,
           to_user: listing.user_id,
-          subject: sanitizeText(`Inquiry about ${listing.title}`, 200),
-          message: sanitizeText(message, 2000),
+          subject: `Inquiry about ${listing.title}`,
+          message: message,
           listing_id: listing.id,
           read: false,
           created_at: new Date().toISOString()
@@ -5663,12 +5516,12 @@ function Settings() {
     try {
       const { error } = await supabase.from('profiles').upsert({
         id: state.currentUser.id,
-        name: sanitizeText(profileForm.name, 100),
-        bio: sanitizeText(profileForm.bio, 500),
-        website: sanitizeUrl(profileForm.website),
-        github: sanitizeText(profileForm.github, 100),
-        twitter: sanitizeText(profileForm.twitter, 100),
-        linkedin: sanitizeText(profileForm.linkedin, 100),
+        name: profileForm.name,
+        bio: profileForm.bio,
+        website: profileForm.website,
+        github: profileForm.github,
+        twitter: profileForm.twitter,
+        linkedin: profileForm.linkedin,
         role: profileForm.role,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
@@ -5721,11 +5574,11 @@ function Settings() {
   };
 
   const handleSaveNotifications = async () => {
+    const currentEnabled = state.notificationsEnabled;
     try {
-      const newVal = state.notificationsEnabled;
       const updateData = {
         id: state.currentUser.id,
-        notifications_enabled: newVal,
+        notifications_enabled: currentEnabled,
         notif_email: notificationPrefs.emailNotifications,
         notif_push: notificationPrefs.pushNotifications,
         notif_marketing: notificationPrefs.marketingEmails,
@@ -5735,10 +5588,13 @@ function Settings() {
         notif_digest: notificationPrefs.weeklyDigest,
         updated_at: new Date().toISOString()
       };
-      await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
+      const { error } = await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
+      if (error) throw error;
+      // Keep localStorage in sync
+      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(currentEnabled)); } catch(e) {}
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
     } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences: ' + (e.message || ''), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
     }
   };
 
@@ -6028,8 +5884,6 @@ function Settings() {
                   <label className="toggle-switch">
                     <input type="checkbox" checked={state.notificationsEnabled} onChange={async () => {
                       const newVal = !state.notificationsEnabled;
-                      // Persist to localStorage immediately (keeps setting across hard refresh)
-                      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(newVal)); } catch(e) {}
                       dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
                       if (!newVal) {
                         dispatch({ type: 'CLEAR_NOTIFICATIONS' });
@@ -6042,7 +5896,6 @@ function Settings() {
                         read: false,
                         _force: true
                       }});
-                      // Persist to Supabase so it survives logout + login on other devices
                       if (state.currentUser) {
                         try {
                           await supabase.from('profiles').upsert({
@@ -6153,15 +6006,6 @@ function Settings() {
                 <p style={{ marginTop: '16px', color: 'var(--gray-500)' }}>
                   Current theme: <strong>{state.theme === 'light' ? '☀️ Light' : '🌙 Dark'}</strong>
                 </p>
-
-                {/* ── PWA Install Section ── */}
-                <div style={{ marginTop: 32 }}>
-                  <h4 style={{ marginBottom: 4 }}>📲 Install App</h4>
-                  <p style={{ color: 'var(--gray-500)', fontSize: '0.88rem', marginBottom: 16 }}>
-                    Install DevMarket as a standalone app on your device for the best experience — faster load, offline access, and no browser chrome.
-                  </p>
-                  <PWAInstallWidget />
-                </div>
               </div>
             )}
 
@@ -6485,84 +6329,6 @@ function AdminAnnouncementsTab({ dispatch, state }) {
 }
 
 // ============================================
-// PWA INSTALL WIDGET — in-page install card
-// ============================================
-function PWAInstallWidget() {
-  const { canInstall, install } = usePWAInstall();
-  const [installing, setInstalling] = useState(false);
-  const [installed, setInstalled] = useState(
-    typeof window !== 'undefined' && window.matchMedia('(display-mode: standalone)').matches
-  );
-  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-  const showIOSGuide = isIOS && isSafari && !installed;
-
-  const handleInstall = async () => {
-    setInstalling(true);
-    await install();
-    setInstalling(false);
-    setInstalled(true);
-  };
-
-  if (installed) {
-    return (
-      <div className="pwa-install-widget installed">
-        <span className="pwa-widget-icon">✅</span>
-        <div>
-          <strong>DevMarket is installed!</strong>
-          <p style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>Open it from your home screen or app drawer.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (showIOSGuide) {
-    return (
-      <div className="pwa-install-widget ios-guide">
-        <span className="pwa-widget-icon">🍎</span>
-        <div>
-          <strong>Add to Home Screen (iOS)</strong>
-          <ol style={{ marginTop: 8, paddingLeft: 18, fontSize: '0.88rem', lineHeight: 1.8, color: 'var(--gray-600)' }}>
-            <li>Tap the <strong>Share</strong> button <span style={{ fontFamily: 'monospace' }}>⎋</span> at the bottom of Safari</li>
-            <li>Scroll down and tap <strong>"Add to Home Screen"</strong></li>
-            <li>Tap <strong>"Add"</strong> in the top-right corner</li>
-          </ol>
-        </div>
-      </div>
-    );
-  }
-
-  if (canInstall) {
-    return (
-      <div className="pwa-install-widget">
-        <span className="pwa-widget-icon">🚀</span>
-        <div style={{ flex: 1 }}>
-          <strong>Install DevMarket App</strong>
-          <p style={{ color: 'var(--gray-500)', fontSize: '0.85rem', marginTop: 2 }}>
-            Faster loads, offline access, native app experience.
-          </p>
-        </div>
-        <button className="btn-primary" onClick={handleInstall} disabled={installing} style={{ flexShrink: 0 }}>
-          {installing ? '⏳ Installing...' : '📲 Install Now'}
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="pwa-install-widget muted">
-      <span className="pwa-widget-icon">📱</span>
-      <div>
-        <strong>Install not available</strong>
-        <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>
-          Your browser may not support installation, or the app is already installed. Try Chrome or Edge on Android/Desktop.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ============================================
 // FOOTER COMPONENT
 // ============================================
 function Footer() {
@@ -6594,46 +6360,28 @@ function Footer() {
 }
 
 // ============================================
-// FLOATING PWA INSTALL BUTTON — enhanced
+// FLOATING PWA INSTALL BUTTON
 // ============================================
 function FloatingPWAButton() {
   const { canInstall, install } = usePWAInstall();
   const [dismissed, setDismissed] = useState(() => {
     try { return localStorage.getItem('pwaDismissed') === '1'; } catch(e) { return false; }
   });
-  const [installing, setInstalling] = useState(false);
 
   if (!canInstall || dismissed) return null;
 
-  const handleInstall = async () => {
-    setInstalling(true);
-    await install();
-    setInstalling(false);
-  };
-
   return (
-    <div className="pwa-float-banner" role="banner" aria-label="Install DevMarket app">
+    <div className="pwa-float-banner">
       <div className="pwa-float-content">
-        <div className="pwa-float-icon-wrap">
-          <span className="pwa-float-icon">🚀</span>
-        </div>
+        <span className="pwa-float-icon">📲</span>
         <div className="pwa-float-text">
-          <strong>Add DevMarket to Home Screen</strong>
-          <p>Install for faster access & offline support</p>
+          <strong>Install DevMarket</strong>
+          <p>Add to your home screen for the best experience</p>
         </div>
       </div>
       <div className="pwa-float-actions">
-        <button className="pwa-float-install" onClick={handleInstall} disabled={installing}>
-          {installing ? '⏳' : '📲 Install'}
-        </button>
-        <button 
-          className="pwa-float-dismiss" 
-          onClick={() => { 
-            setDismissed(true); 
-            try { localStorage.setItem('pwaDismissed', '1'); } catch(e) {} 
-          }}
-          aria-label="Dismiss install prompt"
-        >✕</button>
+        <button className="pwa-float-install" onClick={install}>Install</button>
+        <button className="pwa-float-dismiss" onClick={() => { setDismissed(true); try { localStorage.setItem('pwaDismissed', '1'); } catch(e) {} }}>✕</button>
       </div>
     </div>
   );
