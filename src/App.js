@@ -3,7 +3,7 @@
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, useParams, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
 import { realtimeManager } from './utils/realtime';
 import { analytics } from './utils/analytics';
@@ -117,9 +117,7 @@ function appReducer(state, action) {
       // When notifications are disabled, block ALL incoming notifications
       // except those with _force: true (used for the toggle feedback itself)
       if (!state.notificationsEnabled && !action.payload._force) return state;
-      // Strip _force before storing so it doesn't pollute the notification object
-      const { _force, ...notifData } = action.payload;
-      const newNotif = { ...notifData, id: notifData.id || `n-${Date.now()}-${Math.random()}` };
+      const newNotif = { ...action.payload, id: action.payload.id || `n-${Date.now()}-${Math.random()}` };
       return { ...state, notifications: [newNotif, ...(state.notifications || [])].slice(0, 50) };
     }
     case 'REMOVE_NOTIFICATION': 
@@ -221,6 +219,11 @@ function appReducer(state, action) {
       return { ...state, moderationQueue: action.payload || [] };
     case 'LOGOUT': 
       return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], follows: [], followers: [], isAdmin: false, announcement: null };
+    case 'SET_THEME': {
+      const t = action.payload || 'light';
+      localStorage.setItem('devMarketTheme', t);
+      return { ...state, theme: t };
+    }
     case 'TOGGLE_THEME': {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
@@ -546,14 +549,11 @@ function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [hasShownLoader, setHasShownLoader] = useState(false);
-
-  useEffect(() => {
-    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
-    if (loaderShown) {
-      setHasShownLoader(true);
-    }
-  }, []);
+  // Read synchronously during initial render to prevent splash-loader flicker
+  // on navigations after the first load (no useEffect delay needed).
+  const [hasShownLoader] = useState(() => {
+    try { return !!sessionStorage.getItem('devMarketLoaderShown'); } catch(e) { return false; }
+  });
 
   async function loadPublicData() {
     try {
@@ -760,7 +760,10 @@ function App() {
         });
         
         // Only notify if the conversation is NOT currently open
-        const activeConvId = window.__activeConversationId || null;
+        // Check via the reducer state rather than a window global.
+        // state.activeConversation is set/cleared by SET_ACTIVE_CONVERSATION dispatches
+        // in the Messages component so this is always consistent.
+        const activeConvId = state.activeConversation?.userId || null;
         const isConversationOpen = activeConvId === otherUserId;
         
         if (!isConversationOpen) {
@@ -800,13 +803,21 @@ function App() {
         table: 'listings'
       },
       (payload) => {
-        // Targeted update — no full refetch needed
+        // Normalise to the same shape loadPublicData produces (camelCase aliases)
+        const normaliseListing = (raw) => raw ? ({
+          ...raw,
+          seller: raw.seller_name,
+          sellerAvatar: raw.seller_avatar,
+          imageUrl: raw.image_url,
+          date: new Date(raw.created_at).toLocaleDateString()
+        }) : raw;
+
         if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_LISTING', payload: payload.new });
+          dispatch({ type: 'ADD_LISTING', payload: normaliseListing(payload.new) });
         } else if (payload.eventType === 'DELETE') {
           dispatch({ type: 'DELETE_LISTING', payload: payload.old?.id });
         } else if (payload.eventType === 'UPDATE') {
-          dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
+          dispatch({ type: 'UPDATE_LISTING', payload: normaliseListing(payload.new) });
         }
       }
     );
@@ -894,7 +905,9 @@ function App() {
       }
     });
     
+    // Sort each conversation's messages chronologically (DB fetch order is DESC)
     const conversations = Array.from(conversationMap.values())
+      .map(c => ({ ...c, messages: [...c.messages].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)) }))
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     
     dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
@@ -909,14 +922,15 @@ function App() {
         
         if (mounted) {
           dispatch({ type: 'SET_SESSION', payload: session });
-          
-          if (session?.user) {
-            await loadProfile(session.user);
-            await loadUserData(session.user.id);
-          }
         }
 
-        await loadPublicData();
+        // Run public data fetch in parallel with authenticated user data —
+        // they are independent and this halves the perceived load time.
+        const authLoad = session?.user
+          ? Promise.all([loadProfile(session.user), loadUserData(session.user.id)])
+          : Promise.resolve();
+
+        await Promise.all([loadPublicData(), authLoad]);
         
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
@@ -931,50 +945,56 @@ function App() {
       }
     }
 
-    // Show the full splash loader only on the very first visit per session.
-    // On subsequent page refreshes within the same session show a minimal spinner.
+    // Auth state subscription must ALWAYS be registered regardless of loader path,
+    // and the cleanup must always unsubscribe it. Previously the subscription was
+    // placed after an early-return branch which caused a subscription leak.
+    //
+    // Also track lastLoadedUserId: SIGNED_IN fires on both genuine logins AND on
+    // every token refresh (roughly every hour). Without this guard the app was
+    // re-running expensive profile + data loads on every refresh cycle.
+    let lastLoadedUserId = null;
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return;
+      dispatch({ type: 'SET_SESSION', payload: session });
+      if (event === 'SIGNED_IN' && session?.user) {
+        // Only reload if this is a genuinely new user session, not a token refresh
+        if (session.user.id !== lastLoadedUserId) {
+          lastLoadedUserId = session.user.id;
+          await loadProfile(session.user);
+          await loadUserData(session.user.id);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        lastLoadedUserId = null;
+        dispatch({ type: 'LOGOUT' });
+        realtimeManager.unsubscribeAll();
+      }
+    });
+
     if (!hasShownLoader) {
       const safetyTimeout = setTimeout(() => {
         if (mounted) {
           setIsInitialLoading(false);
           sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setHasShownLoader(true);
         }
       }, 6000);
 
       initialize().then(() => {
         if (mounted) {
           sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setHasShownLoader(true);
-          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 400);
+          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 500);
         }
-        clearTimeout(safetyTimeout);
       });
 
       return () => {
         mounted = false;
         clearTimeout(safetyTimeout);
+        subscription?.unsubscribe();
+        realtimeManager.unsubscribeAll();
       };
     } else {
-      // Already seen the splash — init quickly with mini-spinner
-      initialize().then(() => {
-        if (mounted) setIsInitialLoading(false);
-      });
+      initialize().then(() => { if (mounted) setIsInitialLoading(false); });
     }
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (mounted) {
-        dispatch({ type: 'SET_SESSION', payload: session });
-        
-        if (event === 'SIGNED_IN' && session?.user) {
-          await loadProfile(session.user);
-          await loadUserData(session.user.id);
-        } else if (event === 'SIGNED_OUT') {
-          dispatch({ type: 'LOGOUT' });
-          realtimeManager.unsubscribeAll();
-        }
-      }
-    });
 
     return () => {
       mounted = false;
@@ -984,9 +1004,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Restore persisted theme directly rather than toggling, which avoids
+    // a redundant localStorage write and prevents a flicker if the saved
+    // theme happens to match the initial state value.
     const savedTheme = localStorage.getItem('devMarketTheme');
     if (savedTheme && savedTheme !== state.theme) {
-      dispatch({ type: 'TOGGLE_THEME' });
+      dispatch({ type: 'SET_THEME', payload: savedTheme });
     }
   }, []);
 
@@ -1230,14 +1253,20 @@ function usePWAInstall() {
   const [isInstalled, setIsInstalled] = useState(false);
 
   useEffect(() => {
-    const handler = (e) => {
+    const handleBeforeInstall = (e) => {
       e.preventDefault();
       setInstallPrompt(e);
     };
-    window.addEventListener('beforeinstallprompt', handler);
-    window.addEventListener('appinstalled', () => setIsInstalled(true));
+    const handleInstalled = () => setIsInstalled(true);
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    window.addEventListener('appinstalled', handleInstalled);
     if (window.matchMedia('(display-mode: standalone)').matches) setIsInstalled(true);
-    return () => window.removeEventListener('beforeinstallprompt', handler);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+      window.removeEventListener('appinstalled', handleInstalled);
+    };
   }, []);
 
   const install = async () => {
@@ -1267,8 +1296,14 @@ function Header() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
-  const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
+  const unreadNotifications = useMemo(
+    () => (state.notifications || []).filter(n => !n.read).length,
+    [state.notifications]
+  );
+  const unreadMessages = useMemo(
+    () => (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0),
+    [state.conversations]
+  );
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -1289,13 +1324,16 @@ function Header() {
   };
 
   const handleLogout = async () => {
+    // signOut triggers onAuthStateChange(SIGNED_OUT) which dispatches LOGOUT + unsubscribes.
+    // No need to dispatch LOGOUT manually here — doing so would double-clear state and could
+    // wipe the success notification before the user sees it.
     await supabase.auth.signOut();
-    dispatch({ type: 'LOGOUT' });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: '👋 You have been logged out successfully', 
       type: 'info', 
       time: new Date().toLocaleTimeString(), 
-      read: false 
+      read: false,
+      _force: true
     }});
     setShowLogoutConfirm(false);
     setShowUserMenu(false);
@@ -1498,15 +1536,17 @@ function Header() {
       {/* Mobile Bottom Navigation Row */}
       <MobileNav location={location} unreadMessages={unreadMessages} currentUser={state.currentUser} isAdmin={state.isAdmin} />
 
-      <ConfirmDialog 
-        isOpen={showLogoutConfirm} 
-        title="Confirm Logout" 
-        message="Are you sure you want to logout? Any unsaved changes will be lost." 
-        onConfirm={handleLogout} 
-        onCancel={() => setShowLogoutConfirm(false)} 
-        confirmText="Logout" 
-        type="danger" 
-      />
+      <ModalPortal>
+        <ConfirmDialog 
+          isOpen={showLogoutConfirm} 
+          title="Confirm Logout" 
+          message="Are you sure you want to logout? Any unsaved changes will be lost." 
+          onConfirm={handleLogout} 
+          onCancel={() => setShowLogoutConfirm(false)} 
+          confirmText="Logout" 
+          type="danger" 
+        />
+      </ModalPortal>
     </>
   );
 }
@@ -1994,26 +2034,6 @@ function AdminDashboard() {
     }
   };
 
-  const handleDemoteUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `👤 ${userName} has been moved back to Developer`, type: 'info', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not demote user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
-  const handleUnbanUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'developer', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'developer' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `✅ ${userName} has been unbanned`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not unban user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
   if (!state.currentUser || !state.isAdmin) {
     return (
       <div className="admin-page">
@@ -2293,16 +2313,6 @@ function AdminDashboard() {
                           🛡️ Promote
                         </button>
                       )}
-                      {user.id !== state.currentUser.id && user.role === 'admin' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--warning)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleDemoteUser(user.id, user.name)}
-                          title="Move back to Developer"
-                        >
-                          👤 To Developer
-                        </button>
-                      )}
                       {user.id !== state.currentUser.id && user.role !== 'banned' && (
                         <button 
                           className="btn-sm" 
@@ -2313,13 +2323,7 @@ function AdminDashboard() {
                         </button>
                       )}
                       {user.role === 'banned' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--success)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handleUnbanUser(user.id, user.name)}
-                        >
-                          ✅ Unban
-                        </button>
+                        <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
                       )}
                       {user.id === state.currentUser.id && (
                         <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
@@ -2779,7 +2783,9 @@ function Messages() {
   const [deletingConv, setDeletingConv] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState(new Set());
-  const [typingTimeout, setTypingTimeout] = useState(null);
+  // useRef instead of useState: timeout IDs don't need to trigger re-renders,
+  // and useState caused a stale-closure bug where clearTimeout received a stale id.
+  const typingTimeoutRef = useRef(null);
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesEndRef = useRef(null);
   const chatMessagesRef = useRef(null);
@@ -2825,9 +2831,8 @@ function Messages() {
         .on('broadcast', { event: 'typing' }, ({ payload }) => {
           if (payload.userId !== state.currentUser.id) {
             setIsTyping(true);
-            clearTimeout(typingTimeout);
-            const t = setTimeout(() => setIsTyping(false), 3000);
-            setTypingTimeout(t);
+            clearTimeout(typingTimeoutRef.current);
+            typingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
           }
         })
         .subscribe();
@@ -2886,8 +2891,9 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
+    const optimisticId = `temp-${Date.now()}`;
     const optimisticMsg = {
-      id: `temp-${Date.now()}`,
+      id: optimisticId,
       from_user: state.currentUser.id,
       to_user: replyingTo.userId,
       subject: 'Re: Conversation',
@@ -2897,15 +2903,17 @@ function Messages() {
       _optimistic: true
     };
 
-    // Optimistically update UI
-    if (activeConv) {
+    // Optimistic update — append to the active conversation immediately
+    const currentActiveConv = state.activeConversation;
+    if (currentActiveConv) {
       dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-        ...activeConv,
-        messages: [...(activeConv.messages || []), optimisticMsg],
+        ...currentActiveConv,
+        messages: [...(currentActiveConv.messages || []), optimisticMsg],
         lastMessage: replyMessage,
         lastMessageTime: optimisticMsg.created_at
       }});
     }
+    const capturedMessage = replyMessage;
     setReplyMessage('');
 
     try {
@@ -2913,39 +2921,51 @@ function Messages() {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
         subject: 'Re: Conversation',
-        message: optimisticMsg.message,
+        message: capturedMessage,
         read: false,
         created_at: new Date().toISOString()
       };
 
       const { data: insertedMsg, error } = await supabase.from('messages').insert([msgData]).select().single();
       
-      if (!error && insertedMsg) {
-        // Replace optimistic message with real one in active conversation
-        if (activeConv) {
-          dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-            ...activeConv,
-            messages: [
-              ...(activeConv.messages || []).filter(m => m.id !== optimisticMsg.id),
-              insertedMsg
-            ],
-            lastMessage: insertedMsg.message,
-            lastMessageTime: insertedMsg.created_at
-          }});
-        }
-        // Try to notify recipient (non-blocking)
-        supabase.from('notifications').insert([{
-          user_id: replyingTo.userId,
-          message: `💬 New message from ${state.profile?.name || state.currentUser.email?.split('@')[0] || 'User'}`,
-          type: 'info',
-          read: false,
-          created_at: new Date().toISOString()
-        }]).then(() => {}).catch(() => {});
+      if (error) throw error;
+
+      if (insertedMsg) {
+        // Replace optimistic message with real one. Read the LATEST activeConversation
+        // from state via the updater pattern to avoid stale closure issues.
+        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+          ...(state.activeConversation || currentActiveConv),
+          messages: [
+            ...((state.activeConversation || currentActiveConv)?.messages || [])
+              .filter(m => m.id !== optimisticId),
+            insertedMsg
+          ],
+          lastMessage: insertedMsg.message,
+          lastMessageTime: insertedMsg.created_at
+        }});
       }
+      // Try to notify recipient (non-blocking, best-effort)
+      supabase.from('notifications').insert([{
+        user_id: replyingTo.userId,
+        message: `💬 New message from ${state.profile?.name || state.currentUser.email?.split('@')[0] || 'User'}`,
+        type: 'info',
+        read: false,
+        created_at: new Date().toISOString()
+      }]).then(() => {}).catch(() => {});
     } catch (error) {
       console.error('Error sending reply:', error);
+      // Rollback: remove the optimistic message
+      if (state.activeConversation) {
+        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
+          ...state.activeConversation,
+          messages: (state.activeConversation.messages || []).filter(m => m.id !== optimisticId),
+          lastMessage: currentActiveConv?.lastMessage,
+          lastMessageTime: currentActiveConv?.lastMessageTime
+        }});
+      }
+      setReplyMessage(capturedMessage); // restore the unsent text
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Failed to send message', type: 'error', 
+        message: '❌ Failed to send message. Please try again.', type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
       }});
     }
@@ -3026,8 +3046,7 @@ function Messages() {
     setReplyingTo(conv);
     setMobileShowChat(true);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
-    window.__activeConversationId = conv.userId; // used by realtime handler to suppress notifications
-    
+    // Mark unread messages as read in the DB (non-blocking, best-effort)
     conv.messages.forEach(async (msg) => {
       if (!msg.read && msg.to_user === state.currentUser.id) {
         try {
@@ -3147,29 +3166,17 @@ function Messages() {
                 const isMine = msg.from_user === state.currentUser.id;
                 const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
                 const isLast = isMine && i === activeMessages.length - 1;
-                // Always use the conversation's resolved name/avatar (populated from real profiles)
-                const senderName = isMine 
-                  ? (state.profile?.name || state.currentUser?.email?.split('@')[0] || 'You')
-                  : (activeConv.userName || msg.from_name || 'User');
-                const senderAvatar = isMine
-                  ? (state.profile?.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`)
-                  : (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`);
                 return (
                   <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
                     {!isMine && (
                       <img
-                        src={showAvatar ? senderAvatar : undefined}
-                        alt={showAvatar ? senderName : ''}
+                        src={showAvatar ? (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`) : undefined}
+                        alt=""
                         className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
-                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(senderName)}&background=667eea&color=fff&size=32`; }}
+                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
                       />
                     )}
                     <div className="msg-col">
-                      {!isMine && showAvatar && (
-                        <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginBottom: 2, display: 'block' }}>
-                          {senderName}
-                        </span>
-                      )}
                       <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
                         <p>{msg.message}</p>
                       </div>
@@ -3467,8 +3474,7 @@ function Profile() {
 function UserProfile() {
   const { state, dispatch } = useAppContext();
   const navigate = useNavigate();
-  const location = useLocation();
-  const userId = location.pathname.split('/profile/')[1];
+  const { userId } = useParams();
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3663,11 +3669,6 @@ function UserProfile() {
                 <span className="verified-badge" title="Verified Account">✓</span>
               )}
             </h1>
-            {profile.role && (
-              <span className="profile-role-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
-                {profile.role === 'admin' ? '🛡️' : profile.role === 'developer' ? '👨‍💻' : profile.role === 'banned' ? '🚫' : '👤'} {profile.role}
-              </span>
-            )}
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
@@ -3782,7 +3783,8 @@ function Home() {
     listings: (state.listings || []).length,
     apps: (state.apps || []).length,
     snippets: (state.codeSnippets || []).length,
-    users: 1250
+    // Use analytics data if available, otherwise derive from known state
+    users: state.analyticsData?.totalUsers || 0
   };
   
   const featuredListings = (state.listings || []).filter(l => !l.hidden).slice(0, 3);
@@ -3872,7 +3874,9 @@ function ListingCard({ listing }) {
   const isFavorited = (state.favorites || []).some(f => f.id === listing.id);
   const isOwner = state.currentUser && listing.user_id === state.currentUser.id;
 
-  const handleContact = async () => {
+  const [sending, setSending] = useState(false);
+
+  const handleContactToggle = () => {
     if (!state.currentUser) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: 'Please login to contact sellers', 
@@ -3882,7 +3886,6 @@ function ListingCard({ listing }) {
       }});
       return;
     }
-    
     if (isOwner) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: 'You cannot message yourself', 
@@ -3892,53 +3895,53 @@ function ListingCard({ listing }) {
       }});
       return;
     }
-    
-    if (showContact && message.trim()) {
-      try {
-        const msgData = {
-          from_user: state.currentUser.id,
-          to_user: listing.user_id,
-          subject: `Inquiry about ${listing.title}`,
-          message: message,
-          listing_id: listing.id,
-          read: false,
-          created_at: new Date().toISOString()
-        };
+    setShowContact(prev => !prev);
+  };
 
-        await supabase.from('messages').insert([msgData]);
-        
-        try {
-          await supabase.from('notifications').insert([{
-            user_id: listing.user_id,
-            message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
-            type: 'info',
-            read: false,
-            created_at: new Date().toISOString()
-          }]);
-        } catch (notifError) {
-          console.log('Could not create notification:', notifError);
-        }
-        
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: `Message sent about "${listing.title}"`, 
-          type: 'success', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      } catch (error) {
-        console.error('Error sending message:', error);
-        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-          message: 'Failed to send message. Please try again.', 
-          type: 'error', 
-          time: new Date().toLocaleTimeString(), 
-          read: false 
-        }});
-      }
+  const handleSendMessage = async () => {
+    if (!message.trim()) return;
+    setSending(true);
+    try {
+      const msgData = {
+        from_user: state.currentUser.id,
+        to_user: listing.user_id,
+        subject: `Inquiry about ${listing.title}`,
+        message: message,
+        listing_id: listing.id,
+        read: false,
+        created_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase.from('messages').insert([msgData]);
+      if (error) throw error;
+      
+      // Notify seller (non-blocking)
+      supabase.from('notifications').insert([{
+        user_id: listing.user_id,
+        message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
+        type: 'info',
+        read: false,
+        created_at: new Date().toISOString()
+      }]).then(() => {}).catch(() => {});
+      
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: `✅ Message sent about "${listing.title}"`, 
+        type: 'success', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
       setShowContact(false);
       setMessage('');
-    } else {
-      setShowContact(!showContact);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Failed to send message. Please try again.', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     }
+    setSending(false);
   };
 
   // Track listing view on expand/contact (non-blocking, best-effort)
@@ -3963,6 +3966,7 @@ function ListingCard({ listing }) {
       return;
     }
     
+    // Optimistic update
     dispatch({ type: 'TOGGLE_FAVORITE', payload: listing });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: isFavorited ? 'Removed from favorites' : 'Added to favorites', 
@@ -3973,15 +3977,25 @@ function ListingCard({ listing }) {
     
     try {
       if (isFavorited) {
-        await supabase.from('favorites').delete().eq('user_id', state.currentUser.id).eq('listing_id', listing.id);
+        const { error } = await supabase.from('favorites').delete().eq('user_id', state.currentUser.id).eq('listing_id', listing.id);
+        if (error) throw error;
       } else {
-        await supabase.from('favorites').insert([{
+        const { error } = await supabase.from('favorites').insert([{
           user_id: state.currentUser.id,
           listing_id: listing.id,
           created_at: new Date().toISOString()
         }]);
+        if (error) throw error;
       }
     } catch (error) {
+      // Rollback optimistic update
+      dispatch({ type: 'TOGGLE_FAVORITE', payload: listing });
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Could not update favorites. Please try again.', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
       console.error('Error updating favorites:', error);
     }
   };
@@ -4071,13 +4085,28 @@ function ListingCard({ listing }) {
             <span>{listing.date}</span>
           </div>
           {showContact && (
-            <textarea 
-              placeholder="Write your message..." 
-              value={message} 
-              onChange={e => setMessage(e.target.value)} 
-              className="contact-message" 
-              rows="3" 
-            />
+            <div className="contact-form">
+              <textarea 
+                placeholder="Write your message to the seller..." 
+                value={message} 
+                onChange={e => setMessage(e.target.value)} 
+                className="contact-message" 
+                rows="3" 
+                autoFocus
+              />
+              <div className="contact-form-actions">
+                <button className="btn-secondary btn-sm" onClick={() => { setShowContact(false); setMessage(''); }}>
+                  Cancel
+                </button>
+                <button
+                  className="btn-primary btn-sm"
+                  onClick={handleSendMessage}
+                  disabled={sending || !message.trim()}
+                >
+                  {sending ? '⏳ Sending...' : '📤 Send Message'}
+                </button>
+              </div>
+            </div>
           )}
           <div className="card-actions">
             {listing.url && (
@@ -4086,12 +4115,12 @@ function ListingCard({ listing }) {
               </a>
             )}
             <button 
-              onClick={handleContact} 
+              onClick={handleContactToggle} 
               className="btn-primary btn-sm"
               disabled={isOwner}
-              title={isOwner ? 'This is your listing' : 'Contact seller'}
+              title={isOwner ? 'This is your listing' : showContact ? 'Cancel' : 'Contact seller'}
             >
-              {isOwner ? '👤 Your Listing' : showContact ? '📤 Send' : '📧 Contact'}
+              {isOwner ? '👤 Your Listing' : showContact ? '✕ Cancel' : '📧 Contact'}
             </button>
           </div>
         </div>
@@ -4129,12 +4158,14 @@ function Marketplace() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    // Support both ?search= (from the header quick-search) and
+    // ?q= (from the AdvancedSearch modal) so both entry points populate the filter.
     const params = new URLSearchParams(window.location.search);
-    const search = params.get('search');
+    const search = params.get('search') || params.get('q');
     if (search) {
       setSearchTerm(search);
     }
-  }, []);
+  }, [window.location.search]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -4224,12 +4255,14 @@ function Marketplace() {
     setSubmitting(false);
   };
 
-  const filteredListings = (state.listings || [])
+  const filteredListings = useMemo(() => (state.listings || [])
     .filter(l => {
       // Hide hidden listings from non-admin users
       if (l.hidden && !state.isAdmin) return false;
-      const matchesSearch = l.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                           l.description?.toLowerCase().includes(searchTerm.toLowerCase());
+      const term = searchTerm.toLowerCase();
+      const matchesSearch = !term ||
+        l.title?.toLowerCase().includes(term) || 
+        l.description?.toLowerCase().includes(term);
       const matchesPrice = filterPrice === 'all' ? true : 
                           filterPrice === 'free' ? l.price?.toLowerCase().includes('free') : 
                           !l.price?.toLowerCase().includes('free');
@@ -4242,7 +4275,8 @@ function Marketplace() {
         return (a.title || '').localeCompare(b.title || '');
       }
       return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-    });
+    }),
+  [state.listings, state.isAdmin, searchTerm, filterPrice, sortBy]);
 
   return (
     <div className="marketplace-page">
@@ -4519,14 +4553,16 @@ function Advertise() {
     setSubmitting(false);
   };
 
-  const filteredApps = (state.apps || []).filter(a => {
-    const matchesSearch = a.appName?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                         a.description?.toLowerCase().includes(searchTerm.toLowerCase());
+  const filteredApps = useMemo(() => (state.apps || []).filter(a => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = !term ||
+      a.appName?.toLowerCase().includes(term) || 
+      a.description?.toLowerCase().includes(term);
     const matchesPlatform = filterPlatform === 'all' || a.platform?.toLowerCase() === filterPlatform.toLowerCase();
     return matchesSearch && matchesPlatform;
-  });
+  }), [state.apps, searchTerm, filterPlatform]);
 
-  const platforms = [...new Set((state.apps || []).map(a => a.platform))];
+  const platforms = useMemo(() => [...new Set((state.apps || []).map(a => a.platform).filter(Boolean))], [state.apps]);
 
   return (
     <div className="advertise-page">
@@ -4981,11 +5017,12 @@ function CodeSharing() {
       return;
     }
     
-    const userName = state.profile?.name || state.currentUser.email;
-    const userLiked = snippet.likedBy?.includes(userName);
+    // Key by user ID (stable, unique) not display name (mutable, non-unique)
+    const userId = state.currentUser.id;
+    const userLiked = (snippet.likedBy || []).includes(userId);
     const newLikedBy = userLiked 
-      ? snippet.likedBy.filter(u => u !== userName) 
-      : [...(snippet.likedBy || []), userName];
+      ? snippet.likedBy.filter(u => u !== userId) 
+      : [...(snippet.likedBy || []), userId];
     const newLikes = userLiked ? snippet.likes - 1 : snippet.likes + 1;
     
     dispatch({ 
@@ -5015,6 +5052,8 @@ function CodeSharing() {
           }]);
       }
     } catch (error) {
+      // Rollback optimistic update on failure
+      dispatch({ type: 'LIKE_SNIPPET', payload: snippet });
       console.error('Error updating like:', error);
     }
   };
@@ -5046,14 +5085,16 @@ function CodeSharing() {
     }
   };
 
-  const filteredSnippets = (state.codeSnippets || []).filter(s => {
-    const matchesSearch = s.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                         s.description?.toLowerCase().includes(searchTerm.toLowerCase());
+  const filteredSnippets = useMemo(() => (state.codeSnippets || []).filter(s => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = !term ||
+      s.title?.toLowerCase().includes(term) || 
+      s.description?.toLowerCase().includes(term);
     const matchesLanguage = filterLanguage === 'all' || s.language?.toLowerCase() === filterLanguage.toLowerCase();
     return matchesSearch && matchesLanguage;
-  });
+  }), [state.codeSnippets, searchTerm, filterLanguage]);
 
-  const languages = [...new Set((state.codeSnippets || []).map(s => s.language))];
+  const languages = useMemo(() => [...new Set((state.codeSnippets || []).map(s => s.language).filter(Boolean))], [state.codeSnippets]);
 
   return (
     <div className="code-sharing-page">
@@ -5223,8 +5264,8 @@ function CodeCard({ snippet, onLike, onDelete }) {
     });
   };
   
-  const userName = state.profile?.name || state.currentUser?.email;
-  const isLiked = state.currentUser && snippet.likedBy?.includes(userName);
+  // Use user ID (stable, unique) not display name (mutable, non-unique)
+  const isLiked = !!(state.currentUser && (snippet.likedBy || []).includes(state.currentUser.id));
 
   return (
     <>
@@ -5425,7 +5466,6 @@ function Settings() {
   const handleProfileUpdate = async (e) => {
     e.preventDefault();
     setSaving(true);
-    dispatch({ type: 'UPDATE_PROFILE', payload: profileForm });
     try {
       const { error } = await supabase.from('profiles').upsert({
         id: state.currentUser.id,
@@ -5439,6 +5479,8 @@ function Settings() {
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
       if (error) throw error;
+      // Only update global state after confirmed DB write
+      dispatch({ type: 'UPDATE_PROFILE', payload: profileForm });
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Profile updated successfully!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
     } catch (error) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save profile: ' + (error.message || 'Unknown error'), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
@@ -5557,14 +5599,24 @@ function Settings() {
   };
 
   const handleDeleteAccount = async () => {
+    setSaving(true);
     try {
-      await supabase.from('profiles').delete().eq('id', state.currentUser.id);
+      const userId = state.currentUser.id;
+      // Delete user data in dependency order (non-critical failures are tolerated)
+      await Promise.allSettled([
+        supabase.from('favorites').delete().eq('user_id', userId),
+        supabase.from('listings').delete().eq('user_id', userId),
+        supabase.from('follows').delete().eq('follower_id', userId),
+        supabase.from('follows').delete().eq('following_id', userId),
+      ]);
+      await supabase.from('profiles').delete().eq('id', userId);
+      // signOut triggers onAuthStateChange(SIGNED_OUT) → dispatches LOGOUT
       await supabase.auth.signOut();
-      dispatch({ type: 'LOGOUT' });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👋 Account deleted. Goodbye!', type: 'info', time: new Date().toLocaleTimeString(), read: false }});
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👋 Account deleted. Goodbye!', type: 'info', time: new Date().toLocaleTimeString(), read: false, _force: true }});
     } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not delete account. Contact support.', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not delete account. Please contact support.', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
     }
+    setSaving(false);
     setShowDeleteConfirm(false);
   };
 
@@ -5794,8 +5846,6 @@ function Settings() {
                   <label className="toggle-switch">
                     <input type="checkbox" checked={state.notificationsEnabled} onChange={async () => {
                       const newVal = !state.notificationsEnabled;
-                      // Persist to localStorage immediately (keeps setting across hard refresh)
-                      try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(newVal)); } catch(e) {}
                       dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
                       if (!newVal) {
                         dispatch({ type: 'CLEAR_NOTIFICATIONS' });
@@ -5808,7 +5858,6 @@ function Settings() {
                         read: false,
                         _force: true
                       }});
-                      // Persist to Supabase so it survives logout + login on other devices
                       if (state.currentUser) {
                         try {
                           await supabase.from('profiles').upsert({
@@ -6477,12 +6526,21 @@ function Posts() {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🔒 Sign in to like posts', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
       return;
     }
-    const newLikes = (post.likes || 0) + 1;
-    setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: newLikes } : p));
+    // Toggle: prevent double-liking by tracking who liked
+    const likedBy = post.liked_by || [];
+    const alreadyLiked = likedBy.includes(state.currentUser.id);
+    const newLikes = alreadyLiked ? Math.max(0, (post.likes || 0) - 1) : (post.likes || 0) + 1;
+    const newLikedBy = alreadyLiked
+      ? likedBy.filter(id => id !== state.currentUser.id)
+      : [...likedBy, state.currentUser.id];
+
+    // Optimistic update
+    setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: newLikes, liked_by: newLikedBy } : p));
     try {
       await supabase.from('posts').update({ likes: newLikes }).eq('id', post.id);
     } catch (_) {
-      setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: post.likes } : p));
+      // Rollback
+      setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: post.likes, liked_by: post.liked_by } : p));
     }
   };
 
@@ -6681,8 +6739,12 @@ function Posts() {
               )}
 
               <div className="post-footer">
-                <button className="post-like-btn" onClick={() => handleLikePost(post)}>
-                  ❤️ <span>{post.likes || 0}</span>
+                <button 
+                  className={`post-like-btn ${(post.liked_by || []).includes(state.currentUser?.id) ? 'liked' : ''}`} 
+                  onClick={() => handleLikePost(post)}
+                  title={(post.liked_by || []).includes(state.currentUser?.id) ? 'Unlike' : 'Like'}
+                >
+                  {(post.liked_by || []).includes(state.currentUser?.id) ? '❤️' : '🤍'} <span>{post.likes || 0}</span>
                 </button>
               </div>
             </div>
@@ -6703,4 +6765,4 @@ function Posts() {
       </ModalPortal>
     </div>
   );
-}// TEST-1233184439
+}
