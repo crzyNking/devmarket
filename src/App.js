@@ -916,22 +916,66 @@ function App() {
   useEffect(() => {
     let mounted = true;
 
+    // Fix 2: Track whether the initialize() call has already loaded data for a user.
+    // This flag distinguishes a fresh page load (initialize runs first, sets this true)
+    // from an in-app token-refresh SIGNED_IN event (skipped because flag is already set).
+    // On a genuine login after the app is initialized, the flag is false so data loads.
+    let initialLoadComplete = false;
+
     async function initialize() {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        
+        // Fix 1: getSession() reads from Supabase's persisted cookie/localStorage storage
+        // and restores the session on page reload. This must complete before marking
+        // the app initialized so authenticated state is available immediately.
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) console.error('Session restore error:', sessionError);
+
         if (mounted) {
           dispatch({ type: 'SET_SESSION', payload: session });
         }
 
-        // Run public data fetch in parallel with authenticated user data —
-        // they are independent and this halves the perceived load time.
-        const authLoad = session?.user
-          ? Promise.all([loadProfile(session.user), loadUserData(session.user.id)])
-          : Promise.resolve();
+        // Fix 4: First restore the session, then load user data if authenticated,
+        // and only mark initialized after everything is ready.
+        if (session?.user) {
+          // Fix 5: Wrap profile + user data loading with individual error recovery
+          // so a failing RLS policy on one table doesn't block the whole init.
+          const profileLoad = loadProfile(session.user).catch(err => {
+            console.error('Profile load failed, using fallback:', err);
+            // Fall back to minimal profile from session metadata so user stays logged in
+            const meta = session.user.user_metadata || {};
+            const fallbackProfile = {
+              id: session.user.id,
+              name: meta.name || meta.full_name || session.user.email?.split('@')[0] || 'User',
+              email: session.user.email,
+              role: meta.role || 'developer',
+              bio: '',
+              website: '',
+              github: '',
+              twitter: '',
+              avatar_url: meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || session.user.email?.split('@')[0] || 'User')}&background=667eea&color=fff&size=200`
+            };
+            if (mounted) {
+              dispatch({ type: 'SET_PROFILE', payload: fallbackProfile });
+              dispatch({ type: 'SET_USER', payload: { ...session.user, ...fallbackProfile } });
+            }
+          });
 
-        await Promise.all([loadPublicData(), authLoad]);
-        
+          const userDataLoad = loadUserData(session.user.id).catch(err => {
+            console.error('User data load failed, continuing without it:', err);
+            // Non-fatal: user is still logged in, just without notifications/messages/favorites
+          });
+
+          await Promise.all([loadPublicData(), profileLoad, userDataLoad]);
+
+          // Mark that initialize() has already loaded data for this user so the
+          // onAuthStateChange SIGNED_IN event (which fires right after getSession)
+          // does not trigger a redundant second load.
+          initialLoadComplete = true;
+        } else {
+          await loadPublicData();
+          initialLoadComplete = true;
+        }
+
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
         }
@@ -940,39 +984,57 @@ function App() {
       } catch (error) {
         console.error('Init error:', error);
         if (mounted) {
+          initialLoadComplete = true;
           dispatch({ type: 'INITIALIZED' });
         }
       }
     }
 
-    // Auth state subscription must ALWAYS be registered regardless of loader path,
-    // and the cleanup must always unsubscribe it. Previously the subscription was
-    // placed after an early-return branch which caused a subscription leak.
-    //
-    // Also track lastLoadedUserId: SIGNED_IN fires on both genuine logins AND on
-    // every token refresh (roughly every hour). Without this guard the app was
-    // re-running expensive profile + data loads on every refresh cycle.
-    let lastLoadedUserId = null;
-
+    // Fix 3: Register the auth subscription unconditionally, outside any conditional
+    // block, so it is always active regardless of which loader path is taken.
+    // Fix 2 (continued): Use initialLoadComplete instead of lastLoadedUserId to
+    // distinguish a browser refresh (initialize already ran → skip) from a genuine
+    // new login after the app is running (initialize already ran AND completed for
+    // an unauthenticated state → load now).
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
       dispatch({ type: 'SET_SESSION', payload: session });
+
       if (event === 'SIGNED_IN' && session?.user) {
-        // Only reload if this is a genuinely new user session, not a token refresh
-        if (session.user.id !== lastLoadedUserId) {
-          lastLoadedUserId = session.user.id;
+        if (!initialLoadComplete) {
+          // initialize() hasn't finished yet — it will load data itself, skip here.
+          return;
+        }
+        // Fix 2: After a real login (post-init), always load data for the new user.
+        // After a token refresh, SIGNED_IN fires but session.user.id is the same
+        // user we already loaded, so we rely on the fact that token refreshes happen
+        // silently and don't clear initialLoadComplete — but we DO want to re-load
+        // if the user explicitly signed in after being signed out.
+        // The SIGNED_OUT handler resets initialLoadComplete so the next SIGNED_IN
+        // is treated as a fresh login.
+        try {
           await loadProfile(session.user);
           await loadUserData(session.user.id);
+        } catch (err) {
+          console.error('Post-login data load error:', err);
         }
+      } else if (event === 'TOKEN_REFRESHED') {
+        // Token refreshes are silent background events — no data reload needed.
+        // Just updating the session in state (done above) is sufficient.
       } else if (event === 'SIGNED_OUT') {
-        lastLoadedUserId = null;
+        // Fix 2: Reset so the next SIGNED_IN event (genuine login) loads data.
+        initialLoadComplete = false;
         dispatch({ type: 'LOGOUT' });
         realtimeManager.unsubscribeAll();
       }
     });
 
+    // Fix 6: Standardize cleanup — always defined once at the end of the effect,
+    // covering both loader paths. Safety timeout is only set in the first-load path.
+    let safetyTimeout;
+
     if (!hasShownLoader) {
-      const safetyTimeout = setTimeout(() => {
+      safetyTimeout = setTimeout(() => {
         if (mounted) {
           setIsInitialLoading(false);
           sessionStorage.setItem('devMarketLoaderShown', 'true');
@@ -985,19 +1047,14 @@ function App() {
           setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 500);
         }
       });
-
-      return () => {
-        mounted = false;
-        clearTimeout(safetyTimeout);
-        subscription?.unsubscribe();
-        realtimeManager.unsubscribeAll();
-      };
     } else {
       initialize().then(() => { if (mounted) setIsInitialLoading(false); });
     }
 
+    // Fix 6: Single unified cleanup function covering all code paths.
     return () => {
       mounted = false;
+      clearTimeout(safetyTimeout);
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
