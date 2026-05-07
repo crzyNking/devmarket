@@ -3,7 +3,7 @@
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, useParams, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { supabase } from './utils/supabase';
 import { realtimeManager } from './utils/realtime';
 import { analytics } from './utils/analytics';
@@ -44,8 +44,9 @@ const initialState = {
   activeConversation: null,
   favorites: [],
   searchHistory: [],
-  follows: [],
-  followers: [],
+  follows: [],        // users the current user follows
+  followers: [],      // users who follow the current user
+  activityFeed: [],
   theme: 'light',
   authError: null,
   loading: true,
@@ -55,9 +56,7 @@ const initialState = {
   analyticsData: null,
   isAdmin: false,
   moderationQueue: [],
-  notificationsEnabled: getPersistedNotificationsEnabled(),
-  announcement: null,
-  maintenanceMode: false,
+  notificationsEnabled: getPersistedNotificationsEnabled()
 };
 
 function appReducer(state, action) {
@@ -113,13 +112,9 @@ function appReducer(state, action) {
     case 'SET_NOTIFICATIONS_ENABLED':
       try { localStorage.setItem('devMarketNotificationsEnabled', JSON.stringify(action.payload)); } catch(e) {}
       return { ...state, notificationsEnabled: action.payload };
-    case 'ADD_NOTIFICATION': {
-      // When notifications are disabled, block ALL incoming notifications
-      // except those with _force: true (used for the toggle feedback itself)
-      if (!state.notificationsEnabled && !action.payload._force) return state;
-      const newNotif = { ...action.payload, id: action.payload.id || `n-${Date.now()}-${Math.random()}` };
-      return { ...state, notifications: [newNotif, ...(state.notifications || [])].slice(0, 50) };
-    }
+    case 'ADD_NOTIFICATION': 
+      if (!state.notificationsEnabled) return state;
+      return { ...state, notifications: [{...action.payload, id: Date.now() + Math.random()}, ...(state.notifications || [])].slice(0, 50) };
     case 'REMOVE_NOTIFICATION': 
       return { ...state, notifications: (state.notifications || []).filter(n => n.id !== action.payload) };
     case 'CLEAR_NOTIFICATIONS': 
@@ -139,43 +134,25 @@ function appReducer(state, action) {
           c.userId === action.payload.userId ? { ...c, ...action.payload } : c
         )
       };
-    case 'ADD_CONVERSATION_MESSAGE': {
-      const { otherUserId, message: newMsg } = action.payload;
-      const existingConv = (state.conversations || []).find(c => c.userId === otherUserId);
-      if (existingConv) {
-        // Deduplicate: skip if message id already exists in this conversation
-        const alreadyExists = existingConv.messages.some(m => m.id === newMsg.id);
-        if (alreadyExists) return state;
-        return {
-          ...state,
-          conversations: (state.conversations || []).map(c =>
-            c.userId === otherUserId
-              ? {
-                  ...c,
-                  messages: [...c.messages, newMsg],
-                  lastMessage: newMsg.message,
-                  lastMessageTime: newMsg.created_at,
-                  unreadCount: newMsg.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
-                }
-              : c
-          )
-        };
-      }
-      // New sender: create a new conversation entry
-      const newConv = {
-        userId: otherUserId,
-        userName: newMsg.from_name || newMsg.to_name || 'User',
-        userAvatar: newMsg.from_avatar || newMsg.to_avatar || null,
-        lastMessage: newMsg.message,
-        lastMessageTime: newMsg.created_at,
-        unreadCount: newMsg.to_user === state.currentUser?.id ? 1 : 0,
-        messages: [newMsg]
-      };
+    case 'ADD_CONVERSATION_MESSAGE':
       return {
         ...state,
-        conversations: [newConv, ...(state.conversations || [])]
+        conversations: (state.conversations || []).map(c => {
+          if (c.userId === action.payload.otherUserId) {
+            return {
+              ...c,
+              messages: [...c.messages, action.payload.message],
+              lastMessage: action.payload.message.message,
+              lastMessageTime: action.payload.message.created_at,
+              unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
+            };
+          }
+          if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
+            return c;
+          }
+          return c;
+        })
       };
-    }
     case 'SET_ACTIVE_CONVERSATION':
       return { ...state, activeConversation: action.payload };
     case 'MARK_CONVERSATION_READ':
@@ -218,23 +195,12 @@ function appReducer(state, action) {
     case 'SET_MODERATION_QUEUE':
       return { ...state, moderationQueue: action.payload || [] };
     case 'LOGOUT': 
-      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], follows: [], followers: [], isAdmin: false, announcement: null };
-    case 'SET_THEME': {
-      const t = action.payload || 'light';
-      localStorage.setItem('devMarketTheme', t);
-      return { ...state, theme: t };
-    }
+      return { ...state, currentUser: null, profile: null, session: null, notifications: [], messages: [], conversations: [], activeConversation: null, favorites: [], follows: [], followers: [], activityFeed: [], isAdmin: false };
     case 'TOGGLE_THEME': {
       const newTheme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('devMarketTheme', newTheme);
       return { ...state, theme: newTheme };
     }
-    case 'SET_ANNOUNCEMENT':
-      return { ...state, announcement: action.payload };
-    case 'CLEAR_ANNOUNCEMENT':
-      return { ...state, announcement: null };
-    case 'SET_MAINTENANCE_MODE':
-      return { ...state, maintenanceMode: action.payload };
     default: 
       return state;
   }
@@ -549,11 +515,14 @@ function AdvancedSearch({ isOpen, onClose, onSearch, searchType = 'all' }) {
 function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
-  // Read synchronously during initial render to prevent splash-loader flicker
-  // on navigations after the first load (no useEffect delay needed).
-  const [hasShownLoader] = useState(() => {
-    try { return !!sessionStorage.getItem('devMarketLoaderShown'); } catch(e) { return false; }
-  });
+  const [hasShownLoader, setHasShownLoader] = useState(false);
+
+  useEffect(() => {
+    const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
+    if (loaderShown) {
+      setHasShownLoader(true);
+    }
+  }, []);
 
   async function loadPublicData() {
     try {
@@ -676,7 +645,7 @@ function App() {
 
       if (msgsResult.data) {
         dispatch({ type: 'SET_MESSAGES', payload: msgsResult.data });
-        await buildConversations(msgsResult.data, userId);
+        buildConversations(msgsResult.data, userId);
       }
 
       if (favsResult.data) {
@@ -724,51 +693,32 @@ function App() {
         table: 'messages',
         filter: `to_user=eq.${userId}`
       },
-      async (payload) => {
+      (payload) => {
         const newMsg = payload.new;
+        console.log('📨 New real-time message:', newMsg);
         
-        // Fetch sender profile to get real name + avatar (if not embedded in message row)
-        let fromName = newMsg.from_name;
-        let fromAvatar = newMsg.from_avatar;
-        if (!fromName) {
-          try {
-            const { data: senderProfile } = await supabase
-              .from('profiles')
-              .select('name, avatar_url')
-              .eq('id', newMsg.from_user)
-              .single();
-            if (senderProfile) {
-              fromName = senderProfile.name;
-              fromAvatar = senderProfile.avatar_url;
-            }
-          } catch (_) {}
-        }
+        dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
         
-        const enrichedMsg = { ...newMsg, from_name: fromName || 'User', from_avatar: fromAvatar };
-        
-        dispatch({ type: 'ADD_MESSAGE', payload: enrichedMsg });
-        
-        const otherUserId = enrichedMsg.from_user;
-        const otherUserName = fromName || 'User';
+        const otherUserId = newMsg.from_user;
+        const otherUserName = newMsg.from_name || 'User';
         
         dispatch({
           type: 'ADD_CONVERSATION_MESSAGE',
           payload: {
             otherUserId,
-            message: { ...enrichedMsg, from_name: otherUserName, from_avatar: fromAvatar }
+            message: newMsg
           }
         });
         
-        // Only notify if the conversation is NOT currently open
-        // Check via the reducer state rather than a window global.
-        // state.activeConversation is set/cleared by SET_ACTIVE_CONVERSATION dispatches
-        // in the Messages component so this is always consistent.
-        const activeConvId = state.activeConversation?.userId || null;
+        // Only notify if the conversation is NOT currently open (not being read)
+        const currentState = (() => { try { return null; } catch(e) { return null; } })();
+        // We use a workaround: check via sessionStorage flag set by Messages component
+        const activeConvId = sessionStorage.getItem('activeConversationId');
         const isConversationOpen = activeConvId === otherUserId;
         
         if (!isConversationOpen) {
           dispatch({ type: 'ADD_NOTIFICATION', payload: {
-            message: `💬 New message from ${otherUserName}: ${enrichedMsg.message?.substring(0, 50)}`,
+            message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
             type: 'info',
             time: new Date().toLocaleTimeString(),
             read: false
@@ -786,8 +736,7 @@ function App() {
         filter: `user_id=eq.${userId}`
       },
       (payload) => {
-        // ADD_NOTIFICATION reducer already checks notificationsEnabled,
-        // so this dispatch is safe — it will be ignored if notifications are OFF
+        console.log('🔔 New real-time notification:', payload.new);
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
           ...payload.new,
           read: false
@@ -803,82 +752,32 @@ function App() {
         table: 'listings'
       },
       (payload) => {
-        // Normalise to the same shape loadPublicData produces (camelCase aliases)
-        const normaliseListing = (raw) => raw ? ({
-          ...raw,
-          seller: raw.seller_name,
-          sellerAvatar: raw.seller_avatar,
-          imageUrl: raw.image_url,
-          date: new Date(raw.created_at).toLocaleDateString()
-        }) : raw;
-
         if (payload.eventType === 'INSERT') {
-          dispatch({ type: 'ADD_LISTING', payload: normaliseListing(payload.new) });
+          dispatch({ type: 'ADD_LISTING', payload: payload.new });
         } else if (payload.eventType === 'DELETE') {
-          dispatch({ type: 'DELETE_LISTING', payload: payload.old?.id });
+          dispatch({ type: 'DELETE_LISTING', payload: payload.old.id });
         } else if (payload.eventType === 'UPDATE') {
-          dispatch({ type: 'UPDATE_LISTING', payload: normaliseListing(payload.new) });
+          dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
         }
-      }
-    );
-
-    // Also subscribe to messages SENT by this user so sender sees real-time confirmation
-    realtimeManager.subscribe(
-      `messages-sent-${userId}`,
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-        filter: `from_user=eq.${userId}`
-      },
-      (payload) => {
-        const sentMsg = payload.new;
-        // Deduplicate: ignore optimistic messages we already have locally
-        dispatch({
-          type: 'ADD_CONVERSATION_MESSAGE',
-          payload: { otherUserId: sentMsg.to_user, message: sentMsg }
-        });
+        loadPublicData();
       }
     );
 
     dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
   }
 
-  async function buildConversations(messages, userId) {
+  function buildConversations(messages, userId) {
     const conversationMap = new Map();
-    
-    // Collect all unique other user IDs first
-    const otherUserIds = new Set();
-    messages.forEach(msg => {
-      const otherId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      otherUserIds.add(otherId);
-    });
-
-    // Batch-fetch all profiles for other users
-    let profilesMap = new Map();
-    if (otherUserIds.size > 0) {
-      try {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, name, avatar_url')
-          .in('id', Array.from(otherUserIds));
-        if (profiles) {
-          profiles.forEach(p => profilesMap.set(p.id, p));
-        }
-      } catch (_) {}
-    }
     
     messages.forEach(msg => {
       const otherUserId = msg.from_user === userId ? msg.to_user : msg.from_user;
-      // Prefer real DB profile name over embedded from_name/to_name fields
-      const profile = profilesMap.get(otherUserId);
-      const otherUserName = profile?.name || (msg.from_user === userId ? msg.to_name : msg.from_name) || 'User';
-      const otherUserAvatar = profile?.avatar_url || (msg.from_user === userId ? msg.to_avatar : msg.from_avatar);
+      const otherUserName = msg.from_user === userId ? msg.to_name : msg.from_name;
+      const otherUserAvatar = msg.from_user === userId ? msg.to_avatar : msg.from_avatar;
       
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: otherUserName,
+          userName: otherUserName || 'Unknown User',
           userAvatar: otherUserAvatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
@@ -888,11 +787,6 @@ function App() {
       }
       
       const conv = conversationMap.get(otherUserId);
-      // Update name/avatar from real profile if we have it (in case earlier msg had null)
-      if (profile) {
-        conv.userName = profile.name || conv.userName;
-        conv.userAvatar = profile.avatar_url || conv.userAvatar;
-      }
       conv.messages.push(msg);
       
       if (!msg.read && msg.to_user === userId) {
@@ -905,9 +799,7 @@ function App() {
       }
     });
     
-    // Sort each conversation's messages chronologically (DB fetch order is DESC)
     const conversations = Array.from(conversationMap.values())
-      .map(c => ({ ...c, messages: [...c.messages].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)) }))
       .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
     
     dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
@@ -916,66 +808,21 @@ function App() {
   useEffect(() => {
     let mounted = true;
 
-    // Fix 2: Track whether the initialize() call has already loaded data for a user.
-    // This flag distinguishes a fresh page load (initialize runs first, sets this true)
-    // from an in-app token-refresh SIGNED_IN event (skipped because flag is already set).
-    // On a genuine login after the app is initialized, the flag is false so data loads.
-    let initialLoadComplete = false;
-
     async function initialize() {
       try {
-        // Fix 1: getSession() reads from Supabase's persisted cookie/localStorage storage
-        // and restores the session on page reload. This must complete before marking
-        // the app initialized so authenticated state is available immediately.
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) console.error('Session restore error:', sessionError);
-
+        const { data: { session } } = await supabase.auth.getSession();
+        
         if (mounted) {
           dispatch({ type: 'SET_SESSION', payload: session });
+          
+          if (session?.user) {
+            await loadProfile(session.user);
+            await loadUserData(session.user.id);
+          }
         }
 
-        // Fix 4: First restore the session, then load user data if authenticated,
-        // and only mark initialized after everything is ready.
-        if (session?.user) {
-          // Fix 5: Wrap profile + user data loading with individual error recovery
-          // so a failing RLS policy on one table doesn't block the whole init.
-          const profileLoad = loadProfile(session.user).catch(err => {
-            console.error('Profile load failed, using fallback:', err);
-            // Fall back to minimal profile from session metadata so user stays logged in
-            const meta = session.user.user_metadata || {};
-            const fallbackProfile = {
-              id: session.user.id,
-              name: meta.name || meta.full_name || session.user.email?.split('@')[0] || 'User',
-              email: session.user.email,
-              role: meta.role || 'developer',
-              bio: '',
-              website: '',
-              github: '',
-              twitter: '',
-              avatar_url: meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(meta.name || session.user.email?.split('@')[0] || 'User')}&background=667eea&color=fff&size=200`
-            };
-            if (mounted) {
-              dispatch({ type: 'SET_PROFILE', payload: fallbackProfile });
-              dispatch({ type: 'SET_USER', payload: { ...session.user, ...fallbackProfile } });
-            }
-          });
-
-          const userDataLoad = loadUserData(session.user.id).catch(err => {
-            console.error('User data load failed, continuing without it:', err);
-            // Non-fatal: user is still logged in, just without notifications/messages/favorites
-          });
-
-          await Promise.all([loadPublicData(), profileLoad, userDataLoad]);
-
-          // Mark that initialize() has already loaded data for this user so the
-          // onAuthStateChange SIGNED_IN event (which fires right after getSession)
-          // does not trigger a redundant second load.
-          initialLoadComplete = true;
-        } else {
-          await loadPublicData();
-          initialLoadComplete = true;
-        }
-
+        await loadPublicData();
+        
         if (mounted) {
           dispatch({ type: 'INITIALIZED' });
         }
@@ -984,127 +831,57 @@ function App() {
       } catch (error) {
         console.error('Init error:', error);
         if (mounted) {
-          initialLoadComplete = true;
           dispatch({ type: 'INITIALIZED' });
         }
       }
     }
 
-    // Fix 3: Register the auth subscription unconditionally, outside any conditional
-    // block, so it is always active regardless of which loader path is taken.
-    // Fix 2 (continued): Use initialLoadComplete instead of lastLoadedUserId to
-    // distinguish a browser refresh (initialize already ran → skip) from a genuine
-    // new login after the app is running (initialize already ran AND completed for
-    // an unauthenticated state → load now).
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!mounted) return;
-      dispatch({ type: 'SET_SESSION', payload: session });
+    if (!hasShownLoader) {
+      initialize().then(() => {
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+        setTimeout(() => setIsInitialLoading(false), 500);
+      });
+      
+      const safetyTimeout = setTimeout(() => {
+        setIsInitialLoading(false);
+        sessionStorage.setItem('devMarketLoaderShown', 'true');
+      }, 6000);
+      
+      return () => clearTimeout(safetyTimeout);
+    } else {
+      initialize().then(() => setIsInitialLoading(false));
+    }
 
-      if (event === 'SIGNED_IN' && session?.user) {
-        if (!initialLoadComplete) {
-          // initialize() hasn't finished yet — it will load data itself, skip here.
-          return;
-        }
-        // Fix 2: After a real login (post-init), always load data for the new user.
-        // After a token refresh, SIGNED_IN fires but session.user.id is the same
-        // user we already loaded, so we rely on the fact that token refreshes happen
-        // silently and don't clear initialLoadComplete — but we DO want to re-load
-        // if the user explicitly signed in after being signed out.
-        // The SIGNED_OUT handler resets initialLoadComplete so the next SIGNED_IN
-        // is treated as a fresh login.
-        try {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (mounted) {
+        dispatch({ type: 'SET_SESSION', payload: session });
+        
+        if (event === 'SIGNED_IN' && session?.user) {
           await loadProfile(session.user);
           await loadUserData(session.user.id);
-        } catch (err) {
-          console.error('Post-login data load error:', err);
+        } else if (event === 'SIGNED_OUT') {
+          dispatch({ type: 'LOGOUT' });
+          realtimeManager.unsubscribeAll();
         }
-      } else if (event === 'TOKEN_REFRESHED') {
-        // Token refreshes are silent background events — no data reload needed.
-        // Just updating the session in state (done above) is sufficient.
-      } else if (event === 'SIGNED_OUT') {
-        // Fix 2: Reset so the next SIGNED_IN event (genuine login) loads data.
-        initialLoadComplete = false;
-        dispatch({ type: 'LOGOUT' });
-        realtimeManager.unsubscribeAll();
       }
     });
 
-    // Fix 6: Standardize cleanup — always defined once at the end of the effect,
-    // covering both loader paths. Safety timeout is only set in the first-load path.
-    let safetyTimeout;
-
-    if (!hasShownLoader) {
-      safetyTimeout = setTimeout(() => {
-        if (mounted) {
-          setIsInitialLoading(false);
-          sessionStorage.setItem('devMarketLoaderShown', 'true');
-        }
-      }, 6000);
-
-      initialize().then(() => {
-        if (mounted) {
-          sessionStorage.setItem('devMarketLoaderShown', 'true');
-          setTimeout(() => { if (mounted) setIsInitialLoading(false); }, 500);
-        }
-      });
-    } else {
-      initialize().then(() => { if (mounted) setIsInitialLoading(false); });
-    }
-
-    // Fix 6: Single unified cleanup function covering all code paths.
     return () => {
       mounted = false;
-      clearTimeout(safetyTimeout);
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
   }, []);
 
   useEffect(() => {
-    // Restore persisted theme directly rather than toggling, which avoids
-    // a redundant localStorage write and prevents a flicker if the saved
-    // theme happens to match the initial state value.
     const savedTheme = localStorage.getItem('devMarketTheme');
     if (savedTheme && savedTheme !== state.theme) {
-      dispatch({ type: 'SET_THEME', payload: savedTheme });
+      dispatch({ type: 'TOGGLE_THEME' });
     }
   }, []);
 
   const removeNotification = useCallback((id) => {
     dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
-  }, []);
-
-  // Load announcement/maintenance from platform_settings table
-  // Placed BEFORE early returns to comply with React Rules of Hooks
-  useEffect(() => {
-    const fetchPlatformSettings = async () => {
-      try {
-        const { data } = await supabase.from('platform_settings').select('*').eq('id', 'main').maybeSingle();
-        if (data) {
-          if (data.maintenance_mode) dispatch({ type: 'SET_MAINTENANCE_MODE', payload: true });
-          if (data.announcement_message) {
-            dispatch({ type: 'SET_ANNOUNCEMENT', payload: { message: data.announcement_message, type: data.announcement_type || 'info', id: data.id } });
-          }
-        }
-      } catch(e) { /* table may not exist */ }
-    };
-    fetchPlatformSettings();
-
-    // Subscribe to real-time platform_settings changes
-    const chan = supabase.channel('platform-settings-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'platform_settings' }, (payload) => {
-        const d = payload.new;
-        if (d) {
-          dispatch({ type: 'SET_MAINTENANCE_MODE', payload: !!d.maintenance_mode });
-          if (d.announcement_message) {
-            dispatch({ type: 'SET_ANNOUNCEMENT', payload: { message: d.announcement_message, type: d.announcement_type || 'info', id: Date.now() } });
-          } else {
-            dispatch({ type: 'CLEAR_ANNOUNCEMENT' });
-          }
-        }
-      })
-      .subscribe();
-    return () => supabase.removeChannel(chan);
   }, []);
 
   if (isInitialLoading && !hasShownLoader) {
@@ -1148,17 +925,8 @@ function App() {
               <Toast key={n.id} notification={n} onClose={removeNotification} />
             ))}
           </div>
-          {state.announcement && (
-            <AnnouncementBanner
-              announcement={state.announcement}
-              onClose={() => dispatch({ type: 'CLEAR_ANNOUNCEMENT' })}
-            />
-          )}
           <Header />
           <main className="main-content">
-            {state.maintenanceMode && !state.isAdmin ? (
-              <MaintenancePage />
-            ) : (
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/marketplace" element={<Marketplace />} />
@@ -1168,15 +936,14 @@ function App() {
               <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
               <Route path="/profile/:userId" element={<UserProfile />} />
+              <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
               <Route path="/favorites" element={<ProtectedRoute><Favorites /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
             </Routes>
-            )}
           </main>
           <Footer />
-          <FloatingPWAButton />
         </div>
       </Router>
     </AppContext.Provider>
@@ -1215,50 +982,6 @@ function Toast({ notification, onClose }) {
     </div>
   );
 }
-
-// ============================================
-// ANNOUNCEMENT BANNER
-// ============================================
-function AnnouncementBanner({ announcement, onClose }) {
-  const colorMap = {
-    info: { bg: '#dbeafe', border: '#3b82f6', text: '#1e40af', icon: 'ℹ️' },
-    success: { bg: '#d1fae5', border: '#10b981', text: '#065f46', icon: '✅' },
-    warning: { bg: '#fef3c7', border: '#f59e0b', text: '#92400e', icon: '⚠️' },
-    error: { bg: '#fee2e2', border: '#ef4444', text: '#991b1b', icon: '🚨' },
-  };
-  const c = colorMap[announcement.type] || colorMap.info;
-  return (
-    <div className="announcement-banner" style={{ background: c.bg, borderBottom: `2px solid ${c.border}`, color: c.text }}>
-      <div className="announcement-inner">
-        <span className="announcement-icon">{c.icon}</span>
-        <p className="announcement-text">{announcement.message}</p>
-        <button className="announcement-close" onClick={onClose} title="Dismiss" style={{ color: c.text }}>×</button>
-      </div>
-    </div>
-  );
-}
-
-// ============================================
-// MAINTENANCE PAGE
-// ============================================
-function MaintenancePage() {
-  return (
-    <div className="maintenance-page">
-      <div className="maintenance-card">
-        <div className="maintenance-icon">🔧</div>
-        <h1>Under Maintenance</h1>
-        <p>We're making improvements to DevMarket. We'll be back shortly!</p>
-        <div className="maintenance-spinner">
-          <div className="spinner-ring"></div>
-          <div className="spinner-ring delay1"></div>
-          <div className="spinner-ring delay2"></div>
-        </div>
-        <p className="maintenance-hint">Thank you for your patience.</p>
-      </div>
-    </div>
-  );
-}
-
 
 // ============================================
 // CONFIRMATION DIALOG
@@ -1310,20 +1033,14 @@ function usePWAInstall() {
   const [isInstalled, setIsInstalled] = useState(false);
 
   useEffect(() => {
-    const handleBeforeInstall = (e) => {
+    const handler = (e) => {
       e.preventDefault();
       setInstallPrompt(e);
     };
-    const handleInstalled = () => setIsInstalled(true);
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-    window.addEventListener('appinstalled', handleInstalled);
+    window.addEventListener('beforeinstallprompt', handler);
+    window.addEventListener('appinstalled', () => setIsInstalled(true));
     if (window.matchMedia('(display-mode: standalone)').matches) setIsInstalled(true);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-      window.removeEventListener('appinstalled', handleInstalled);
-    };
+    return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
   const install = async () => {
@@ -1353,14 +1070,8 @@ function Header() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const unreadNotifications = useMemo(
-    () => (state.notifications || []).filter(n => !n.read).length,
-    [state.notifications]
-  );
-  const unreadMessages = useMemo(
-    () => (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0),
-    [state.conversations]
-  );
+  const unreadNotifications = (state.notifications || []).filter(n => !n.read).length;
+  const unreadMessages = (state.conversations || []).reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -1381,16 +1092,13 @@ function Header() {
   };
 
   const handleLogout = async () => {
-    // signOut triggers onAuthStateChange(SIGNED_OUT) which dispatches LOGOUT + unsubscribes.
-    // No need to dispatch LOGOUT manually here — doing so would double-clear state and could
-    // wipe the success notification before the user sees it.
     await supabase.auth.signOut();
+    dispatch({ type: 'LOGOUT' });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: '👋 You have been logged out successfully', 
       type: 'info', 
       time: new Date().toLocaleTimeString(), 
-      read: false,
-      _force: true
+      read: false 
     }});
     setShowLogoutConfirm(false);
     setShowUserMenu(false);
@@ -1433,16 +1141,18 @@ function Header() {
                 <Link to="/favorites" className={`nav-link ${location.pathname === '/favorites' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">⭐</span> Favorites
                 </Link>
+                <Link to="/activity" className={`nav-link ${location.pathname === '/activity' ? 'active' : ''}`} onClick={closeAll}>
+                  <span className="nav-icon">📣</span> Activity
+                </Link>
                 <Link to="/messages" className={`nav-link ${location.pathname === '/messages' ? 'active' : ''}`} onClick={closeAll}>
                   <span className="nav-icon">💬</span> Messages
                   {unreadMessages > 0 && <span className="notification-badge">{unreadMessages}</span>}
                 </Link>
-                <Link to="/posts" className={`nav-link ${location.pathname === '/posts' ? 'active' : ''}`} onClick={closeAll}>
-                  <span className="nav-icon">📝</span> Posts
-                </Link>
-                <Link to="/analytics" className={`nav-link ${location.pathname === '/analytics' ? 'active' : ''}`} onClick={closeAll}>
-                  <span className="nav-icon">📊</span> Dashboard
-                </Link>
+                {state.isAdmin && (
+                  <Link to="/admin" className={`nav-link ${location.pathname === '/admin' ? 'active' : ''}`} onClick={closeAll}>
+                    <span className="nav-icon">🛡️</span> Admin
+                  </Link>
+                )}
               </>
             )}
           </nav>
@@ -1494,9 +1204,6 @@ function Header() {
                       <div className="dropdown-divider"></div>
                       <Link to="/profile" onClick={() => setShowUserMenu(false)}>
                         <span>👤</span> My Profile
-                      </Link>
-                      <Link to="/favorites" onClick={() => setShowUserMenu(false)}>
-                        <span>⭐</span> My Favorites
                       </Link>
                       <Link to="/settings" onClick={() => setShowUserMenu(false)}>
                         <span>⚙️</span> Settings
@@ -1593,17 +1300,15 @@ function Header() {
       {/* Mobile Bottom Navigation Row */}
       <MobileNav location={location} unreadMessages={unreadMessages} currentUser={state.currentUser} isAdmin={state.isAdmin} />
 
-      <ModalPortal>
-        <ConfirmDialog 
-          isOpen={showLogoutConfirm} 
-          title="Confirm Logout" 
-          message="Are you sure you want to logout? Any unsaved changes will be lost." 
-          onConfirm={handleLogout} 
-          onCancel={() => setShowLogoutConfirm(false)} 
-          confirmText="Logout" 
-          type="danger" 
-        />
-      </ModalPortal>
+      <ConfirmDialog 
+        isOpen={showLogoutConfirm} 
+        title="Confirm Logout" 
+        message="Are you sure you want to logout? Any unsaved changes will be lost." 
+        onConfirm={handleLogout} 
+        onCancel={() => setShowLogoutConfirm(false)} 
+        confirmText="Logout" 
+        type="danger" 
+      />
     </>
   );
 }
@@ -1612,28 +1317,18 @@ function Header() {
 // MOBILE BOTTOM NAVIGATION
 // ============================================
 function MobileNav({ location, unreadMessages, currentUser, isAdmin }) {
-  // Logged-in nav items — Favorites removed, Advertise + Code added next to Market
-  const loggedInItems = [
+  const navItems = [
     { to: '/', icon: '🏠', label: 'Home' },
     { to: '/marketplace', icon: '🛒', label: 'Market' },
-    { to: '/advertise', icon: '📱', label: 'Advertise' },
-    { to: '/code-sharing', icon: '💻', label: 'Code' },
-    { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
-  ];
-
-  // Logged-out nav items — same layout
-  const loggedOutItems = [
-    { to: '/', icon: '🏠', label: 'Home' },
-    { to: '/marketplace', icon: '🛒', label: 'Market' },
-    { to: '/advertise', icon: '📱', label: 'Advertise' },
     { to: '/code-sharing', icon: '💻', label: 'Code' },
     { to: '/posts', icon: '📝', label: 'Posts' },
+    ...(currentUser ? [
+      { to: '/messages', icon: '💬', label: 'Messages', badge: unreadMessages },
+    ] : []),
   ];
 
-  const navItems = currentUser ? loggedInItems : loggedOutItems;
-
   return (
-    <nav className={`mobile-bottom-nav ${!currentUser ? 'mobile-bottom-nav--guest' : ''}`}>
+    <nav className="mobile-bottom-nav">
       {navItems.map(item => (
         <Link
           key={item.to}
@@ -1865,122 +1560,17 @@ function AdminDashboard() {
     maintenanceMode: false
   });
   const [settingsSaved, setSettingsSaved] = useState(false);
-  const [hideConfirm, setHideConfirm] = useState(null);
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
-  // New: Platform Stats, Activity Feed, Reports
-  const [platformStats, setPlatformStats] = useState(null);
-  const [loadingPlatformStats, setLoadingPlatformStats] = useState(false);
-  const [activityFeed, setActivityFeed] = useState([]);
-  const [loadingActivity, setLoadingActivity] = useState(false);
-  const [reports, setReports] = useState([]);
-  const [loadingReports, setLoadingReports] = useState(false);
-  const [reportResolved, setReportResolved] = useState({});
+  const [hideConfirm, setHideConfirm] = useState(null); // { id, title }
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, title, type: 'listing'|'user' }
 
   useEffect(() => {
-    if (activeTab === 'users' && users.length === 0) loadUsers();
-    if (activeTab === 'overview') loadStats();
-    if (activeTab === 'platform') loadPlatformStats();
-    if (activeTab === 'activity') loadActivityFeed();
-    if (activeTab === 'reports') loadReports();
-  }, [activeTab]);
-
-  const loadPlatformStats = async () => {
-    setLoadingPlatformStats(true);
-    try {
-      const [usersRes, listingsRes, msgsRes, appsRes, snippetsRes] = await Promise.all([
-        supabase.from('profiles').select('id,created_at,role', { count: 'exact' }),
-        supabase.from('listings').select('id,created_at,views,hidden', { count: 'exact' }),
-        supabase.from('messages').select('id,created_at,read', { count: 'exact' }),
-        supabase.from('apps').select('id,created_at,downloads', { count: 'exact' }),
-        supabase.from('code_snippets').select('id,created_at,likes', { count: 'exact' })
-      ]);
-      const now = new Date();
-      const day7 = new Date(now - 7 * 86400000);
-      const day30 = new Date(now - 30 * 86400000);
-      const newUsersWeek = (usersRes.data || []).filter(u => new Date(u.created_at) > day7).length;
-      const newUsersMonth = (usersRes.data || []).filter(u => new Date(u.created_at) > day30).length;
-      const activeListings = (listingsRes.data || []).filter(l => !l.hidden).length;
-      const hiddenListings = (listingsRes.data || []).filter(l => l.hidden).length;
-      const totalViews = (listingsRes.data || []).reduce((s, l) => s + (l.views || 0), 0);
-      const unreadMsgs = (msgsRes.data || []).filter(m => !m.read).length;
-      const totalDownloads = (appsRes.data || []).reduce((s, a) => s + (a.downloads || 0), 0);
-      const totalLikes = (snippetsRes.data || []).reduce((s, sn) => s + (sn.likes || 0), 0);
-      const adminCount = (usersRes.data || []).filter(u => u.role === 'admin').length;
-      setPlatformStats({
-        totalUsers: usersRes.data?.length || 0,
-        newUsersWeek,
-        newUsersMonth,
-        adminCount,
-        totalListings: listingsRes.data?.length || 0,
-        activeListings,
-        hiddenListings,
-        totalViews,
-        totalMessages: msgsRes.data?.length || 0,
-        unreadMsgs,
-        totalApps: appsRes.data?.length || 0,
-        totalDownloads,
-        totalSnippets: snippetsRes.data?.length || 0,
-        totalLikes
-      });
-    } catch(e) { console.error('Platform stats error:', e); }
-    setLoadingPlatformStats(false);
-  };
-
-  const loadActivityFeed = async () => {
-    setLoadingActivity(true);
-    try {
-      // Combine recent listings, messages, and user signups as activity
-      const [listingsRes, usersRes] = await Promise.all([
-        supabase.from('listings').select('id,title,user_id,seller_name,created_at,hidden').order('created_at', { ascending: false }).limit(20),
-        supabase.from('profiles').select('id,name,email,created_at,role').order('created_at', { ascending: false }).limit(10)
-      ]);
-      const activities = [];
-      (listingsRes.data || []).forEach(l => activities.push({
-        id: `listing-${l.id}`, type: 'listing', icon: '🛒',
-        title: `New listing: "${l.title}"`,
-        user: l.seller_name || 'Unknown', created_at: l.created_at,
-        meta: l.hidden ? '🙈 Hidden' : '✅ Live'
-      }));
-      (usersRes.data || []).forEach(u => activities.push({
-        id: `user-${u.id}`, type: 'signup', icon: '👤',
-        title: `New user joined`,
-        user: u.name || u.email?.split('@')[0] || 'User', created_at: u.created_at,
-        meta: u.role
-      }));
-      activities.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      setActivityFeed(activities.slice(0, 30));
-    } catch(e) {}
-    setLoadingActivity(false);
-  };
-
-  const loadReports = async () => {
-    setLoadingReports(true);
-    try {
-      const { data } = await supabase.from('reports')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
-      setReports(data || []);
-    } catch(e) {
-      // reports table may not exist — generate mock from flagged listings
-      const flagged = (state.listings || []).filter(l => l.flagged || l.hidden);
-      setReports(flagged.map(l => ({
-        id: `mock-${l.id}`, listing_id: l.id, listing_title: l.title,
-        reason: 'Flagged by system', status: l.hidden ? 'actioned' : 'pending',
-        created_at: l.created_at, reporter_name: 'System'
-      })));
+    if (activeTab === 'users' && users.length === 0) {
+      loadUsers();
     }
-    setLoadingReports(false);
-  };
-
-  const handleResolveReport = async (reportId) => {
-    try {
-      await supabase.from('reports').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', reportId);
-    } catch(e) {}
-    setReportResolved(prev => ({ ...prev, [reportId]: true }));
-    setReports(prev => prev.map(r => r.id === reportId ? { ...r, status: 'resolved' } : r));
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Report marked resolved', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-  };
+    if (activeTab === 'overview') {
+      loadStats();
+    }
+  }, [activeTab]);
 
   const loadStats = async () => {
     try {
@@ -2072,23 +1662,10 @@ function AdminDashboard() {
   };
 
   const handleBanUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'banned', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'banned' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `🚫 ${userName} has been banned`, type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not ban user: ${e.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
-  const handlePromoteUser = async (userId, userName) => {
-    try {
-      await supabase.from('profiles').update({ role: 'admin', updated_at: new Date().toISOString() }).eq('id', userId);
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: 'admin' } : u));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `🛡️ ${userName} is now an Admin!`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ Could not promote user`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: `⚠️ Ban feature requires server-side implementation for ${userName}`, 
+      type: 'warning', time: new Date().toLocaleTimeString(), read: false 
+    }});
   };
 
   if (!state.currentUser || !state.isAdmin) {
@@ -2113,14 +1690,9 @@ function AdminDashboard() {
 
   const tabs = [
     { id: 'overview', label: '📊 Overview' },
-    { id: 'platform', label: '🔢 Platform Stats' },
-    { id: 'activity', label: '📡 Activity Feed' },
-    { id: 'reports', label: '🚩 Reports' },
     { id: 'users', label: '👥 Users' },
     { id: 'listings', label: '🛒 Listings' },
-    { id: 'posts', label: '📝 Posts' },
     { id: 'moderation', label: '🛡️ Moderation' },
-    { id: 'announcements', label: '📢 Announcements' },
     { id: 'settings', label: '⚙️ Settings' }
   ];
 
@@ -2189,143 +1761,6 @@ function AdminDashboard() {
         </div>
       )}
 
-      {activeTab === 'platform' && (
-        <div className="admin-platform-stats">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <h2 style={{ margin: 0 }}>🔢 Platform Statistics</h2>
-            <button className="btn-sm btn-secondary" onClick={loadPlatformStats}>🔄 Refresh</button>
-          </div>
-          {loadingPlatformStats ? (
-            <div style={{ textAlign: 'center', padding: 60, color: 'var(--gray-400)' }}>Loading stats…</div>
-          ) : platformStats ? (
-            <>
-              <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 16, marginBottom: 24 }}>
-                {[
-                  { icon: '👥', value: platformStats.totalUsers, label: 'Total Users', sub: `+${platformStats.newUsersWeek} this week`, color: '#667eea' },
-                  { icon: '📅', value: platformStats.newUsersMonth, label: 'New Users (30d)', sub: `${platformStats.adminCount} admin(s)`, color: '#3b82f6' },
-                  { icon: '🛒', value: platformStats.totalListings, label: 'Total Listings', sub: `${platformStats.activeListings} live, ${platformStats.hiddenListings} hidden`, color: '#f59e0b' },
-                  { icon: '👁️', value: platformStats.totalViews, label: 'Total Views', sub: 'across all listings', color: '#ec4899' },
-                  { icon: '💬', value: platformStats.totalMessages, label: 'Messages', sub: `${platformStats.unreadMsgs} unread`, color: '#ef4444' },
-                  { icon: '📱', value: platformStats.totalApps, label: 'Apps', sub: `${platformStats.totalDownloads} downloads`, color: '#10b981' },
-                  { icon: '💻', value: platformStats.totalSnippets, label: 'Snippets', sub: `${platformStats.totalLikes} likes`, color: '#8b5cf6' },
-                ].map((s, i) => (
-                  <div key={i} className="stat-card kpi-card" style={{ borderTop: `3px solid ${s.color}` }}>
-                    <span className="stat-icon">{s.icon}</span>
-                    <h3 style={{ color: s.color }}>{s.value}</h3>
-                    <p>{s.label}</p>
-                    <small style={{ color: 'var(--gray-400)' }}>{s.sub}</small>
-                  </div>
-                ))}
-              </div>
-              <div className="admin-section-card">
-                <h3 style={{ marginBottom: 16 }}>📊 Health Overview</h3>
-                <div className="platform-health-grid">
-                  <div className="health-metric">
-                    <div className="health-label">User Retention (new/total)</div>
-                    <div className="health-bar-wrap"><div className="health-bar" style={{ width: `${platformStats.totalUsers > 0 ? Math.round((platformStats.newUsersMonth / platformStats.totalUsers) * 100) : 0}%`, background: '#667eea' }}></div></div>
-                    <div className="health-value">{platformStats.totalUsers > 0 ? Math.round((platformStats.newUsersMonth / platformStats.totalUsers) * 100) : 0}% growth</div>
-                  </div>
-                  <div className="health-metric">
-                    <div className="health-label">Listing Activity (live/total)</div>
-                    <div className="health-bar-wrap"><div className="health-bar" style={{ width: `${platformStats.totalListings > 0 ? Math.round((platformStats.activeListings / platformStats.totalListings) * 100) : 0}%`, background: '#10b981' }}></div></div>
-                    <div className="health-value">{platformStats.totalListings > 0 ? Math.round((platformStats.activeListings / platformStats.totalListings) * 100) : 0}% active</div>
-                  </div>
-                  <div className="health-metric">
-                    <div className="health-label">Message Read Rate</div>
-                    <div className="health-bar-wrap"><div className="health-bar" style={{ width: `${platformStats.totalMessages > 0 ? Math.round(((platformStats.totalMessages - platformStats.unreadMsgs) / platformStats.totalMessages) * 100) : 0}%`, background: '#f59e0b' }}></div></div>
-                    <div className="health-value">{platformStats.totalMessages > 0 ? Math.round(((platformStats.totalMessages - platformStats.unreadMsgs) / platformStats.totalMessages) * 100) : 0}% read</div>
-                  </div>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div style={{ textAlign: 'center', padding: 40 }}>
-              <button className="btn-primary" onClick={loadPlatformStats}>Load Platform Stats</button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'activity' && (
-        <div className="admin-activity">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <h2 style={{ margin: 0 }}>📡 User Activity Monitor</h2>
-            <button className="btn-sm btn-secondary" onClick={loadActivityFeed}>🔄 Refresh</button>
-          </div>
-          {loadingActivity ? (
-            <div style={{ textAlign: 'center', padding: 60, color: 'var(--gray-400)' }}>Loading activity…</div>
-          ) : activityFeed.length === 0 ? (
-            <div className="empty-state"><span className="empty-icon">📡</span><h3>No activity yet</h3></div>
-          ) : (
-            <div className="admin-section-card">
-              <div className="activity-feed-list">
-                {activityFeed.map(item => (
-                  <div key={item.id} className="activity-feed-row">
-                    <div className="activity-feed-icon" style={{ background: item.type === 'signup' ? 'var(--info-light)' : 'var(--success-light)' }}>
-                      {item.icon}
-                    </div>
-                    <div className="activity-feed-body">
-                      <p><strong>{item.user}</strong> — {item.title}</p>
-                      <small style={{ color: 'var(--gray-400)' }}>{new Date(item.created_at).toLocaleString()}</small>
-                    </div>
-                    <span className="activity-feed-meta" style={{
-                      background: item.meta === '✅ Live' ? 'var(--success-light)' : item.meta === '🙈 Hidden' ? 'var(--warning-light)' : 'var(--gray-100)',
-                      color: item.meta === '✅ Live' ? 'var(--success)' : item.meta === '🙈 Hidden' ? 'var(--warning)' : 'var(--gray-600)'
-                    }}>{item.meta}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'reports' && (
-        <div className="admin-reports">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <h2 style={{ margin: 0 }}>🚩 Reports &amp; Moderation</h2>
-            <button className="btn-sm btn-secondary" onClick={loadReports}>🔄 Refresh</button>
-          </div>
-          {loadingReports ? (
-            <div style={{ textAlign: 'center', padding: 60, color: 'var(--gray-400)' }}>Loading reports…</div>
-          ) : reports.length === 0 ? (
-            <div className="empty-state"><span className="empty-icon">✅</span><h3>No reports</h3><p>Nothing flagged yet — platform looks clean!</p></div>
-          ) : (
-            <div className="admin-section-card">
-              <div className="admin-table-header" style={{ gridTemplateColumns: '1fr 1fr 120px 120px' }}>
-                <span>Item</span><span>Reason / Reporter</span><span>Status</span><span>Action</span>
-              </div>
-              {reports.map(report => (
-                <div key={report.id} className="admin-table-row" style={{ gridTemplateColumns: '1fr 1fr 120px 120px' }}>
-                  <div>
-                    <strong>{report.listing_title || report.target_id || 'Unknown'}</strong>
-                    <br /><small style={{ color: 'var(--gray-400)' }}>{new Date(report.created_at).toLocaleDateString()}</small>
-                  </div>
-                  <div>
-                    <span>{report.reason || 'No reason given'}</span>
-                    <br /><small style={{ color: 'var(--gray-400)' }}>By: {report.reporter_name || 'Anonymous'}</small>
-                  </div>
-                  <span className={`report-status ${report.status || 'pending'}`} style={{
-                    padding: '4px 10px', borderRadius: 'var(--radius-full)', fontSize: '0.78rem',
-                    background: report.status === 'resolved' ? 'var(--success-light)' : report.status === 'actioned' ? 'var(--warning-light)' : 'var(--danger-light)',
-                    color: report.status === 'resolved' ? 'var(--success)' : report.status === 'actioned' ? 'var(--warning)' : 'var(--danger)'
-                  }}>{report.status || 'pending'}</span>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {report.status !== 'resolved' && (
-                      <button className="btn-sm btn-secondary" onClick={() => handleResolveReport(report.id)}>✅ Resolve</button>
-                    )}
-                    {report.listing_id && (
-                      <button className="btn-sm" style={{ background: 'var(--danger-light)', color: 'var(--danger)', border: 'none', borderRadius: 'var(--radius-sm)', padding: '4px 10px', cursor: 'pointer', fontSize: '0.78rem' }}
-                        onClick={() => handleHideListing(report.listing_id, report.listing_title || 'this listing')}>🙈 Hide</button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {activeTab === 'users' && (
         <div className="admin-users">
           <div className="admin-section-card">
@@ -2361,29 +1796,17 @@ function AdminDashboard() {
                     </span>
                     <span className="admin-user-email">{user.email || '—'}</span>
                     <div className="admin-row-actions">
-                      {user.id !== state.currentUser.id && user.role !== 'banned' && user.role !== 'admin' && (
+                      {user.id !== state.currentUser.id && (
                         <button 
                           className="btn-sm" 
-                          style={{ background: 'var(--primary)', color: 'white', border: 'none', cursor: 'pointer' }}
-                          onClick={() => handlePromoteUser(user.id, user.name)}
-                        >
-                          🛡️ Promote
-                        </button>
-                      )}
-                      {user.id !== state.currentUser.id && user.role !== 'banned' && (
-                        <button 
-                          className="btn-sm" 
-                          style={{ background: 'var(--danger)', color: 'white', border: 'none', cursor: 'pointer' }}
+                          style={{ background: 'var(--danger)', color: 'white', border: 'none' }}
                           onClick={() => handleBanUser(user.id, user.name)}
                         >
                           🚫 Ban
                         </button>
                       )}
-                      {user.role === 'banned' && (
-                        <span style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600 }}>🚫 Banned</span>
-                      )}
                       {user.id === state.currentUser.id && (
-                        <span style={{ color: 'var(--success)', fontSize: '0.8rem' }}>✅ You</span>
+                        <span style={{ color: 'var(--gray-400)', fontSize: '0.8rem' }}>You</span>
                       )}
                     </div>
                   </div>
@@ -2467,10 +1890,6 @@ function AdminDashboard() {
         </div>
       )}
 
-      {activeTab === 'posts' && <AdminPostsTab dispatch={dispatch} state={state} />}
-
-      {activeTab === 'announcements' && <AdminAnnouncementsTab dispatch={dispatch} state={state} />}
-
       {activeTab === 'moderation' && (
         <div className="moderation-panel">
           <div className="admin-section-header">
@@ -2537,6 +1956,7 @@ function AdminDashboard() {
               { key: 'autoApprove', label: 'Auto-Approve Listings', desc: 'New listings are automatically published without review' },
               { key: 'requireEmailVerification', label: 'Require Email Verification', desc: 'Users must verify email before posting content' },
               { key: 'allowMessages', label: 'Allow Direct Messages', desc: 'Enable users to message each other through the platform' },
+              { key: 'maintenanceMode', label: 'Maintenance Mode', desc: 'Temporarily disable public access for maintenance' }
             ].map(({ key, label, desc }) => (
               <div className="setting-item" key={key}>
                 <div className="setting-info">
@@ -2553,9 +1973,6 @@ function AdminDashboard() {
                 </label>
               </div>
             ))}
-            <p style={{fontSize:'0.8rem',color:'var(--gray-400)',marginTop:4}}>
-              💡 Maintenance Mode & Announcements are managed in the <strong>Announcements</strong> tab.
-            </p>
             <button 
               className="btn-primary" 
               onClick={handleSaveSettings}
@@ -2589,29 +2006,6 @@ function AdminDashboard() {
 // ============================================
 function AnalyticsPage() {
   const { state } = useAppContext();
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [extraStats, setExtraStats] = useState(null);
-  const [loadingStats, setLoadingStats] = useState(false);
-
-  useEffect(() => {
-    if (state.currentUser) loadExtraStats();
-  }, [state.currentUser]);
-
-  const loadExtraStats = async () => {
-    if (!state.currentUser) return;
-    setLoadingStats(true);
-    try {
-      const [viewsRes, convRes] = await Promise.all([
-        supabase.from('listings').select('id,title,views,created_at').eq('user_id', state.currentUser.id),
-        supabase.from('messages').select('id,read,created_at').eq('to_user', state.currentUser.id)
-      ]);
-      setExtraStats({
-        listingViews: viewsRes.data || [],
-        inboxMessages: convRes.data || []
-      });
-    } catch(e) {}
-    setLoadingStats(false);
-  };
 
   if (!state.currentUser) {
     return (
@@ -2629,205 +2023,72 @@ function AnalyticsPage() {
   const userApps = (state.apps || []).filter(a => a.user_id === state.currentUser.id);
   const userSnippets = (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id);
   const userMessages = (state.messages || []).filter(m => m.to_user === state.currentUser.id);
-  const totalViews = userListings.reduce((sum, l) => sum + (l.views || 0), 0);
-  const unreadMsgs = userMessages.filter(m => !m.read).length;
-  const totalLikes = userSnippets.reduce((sum, s) => sum + (s.likes || 0), 0);
-  const totalDownloads = userApps.reduce((sum, a) => sum + (a.downloads || 0), 0);
-  const maxViews = Math.max(...userListings.map(l => l.views || 0), 1);
-
-  const kpiCards = [
-    { icon: '👁️', value: totalViews, label: 'Total Views', sub: `across ${userListings.length} listing${userListings.length !== 1 ? 's' : ''}`, color: '#667eea' },
-    { icon: '💬', value: userMessages.length, label: 'Messages Received', sub: `${unreadMsgs} unread`, color: '#10b981' },
-    { icon: '⭐', value: state.favorites?.length || 0, label: 'Saved Favorites', sub: 'across marketplace', color: '#f59e0b' },
-    { icon: '❤️', value: totalLikes, label: 'Code Likes', sub: `${userSnippets.length} snippet${userSnippets.length !== 1 ? 's' : ''}`, color: '#ef4444' },
-    { icon: '📱', value: userApps.length, label: 'Apps Listed', sub: `${totalDownloads} downloads`, color: '#8b5cf6' },
-    { icon: '👥', value: (state.followers || []).length, label: 'Followers', sub: `following ${(state.follows || []).length}`, color: '#3b82f6' },
-  ];
 
   return (
     <div className="analytics-page">
       <div className="page-header">
-        <h1>📊 Your Dashboard</h1>
-        <p>Track performance, messages, and growth</p>
+        <h1>📊 Your Analytics</h1>
+        <p>Track your activity and engagement</p>
       </div>
 
-      <div className="dashboard-tabs">
-        {[
-          { id: 'dashboard', label: '🏠 Overview' },
-          { id: 'listings', label: '🛒 Listings' },
-          { id: 'messages', label: '💬 Messages' },
-        ].map(t => (
-          <button key={t.id} className={`admin-tab ${activeTab === t.id ? 'active' : ''}`} onClick={() => setActiveTab(t.id)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'dashboard' && (
-        <>
-          <div className="stats-grid dashboard-kpi-grid">
-            {kpiCards.map((k, i) => (
-              <div key={i} className="stat-card kpi-card" style={{ borderTop: `3px solid ${k.color}` }}>
-                <span className="stat-icon">{k.icon}</span>
-                <h3 style={{ color: k.color }}>{loadingStats ? '…' : k.value}</h3>
-                <p>{k.label}</p>
-                <small style={{ color: 'var(--gray-400)' }}>{k.sub}</small>
-              </div>
-            ))}
-          </div>
-
-          <div className="dashboard-panels">
-            <div className="dash-panel">
-              <div className="dash-panel-header">
-                <h3>🛒 Recent Listings</h3>
-                <Link to="/marketplace" className="btn-sm btn-secondary">Browse All</Link>
-              </div>
-              {userListings.length === 0 ? (
-                <div className="dash-empty"><span>🛒</span><p>No listings yet</p><Link to="/marketplace" className="btn-primary btn-sm">Create One</Link></div>
-              ) : (
-                <div className="dash-listing-list">
-                  {userListings.slice(0, 5).map(l => (
-                    <div key={l.id} className="dash-listing-row">
-                      <div className="dash-listing-thumb" style={{ background: 'var(--gray-100)' }}>
-                        {l.imageUrl ? <img src={l.imageUrl} alt={l.title} onError={e => e.target.style.display='none'} /> : <span>🛒</span>}
-                      </div>
-                      <div className="dash-listing-meta">
-                        <strong>{l.title}</strong>
-                        <span className="price-tag">${l.price || 0}</span>
-                      </div>
-                      <div className="dash-listing-stats">
-                        <span className="dash-stat-pill">👁️ {l.views || 0}</span>
-                        <span className={`dash-stat-pill ${l.hidden ? 'hidden-pill' : 'visible-pill'}`}>{l.hidden ? '🙈 Hidden' : '👁 Live'}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="dash-panel">
-              <div className="dash-panel-header">
-                <h3>💬 Recent Messages</h3>
-                <Link to="/messages" className="btn-sm btn-secondary">Open Inbox</Link>
-              </div>
-              {userMessages.length === 0 ? (
-                <div className="dash-empty"><span>💬</span><p>No messages yet</p></div>
-              ) : (
-                <div className="dash-msg-list">
-                  {userMessages.slice(0, 5).map((m, i) => (
-                    <div key={i} className={`dash-msg-row ${!m.read ? 'unread' : ''}`}>
-                      <div className="dash-msg-avatar">
-                        <img src={m.from_avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(m.from_name || 'U')}&background=667eea&color=fff&size=36`}
-                          alt={m.from_name} onError={e => { e.target.src = 'https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=36'; }} />
-                      </div>
-                      <div className="dash-msg-body">
-                        <strong>{m.from_name || 'Unknown'}</strong>
-                        <p>{(m.message || '').substring(0, 60)}{m.message?.length > 60 ? '…' : ''}</p>
-                      </div>
-                      {!m.read && <span className="dash-unread-dot"></span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </>
-      )}
-
-      {activeTab === 'listings' && (
-        <div className="analytics-charts">
-          <div className="chart-container">
-            <h3>📊 Listing Performance by Views</h3>
-            {userListings.length === 0 ? (
-              <div className="dash-empty"><span>🛒</span><p>No listings to show</p></div>
-            ) : (
-              <div className="bar-chart enhanced-bar-chart">
-                {userListings.slice(0, 10).map((listing, i) => {
-                  const pct = maxViews > 0 ? Math.round(((listing.views || 0) / maxViews) * 100) : 0;
-                  const colors = ['#667eea','#10b981','#f59e0b','#ef4444','#8b5cf6','#3b82f6','#ec4899','#14b8a6','#f97316','#6366f1'];
-                  return (
-                    <div key={listing.id} className="bar-item">
-                      <div className="bar-label" title={listing.title}>{listing.title?.substring(0, 22) || 'Untitled'}</div>
-                      <div className="bar-wrapper">
-                        <div className="bar-fill" style={{ width: `${Math.max(pct, 4)}%`, background: colors[i % colors.length] }}>
-                          <span>{listing.views || 0} views</span>
-                        </div>
-                      </div>
-                      <div className="bar-meta">
-                        <span className={listing.hidden ? 'hidden-pill' : 'visible-pill'}>{listing.hidden ? '🙈' : '✅'}</span>
-                        <span>${listing.price || 0}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div className="chart-container">
-            <h3>💬 Engagement Summary</h3>
-            <div className="engage-grid">
-              <div className="engage-card" style={{ borderColor: '#667eea' }}>
-                <span style={{ fontSize: '2rem' }}>👁️</span>
-                <h4>{totalViews}</h4>
-                <p>Total Views</p>
-              </div>
-              <div className="engage-card" style={{ borderColor: '#10b981' }}>
-                <span style={{ fontSize: '2rem' }}>💬</span>
-                <h4>{userMessages.length}</h4>
-                <p>Inquiries</p>
-              </div>
-              <div className="engage-card" style={{ borderColor: '#f59e0b' }}>
-                <span style={{ fontSize: '2rem' }}>⭐</span>
-                <h4>{state.favorites?.length || 0}</h4>
-                <p>Saved by You</p>
-              </div>
-              <div className="engage-card" style={{ borderColor: '#ef4444' }}>
-                <span style={{ fontSize: '2rem' }}>❤️</span>
-                <h4>{totalLikes}</h4>
-                <p>Code Likes</p>
-              </div>
-            </div>
-          </div>
+      <div className="stats-grid">
+        <div className="stat-card">
+          <span className="stat-icon">🛒</span>
+          <h3>{userListings.length}</h3>
+          <p>Your Listings</p>
+          <small>{userListings.reduce((sum, l) => sum + (l.views || 0), 0)} total views</small>
         </div>
-      )}
+        <div className="stat-card">
+          <span className="stat-icon">📱</span>
+          <h3>{userApps.length}</h3>
+          <p>Your Apps</p>
+          <small>{userApps.reduce((sum, a) => sum + (a.downloads || 0), 0)} downloads</small>
+        </div>
+        <div className="stat-card">
+          <span className="stat-icon">💻</span>
+          <h3>{userSnippets.length}</h3>
+          <p>Code Snippets</p>
+          <small>{userSnippets.reduce((sum, s) => sum + (s.likes || 0), 0)} total likes</small>
+        </div>
+        <div className="stat-card">
+          <span className="stat-icon">💬</span>
+          <h3>{userMessages.length}</h3>
+          <p>Messages Received</p>
+          <small>{userMessages.filter(m => !m.read).length} unread</small>
+        </div>
+      </div>
 
-      {activeTab === 'messages' && (
+      <div className="analytics-charts">
         <div className="chart-container">
-          <div className="dash-panel-header" style={{ marginBottom: '16px' }}>
-            <h3>💬 All Received Messages</h3>
-            <Link to="/messages" className="btn-sm btn-primary">Reply in Inbox</Link>
-          </div>
-          {userMessages.length === 0 ? (
-            <div className="dash-empty"><span>📭</span><p>No messages received yet</p></div>
-          ) : (
-            <div className="dash-msg-list full-msg-list">
-              {userMessages.map((m, i) => (
-                <div key={i} className={`dash-msg-row ${!m.read ? 'unread' : ''}`}>
-                  <div className="dash-msg-avatar">
-                    <img src={m.from_avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(m.from_name || 'U')}&background=667eea&color=fff&size=36`}
-                      alt={m.from_name} onError={e => { e.target.src = 'https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=36'; }} />
-                  </div>
-                  <div className="dash-msg-body">
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <strong>{m.from_name || 'Unknown'}</strong>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>{new Date(m.created_at).toLocaleDateString()}</span>
+          <h3>Listing Performance</h3>
+          <div className="chart-placeholder">
+            <div className="bar-chart">
+              {userListings.slice(0, 5).map((listing, i) => (
+                <div key={i} className="bar-item">
+                  <div className="bar-label">{listing.title?.substring(0, 20)}</div>
+                  <div className="bar-wrapper">
+                    <div 
+                      className="bar-fill" 
+                      style={{ 
+                        width: `${Math.min((listing.views || 0) * 10, 100)}%`,
+                        background: `hsl(${240 + i * 30}, 70%, 60%)`
+                      }}
+                    >
+                      <span>{listing.views || 0} views</span>
                     </div>
-                    <p style={{ margin: 0 }}>{m.message}</p>
-                    {m.subject && <small style={{ color: 'var(--gray-400)' }}>Re: {m.subject}</small>}
                   </div>
-                  {!m.read && <span className="dash-unread-dot"></span>}
                 </div>
               ))}
             </div>
-          )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
 // ============================================
-// MESSENGER-STYLE MESSAGES — Full Redesign
+// ENHANCED MESSAGES WITH REAL-TIME INDICATOR
 // ============================================
 function Messages() {
   const { state, dispatch } = useAppContext();
@@ -2838,72 +2099,8 @@ function Messages() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [convToDelete, setConvToDelete] = useState(null);
   const [deletingConv, setDeletingConv] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState(new Set());
-  // useRef instead of useState: timeout IDs don't need to trigger re-renders,
-  // and useState caused a stale-closure bug where clearTimeout received a stale id.
-  const typingTimeoutRef = useRef(null);
-  const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesEndRef = useRef(null);
   const chatMessagesRef = useRef(null);
-  const typingChannelRef = useRef(null);
-  const presenceChannelRef = useRef(null);
-
-  // Presence tracking: subscribe to online/offline
-  useEffect(() => {
-    if (!state.currentUser) return;
-    try {
-      const presenceChannel = supabase.channel('online-users', {
-        config: { presence: { key: state.currentUser.id } }
-      });
-      presenceChannel
-        .on('presence', { event: 'sync' }, () => {
-          const state_ = presenceChannel.presenceState();
-          const online = new Set(Object.keys(state_));
-          setOnlineUsers(online);
-        })
-        .on('presence', { event: 'join' }, ({ key }) => {
-          setOnlineUsers(prev => new Set([...prev, key]));
-        })
-        .on('presence', { event: 'leave' }, ({ key }) => {
-          setOnlineUsers(prev => { const s = new Set(prev); s.delete(key); return s; });
-        })
-        .subscribe(async (status) => {
-          if (status === 'SUBSCRIBED') {
-            await presenceChannel.track({ user_id: state.currentUser.id, online_at: new Date().toISOString() });
-          }
-        });
-      presenceChannelRef.current = presenceChannel;
-    } catch (e) {}
-    return () => { if (presenceChannelRef.current) supabase.removeChannel(presenceChannelRef.current); };
-  }, [state.currentUser]);
-
-  // Typing indicator subscription for active conversation
-  useEffect(() => {
-    if (!state.activeConversation || !state.currentUser) return;
-    try {
-      const channelName = `typing:${[state.currentUser.id, state.activeConversation.userId].sort().join('-')}`;
-      const channel = supabase.channel(channelName);
-      channel
-        .on('broadcast', { event: 'typing' }, ({ payload }) => {
-          if (payload.userId !== state.currentUser.id) {
-            setIsTyping(true);
-            clearTimeout(typingTimeoutRef.current);
-            typingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
-          }
-        })
-        .subscribe();
-      typingChannelRef.current = channel;
-    } catch (e) {}
-    return () => { if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current); };
-  }, [state.activeConversation?.userId]);
-
-  const broadcastTyping = useCallback(() => {
-    if (!typingChannelRef.current || !state.currentUser) return;
-    try {
-      typingChannelRef.current.send({ type: 'broadcast', event: 'typing', payload: { userId: state.currentUser.id } });
-    } catch (e) {}
-  }, [state.currentUser]);
 
   const scrollToBottom = useCallback(() => {
     if (chatMessagesRef.current) {
@@ -2911,15 +2108,20 @@ function Messages() {
     }
   }, []);
 
-  useEffect(() => { scrollToBottom(); }, [state.activeConversation, scrollToBottom]);
+  useEffect(() => {
+    scrollToBottom();
+  }, [state.activeConversation, scrollToBottom]);
 
+  // Auto-scroll on new messages only if we're near the bottom
   useEffect(() => {
     if (chatMessagesRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
-      if (scrollHeight - scrollTop - clientHeight < 120) scrollToBottom();
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+      if (isNearBottom) scrollToBottom();
     }
   }, [state.messages.length, scrollToBottom]);
 
+  // Real-time: update active conversation when new messages arrive
   useEffect(() => {
     if (state.activeConversation && state.conversations.length > 0) {
       const updated = state.conversations.find(c => c.userId === state.activeConversation.userId);
@@ -2948,9 +2150,8 @@ function Messages() {
     if (!replyMessage.trim() || !replyingTo) return;
     
     setSending(true);
-    const optimisticId = `temp-${Date.now()}`;
     const optimisticMsg = {
-      id: optimisticId,
+      id: `temp-${Date.now()}`,
       from_user: state.currentUser.id,
       to_user: replyingTo.userId,
       subject: 'Re: Conversation',
@@ -2960,17 +2161,15 @@ function Messages() {
       _optimistic: true
     };
 
-    // Optimistic update — append to the active conversation immediately
-    const currentActiveConv = state.activeConversation;
-    if (currentActiveConv) {
+    // Optimistically update UI
+    if (activeConv) {
       dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-        ...currentActiveConv,
-        messages: [...(currentActiveConv.messages || []), optimisticMsg],
+        ...activeConv,
+        messages: [...(activeConv.messages || []), optimisticMsg],
         lastMessage: replyMessage,
         lastMessageTime: optimisticMsg.created_at
       }});
     }
-    const capturedMessage = replyMessage;
     setReplyMessage('');
 
     try {
@@ -2978,51 +2177,40 @@ function Messages() {
         from_user: state.currentUser.id,
         to_user: replyingTo.userId,
         subject: 'Re: Conversation',
-        message: capturedMessage,
+        message: optimisticMsg.message,
         read: false,
         created_at: new Date().toISOString()
       };
 
-      const { data: insertedMsg, error } = await supabase.from('messages').insert([msgData]).select().single();
+      const { error } = await supabase.from('messages').insert([msgData]);
       
-      if (error) throw error;
-
-      if (insertedMsg) {
-        // Replace optimistic message with real one. Read the LATEST activeConversation
-        // from state via the updater pattern to avoid stale closure issues.
-        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-          ...(state.activeConversation || currentActiveConv),
-          messages: [
-            ...((state.activeConversation || currentActiveConv)?.messages || [])
-              .filter(m => m.id !== optimisticId),
-            insertedMsg
-          ],
-          lastMessage: insertedMsg.message,
-          lastMessageTime: insertedMsg.created_at
-        }});
+      if (!error) {
+        try {
+          await supabase.from('notifications').insert([{
+            user_id: replyingTo.userId,
+            message: `💬 New reply from ${state.profile?.name || state.currentUser.email}`,
+            type: 'info',
+            read: false,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (notifError) {}
+        
+        // Refresh messages
+        const { data: msgsResult } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`from_user.eq.${state.currentUser.id},to_user.eq.${state.currentUser.id}`)
+          .order('created_at', { ascending: false });
+        
+        if (msgsResult) {
+          dispatch({ type: 'SET_MESSAGES', payload: msgsResult });
+          buildConversationsLocal(msgsResult, state.currentUser.id);
+        }
       }
-      // Try to notify recipient (non-blocking, best-effort)
-      supabase.from('notifications').insert([{
-        user_id: replyingTo.userId,
-        message: `💬 New message from ${state.profile?.name || state.currentUser.email?.split('@')[0] || 'User'}`,
-        type: 'info',
-        read: false,
-        created_at: new Date().toISOString()
-      }]).then(() => {}).catch(() => {});
     } catch (error) {
       console.error('Error sending reply:', error);
-      // Rollback: remove the optimistic message
-      if (state.activeConversation) {
-        dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: {
-          ...state.activeConversation,
-          messages: (state.activeConversation.messages || []).filter(m => m.id !== optimisticId),
-          lastMessage: currentActiveConv?.lastMessage,
-          lastMessageTime: currentActiveConv?.lastMessageTime
-        }});
-      }
-      setReplyMessage(capturedMessage); // restore the unsent text
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Failed to send message. Please try again.', type: 'error', 
+        message: '❌ Failed to send message', type: 'error', 
         time: new Date().toLocaleTimeString(), read: false 
       }});
     }
@@ -3072,7 +2260,7 @@ function Messages() {
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
           userId: otherUserId,
-          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'User',
+          userName: (msg.from_user === userId ? msg.to_name : msg.from_name) || 'Unknown User',
           userAvatar: msg.from_user === userId ? msg.to_avatar : msg.from_avatar,
           lastMessage: msg.message,
           lastMessageTime: msg.created_at,
@@ -3101,9 +2289,9 @@ function Messages() {
   const openConversation = (conv) => {
     dispatch({ type: 'SET_ACTIVE_CONVERSATION', payload: conv });
     setReplyingTo(conv);
-    setMobileShowChat(true);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
-    // Mark unread messages as read in the DB (non-blocking, best-effort)
+    sessionStorage.setItem('activeConversationId', conv.userId);
+    
     conv.messages.forEach(async (msg) => {
       if (!msg.read && msg.to_user === state.currentUser.id) {
         try {
@@ -3119,190 +2307,159 @@ function Messages() {
     setShowDeleteConfirm(true);
   };
 
-  const formatMsgTime = (ts) => {
-    const d = new Date(ts);
-    const now = new Date();
-    const diffDays = Math.floor((now - d) / 86400000);
-    if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (diffDays === 1) return 'Yesterday ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
-  const isOnline = (userId) => onlineUsers.has(userId);
-
   const activeMessages = (activeConv?.messages || [])
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
   return (
-    <div className="messenger-page">
-      {/* Sidebar */}
-      <div className={`messenger-sidebar ${mobileShowChat ? 'mobile-hidden' : ''}`}>
-        <div className="messenger-sidebar-header">
-          <h2>💬 Messages</h2>
-          {state.realtimeConnected && (
-            <span className="live-badge">🟢 Live</span>
+    <div className="messages-page">
+      <div className="page-header">
+        <h1>💬 Messages</h1>
+        <p>Your conversations and inquiries</p>
+        <div className="realtime-indicator">
+          {state.realtimeConnected ? (
+            <span className="realtime-badge connected">
+              <span className="realtime-pulse"></span> Live
+            </span>
+          ) : (
+            <span className="realtime-badge disconnected">
+              <span className="realtime-pulse offline"></span> Reconnecting...
+            </span>
+          )}
+        </div>
+      </div>
+      
+      <div className="messages-layout">
+        <div className="conversations-sidebar">
+          <h3>Conversations {conversations.length > 0 && <span className="conv-count">{conversations.length}</span>}</h3>
+          {loadingMessages ? (
+            <div className="conversations-skeleton">
+              {[1,2,3,4,5].map(i => <SkeletonMessage key={i} />)}
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="empty-conversations">
+              <span>💬</span>
+              <p>No conversations yet</p>
+              <small>Messages from inquiries will appear here</small>
+            </div>
+          ) : (
+            <div className="conversations-list">
+              {conversations.map((conv, index) => (
+                <div
+                  key={conv.userId || index}
+                  className={`conversation-item ${activeConv?.userId === conv.userId ? 'active' : ''} ${conv.unreadCount > 0 ? 'unread' : ''}`}
+                  onClick={() => openConversation(conv)}
+                >
+                  <img 
+                    src={conv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.userName || 'User')}&background=667eea&color=fff&size=40`} 
+                    alt={conv.userName} 
+                    className="conversation-avatar"
+                    onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=40`; }}
+                  />
+                  <div className="conversation-info">
+                    <div className="conversation-header">
+                      <strong>{conv.userName || 'Unknown User'}</strong>
+                      <span className="conversation-time">
+                        {new Date(conv.lastMessageTime).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <p className="conversation-preview">
+                      {conv.lastMessage?.substring(0, 45)}
+                      {conv.lastMessage?.length > 45 ? '...' : ''}
+                    </p>
+                  </div>
+                  {conv.unreadCount > 0 && (
+                    <span className="unread-badge">{conv.unreadCount}</span>
+                  )}
+                  <button 
+                    className="conv-delete-btn"
+                    onClick={(e) => confirmDeleteConversation(e, conv)}
+                    title="Delete conversation"
+                    aria-label="Delete conversation"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 
-        {loadingMessages ? (
-          <div className="conv-list">{[1,2,3,4].map(i => <SkeletonMessage key={i} />)}</div>
-        ) : conversations.length === 0 ? (
-          <div className="messenger-empty-sidebar">
-            <span>💬</span>
-            <p>No conversations yet</p>
-            <small>Messages from listing inquiries appear here</small>
-          </div>
-        ) : (
-          <div className="conv-list">
-            {conversations.map((conv, index) => (
-              <div
-                key={conv.userId || index}
-                className={`conv-item ${activeConv?.userId === conv.userId ? 'active' : ''} ${conv.unreadCount > 0 ? 'unread' : ''}`}
-                onClick={() => openConversation(conv)}
-              >
-                <div className="conv-avatar-wrap">
-                  <img
-                    src={conv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(conv.userName || 'U')}&background=667eea&color=fff&size=48`}
-                    alt={conv.userName}
-                    className="conv-avatar"
-                    onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=48`; }}
-                  />
-                  <span className={`online-dot ${isOnline(conv.userId) ? 'online' : 'offline'}`}></span>
-                </div>
-                <div className="conv-info">
-                  <div className="conv-row1">
-                    <strong className="conv-name">{conv.userName || 'User'}</strong>
-                    <span className="conv-time">{formatMsgTime(conv.lastMessageTime)}</span>
-                  </div>
-                  <div className="conv-row2">
-                    <p className="conv-preview">{conv.lastMessage?.substring(0, 38)}{conv.lastMessage?.length > 38 ? '…' : ''}</p>
-                    {conv.unreadCount > 0 && <span className="conv-badge">{conv.unreadCount}</span>}
-                  </div>
-                </div>
-                <button
-                  className="conv-del-btn"
-                  onClick={(e) => confirmDeleteConversation(e, conv)}
-                  title="Delete"
-                >×</button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Chat Area */}
-      <div className={`messenger-chat ${mobileShowChat ? 'mobile-show' : ''}`}>
-        {activeConv ? (
-          <>
-            <div className="messenger-chat-header">
-              <button className="messenger-back-btn" onClick={() => { setMobileShowChat(false); }}>←</button>
-              <div className="messenger-chat-avatar-wrap">
-                <img
-                  src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName || 'U')}&background=667eea&color=fff&size=44`}
-                  alt={activeConv.userName}
-                  className="messenger-chat-avatar"
-                  onError={(e) => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=44`; }}
+        <div className="chat-area-wrapper">
+          {activeConv ? (
+            <>
+              <div className="chat-header">
+                <img 
+                  src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName || 'User')}&background=667eea&color=fff&size=40`} 
+                  alt={activeConv.userName} 
+                  className="chat-avatar"
                 />
-                <span className={`online-dot ${isOnline(activeConv.userId) ? 'online' : 'offline'}`}></span>
+                <div className="chat-header-info">
+                  <strong>{activeConv.userName || 'Unknown User'}</strong>
+                  <p>{activeMessages.length} messages{state.realtimeConnected ? ' · Live' : ''}</p>
+                </div>
+                <button 
+                  className="btn-secondary btn-sm chat-delete-btn"
+                  onClick={() => { setConvToDelete(activeConv); setShowDeleteConfirm(true); }}
+                  title="Delete this conversation"
+                >
+                  🗑️ Delete
+                </button>
               </div>
-              <div className="messenger-chat-info">
-                <strong>{activeConv.userName || 'User'}</strong>
-                <p>{isOnline(activeConv.userId) ? '🟢 Active now' : '⚪ Offline'}</p>
-              </div>
-              <button
-                className="btn-secondary btn-sm"
-                onClick={() => { setConvToDelete(activeConv); setShowDeleteConfirm(true); }}
-                style={{ marginLeft: 'auto', fontSize: '0.75rem' }}
-              >
-                🗑️
-              </button>
-            </div>
-
-            <div className="messenger-messages" ref={chatMessagesRef}>
-              {activeMessages.map((msg, i) => {
-                const isMine = msg.from_user === state.currentUser.id;
-                const showAvatar = !isMine && (i === 0 || activeMessages[i-1]?.from_user !== msg.from_user);
-                const isLast = isMine && i === activeMessages.length - 1;
-                return (
-                  <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
-                    {!isMine && (
-                      <img
-                        src={showAvatar ? (activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`) : undefined}
-                        alt=""
-                        className={`msg-avatar ${showAvatar ? '' : 'invisible'}`}
-                        onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
-                      />
-                    )}
-                    <div className="msg-col">
-                      <div className={`msg-bubble ${msg._optimistic ? 'optimistic' : ''}`}>
-                        <p>{msg.message}</p>
-                      </div>
-                      <div className={`msg-meta ${isMine ? 'mine' : ''}`}>
-                        <span>{formatMsgTime(msg.created_at)}</span>
-                        {isMine && (
-                          <span className="msg-status">
-                            {msg._optimistic ? '🕐' : msg.read ? '✓✓' : '✓'}
+              <div className="chat-messages-scrollable" ref={chatMessagesRef}>
+                {activeMessages.map((msg) => (
+                  <div 
+                    key={msg.id} 
+                    className={`chat-message ${msg.from_user === state.currentUser.id ? 'sent' : 'received'} ${msg._optimistic ? 'optimistic' : ''}`}
+                  >
+                    <div className="message-bubble">
+                      <p>{msg.message}</p>
+                      <small className="message-time">
+                        {new Date(msg.created_at).toLocaleString()}
+                        {msg.from_user === state.currentUser.id && (
+                          <span className="message-status">
+                            {msg._optimistic ? ' ⏳' : msg.read ? ' ✓✓' : ' ✓'}
                           </span>
                         )}
-                        {isMine && isLast && msg.read && !msg._optimistic && (
-                          <span style={{ fontSize: '0.65rem', color: 'var(--primary)' }}>Seen</span>
-                        )}
-                      </div>
+                      </small>
                     </div>
                   </div>
-                );
-              })}
-              {isTyping && (
-                <div className="msg-row theirs">
-                  <img
-                    src={activeConv.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activeConv.userName||'U')}&background=667eea&color=fff&size=32`}
-                    alt=""
-                    className="msg-avatar"
-                    onError={e => { e.target.src = `https://ui-avatars.com/api/?name=U&background=667eea&color=fff&size=32`; }}
-                  />
-                  <div className="msg-col">
-                    <div className="typing-bubble">
-                      <span className="typing-dot"></span>
-                      <span className="typing-dot"></span>
-                      <span className="typing-dot"></span>
-                    </div>
-                  </div>
-                </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </div>
+              <div className="chat-input-area">
+                <textarea
+                  placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+                  value={replyMessage}
+                  onChange={e => setReplyMessage(e.target.value)}
+                  className="chat-textarea"
+                  rows="2"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendReply();
+                    }
+                  }}
+                />
+                <button 
+                  className="btn-primary chat-send-btn" 
+                  onClick={handleSendReply} 
+                  disabled={sending || !replyMessage.trim()}
+                >
+                  {sending ? '⏳' : '📤 Send'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="chat-empty">
+              <span className="empty-icon">💬</span>
+              <h3>Select a conversation</h3>
+              <p>Choose a conversation from the sidebar to start chatting.</p>
+              {state.realtimeConnected && (
+                <p className="realtime-note">🟢 Connected — new messages arrive instantly!</p>
               )}
-              <div ref={messagesEndRef} />
             </div>
-
-            <div className="messenger-input-area">
-              <textarea
-                placeholder="Aa"
-                value={replyMessage}
-                onChange={e => { setReplyMessage(e.target.value); broadcastTyping(); }}
-                className="messenger-input"
-                rows="1"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendReply(); }
-                }}
-              />
-              <button
-                className="messenger-send-btn"
-                onClick={handleSendReply}
-                disabled={sending || !replyMessage.trim()}
-                title="Send"
-              >
-                {sending ? '⏳' : '➤'}
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="messenger-no-chat">
-            <div className="messenger-no-chat-inner">
-              <span>💬</span>
-              <h3>Your Messages</h3>
-              <p>Select a conversation to start chatting</p>
-              {state.realtimeConnected && <p className="live-note">🟢 Live — messages arrive instantly</p>}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <ConfirmDialog
@@ -3413,12 +2570,7 @@ function Profile() {
             size="large"
           />
           <div className="profile-info">
-            <h1>
-              {userName}
-              {state.profile?.verified && (
-                <span className="verified-badge" title="Verified Account">✓</span>
-              )}
-            </h1>
+            <h1>{userName}</h1>
             <p className="profile-email">{state.currentUser.email}</p>
             {state.profile?.role && (
               <span className="profile-role-badge">
@@ -3531,7 +2683,8 @@ function Profile() {
 function UserProfile() {
   const { state, dispatch } = useAppContext();
   const navigate = useNavigate();
-  const { userId } = useParams();
+  const location = useLocation();
+  const userId = location.pathname.split('/profile/')[1];
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3720,12 +2873,7 @@ function UserProfile() {
             <img src={avatarUrl} alt={displayName} className="avatar-large" />
           </div>
           <div className="profile-info">
-            <h1>
-              {displayName}
-              {profile.verified && (
-                <span className="verified-badge" title="Verified Account">✓</span>
-              )}
-            </h1>
+            <h1>{displayName}</h1>
             {profile.bio && <p className="profile-bio">{profile.bio}</p>}
             <div className="profile-links">
               {profile.website && (
@@ -3832,6 +2980,272 @@ function UserProfile() {
 // ============================================
 // ACTIVITY FEED COMPONENT
 // ============================================
+function ActivityFeed() {
+  const { state, dispatch } = useAppContext();
+  const navigate = useNavigate();
+  const [activities, setActivities] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+
+  useEffect(() => {
+    if (state.currentUser) loadActivities();
+  }, [state.currentUser]);
+
+  const loadActivities = async () => {
+    setLoading(true);
+    try {
+      // Build activity from local state (listings, snippets, etc.)
+      const localActivities = [];
+      
+      // Recent listings
+      (state.listings || []).slice(0, 20).forEach(l => {
+        localActivities.push({
+          id: `listing-${l.id}`,
+          type: 'listing',
+          icon: '🛒',
+          user: l.seller || l.seller_name || 'Someone',
+          userId: l.user_id,
+          userAvatar: l.sellerAvatar || l.seller_avatar,
+          action: 'posted a new listing',
+          target: l.title,
+          targetId: l.id,
+          time: l.created_at || l.date,
+          likes: 0,
+          comments: [],
+          likedBy: []
+        });
+      });
+
+      // Recent snippets with likes
+      (state.codeSnippets || []).slice(0, 20).forEach(s => {
+        localActivities.push({
+          id: `snippet-${s.id}`,
+          type: 'snippet',
+          icon: '💻',
+          user: s.author || s.author_name || 'Someone',
+          userId: s.user_id,
+          userAvatar: s.authorAvatar || s.author_avatar,
+          action: 'shared a code snippet',
+          target: s.title,
+          targetId: s.id,
+          time: s.created_at || s.date,
+          likes: s.likes || 0,
+          comments: [],
+          likedBy: s.likedBy || []
+        });
+      });
+
+      // Try to load from DB activities table
+      try {
+        const { data: dbActivities } = await supabase
+          .from('activities')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(30);
+        
+        if (dbActivities && dbActivities.length > 0) {
+          dbActivities.forEach(a => {
+            localActivities.unshift({
+              id: `act-${a.id}`,
+              type: a.type,
+              icon: a.type === 'follow' ? '👤' : a.type === 'like' ? '❤️' : a.type === 'comment' ? '💬' : '📣',
+              user: a.user_name || 'User',
+              userId: a.user_id,
+              action: a.message || 'did something',
+              target: a.target || '',
+              time: a.created_at,
+              likes: 0,
+              comments: [],
+              likedBy: []
+            });
+          });
+        }
+      } catch(e) { /* activities table may not exist */ }
+
+      // Sort by time
+      localActivities.sort((a, b) => new Date(b.time) - new Date(a.time));
+      setActivities(localActivities.slice(0, 50));
+    } catch (error) {
+      console.error('Error loading activities:', error);
+    }
+    setLoading(false);
+  };
+
+  const handleLikeActivity = (activityId) => {
+    if (!state.currentUser) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Please login to like', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
+      return;
+    }
+    const userId = state.currentUser.id;
+    setActivities(prev => prev.map(a => {
+      if (a.id !== activityId) return a;
+      const liked = a.likedBy?.includes(userId);
+      return {
+        ...a,
+        likes: liked ? a.likes - 1 : a.likes + 1,
+        likedBy: liked ? a.likedBy.filter(id => id !== userId) : [...(a.likedBy || []), userId]
+      };
+    }));
+  };
+
+  const handleComment = (activityId, comment) => {
+    if (!comment.trim()) return;
+    const userName = state.profile?.name || state.currentUser?.email || 'User';
+    setActivities(prev => prev.map(a => {
+      if (a.id !== activityId) return a;
+      return {
+        ...a,
+        comments: [...(a.comments || []), {
+          id: Date.now(),
+          user: userName,
+          text: comment,
+          time: new Date().toISOString()
+        }]
+      };
+    }));
+  };
+
+  const filtered = filter === 'all' ? activities : activities.filter(a => a.type === filter);
+
+  const formatTime = (time) => {
+    if (!time) return '';
+    const d = new Date(time);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+    return `${Math.floor(diff/86400)}d ago`;
+  };
+
+  return (
+    <div className="activity-feed-page">
+      <div className="page-header">
+        <h1>📣 Activity Feed</h1>
+        <p>See what's happening in the DevMarket community</p>
+      </div>
+
+      <div className="activity-filters">
+        {['all', 'listing', 'snippet', 'follow', 'like'].map(f => (
+          <button
+            key={f}
+            className={`filter-chip ${filter === f ? 'active' : ''}`}
+            onClick={() => setFilter(f)}
+          >
+            {f === 'all' ? '🌐 All' : f === 'listing' ? '🛒 Listings' : f === 'snippet' ? '💻 Code' : f === 'follow' ? '👤 Follows' : '❤️ Likes'}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="loading-container"><div className="loading-spinner-large"></div><p>Loading feed...</p></div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state">
+          <span className="empty-icon">📣</span>
+          <h3>No activity yet</h3>
+          <p>Start exploring and activities will appear here!</p>
+        </div>
+      ) : (
+        <div className="activity-list">
+          {filtered.map(activity => (
+            <ActivityCard
+              key={activity.id}
+              activity={activity}
+              currentUser={state.currentUser}
+              onLike={handleLikeActivity}
+              onComment={handleComment}
+              formatTime={formatTime}
+              onViewProfile={(uid) => navigate(`/profile/${uid}`)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityCard({ activity, currentUser, onLike, onComment, formatTime, onViewProfile }) {
+  const [showComments, setShowComments] = useState(false);
+  const [commentText, setCommentText] = useState('');
+  const isLiked = activity.likedBy?.includes(currentUser?.id);
+
+  const handleSubmitComment = (e) => {
+    e.preventDefault();
+    if (!commentText.trim()) return;
+    onComment(activity.id, commentText);
+    setCommentText('');
+  };
+
+  const avatarUrl = activity.userAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(activity.user || 'U')}&background=667eea&color=fff&size=40`;
+
+  return (
+    <div className="activity-card">
+      <div className="activity-header">
+        <img
+          src={avatarUrl}
+          alt={activity.user}
+          className="activity-avatar"
+          onClick={() => activity.userId && onViewProfile(activity.userId)}
+          style={{ cursor: activity.userId ? 'pointer' : 'default' }}
+        />
+        <div className="activity-meta">
+          <span
+            className="activity-user"
+            onClick={() => activity.userId && onViewProfile(activity.userId)}
+            style={{ cursor: activity.userId ? 'pointer' : 'default' }}
+          >
+            {activity.user}
+          </span>
+          <span className="activity-action"> {activity.action} </span>
+          {activity.target && <span className="activity-target">"{activity.target}"</span>}
+          <span className="activity-time"> · {formatTime(activity.time)}</span>
+        </div>
+        <span className="activity-icon-badge">{activity.icon}</span>
+      </div>
+
+      <div className="activity-actions">
+        <button
+          className={`activity-btn ${isLiked ? 'liked' : ''}`}
+          onClick={() => onLike(activity.id)}
+        >
+          {isLiked ? '❤️' : '🤍'} {activity.likes || 0}
+        </button>
+        <button
+          className="activity-btn"
+          onClick={() => setShowComments(!showComments)}
+        >
+          💬 {activity.comments?.length || 0}
+        </button>
+      </div>
+
+      {showComments && (
+        <div className="activity-comments">
+          {(activity.comments || []).map(c => (
+            <div key={c.id} className="comment-item">
+              <strong className="comment-user">{c.user}</strong>
+              <span className="comment-text"> {c.text}</span>
+              <span className="comment-time"> · {formatTime(c.time)}</span>
+            </div>
+          ))}
+          {currentUser && (
+            <form onSubmit={handleSubmitComment} className="comment-form">
+              <input
+                type="text"
+                placeholder="Add a comment..."
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+                className="comment-input"
+              />
+              <button type="submit" className="btn-primary btn-sm">Post</button>
+            </form>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
 function Home() {
   const { state } = useAppContext();
   const navigate = useNavigate();
@@ -3840,8 +3254,7 @@ function Home() {
     listings: (state.listings || []).length,
     apps: (state.apps || []).length,
     snippets: (state.codeSnippets || []).length,
-    // Use analytics data if available, otherwise derive from known state
-    users: state.analyticsData?.totalUsers || 0
+    users: 1250
   };
   
   const featuredListings = (state.listings || []).filter(l => !l.hidden).slice(0, 3);
@@ -3931,9 +3344,7 @@ function ListingCard({ listing }) {
   const isFavorited = (state.favorites || []).some(f => f.id === listing.id);
   const isOwner = state.currentUser && listing.user_id === state.currentUser.id;
 
-  const [sending, setSending] = useState(false);
-
-  const handleContactToggle = () => {
+  const handleContact = async () => {
     if (!state.currentUser) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: 'Please login to contact sellers', 
@@ -3943,6 +3354,7 @@ function ListingCard({ listing }) {
       }});
       return;
     }
+    
     if (isOwner) {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { 
         message: 'You cannot message yourself', 
@@ -3952,64 +3364,53 @@ function ListingCard({ listing }) {
       }});
       return;
     }
-    setShowContact(prev => !prev);
-  };
+    
+    if (showContact && message.trim()) {
+      try {
+        const msgData = {
+          from_user: state.currentUser.id,
+          to_user: listing.user_id,
+          subject: `Inquiry about ${listing.title}`,
+          message: message,
+          listing_id: listing.id,
+          read: false,
+          created_at: new Date().toISOString()
+        };
 
-  const handleSendMessage = async () => {
-    if (!message.trim()) return;
-    setSending(true);
-    try {
-      const msgData = {
-        from_user: state.currentUser.id,
-        to_user: listing.user_id,
-        subject: `Inquiry about ${listing.title}`,
-        message: message,
-        listing_id: listing.id,
-        read: false,
-        created_at: new Date().toISOString()
-      };
-
-      const { error } = await supabase.from('messages').insert([msgData]);
-      if (error) throw error;
-      
-      // Notify seller (non-blocking)
-      supabase.from('notifications').insert([{
-        user_id: listing.user_id,
-        message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
-        type: 'info',
-        read: false,
-        created_at: new Date().toISOString()
-      }]).then(() => {}).catch(() => {});
-      
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: `✅ Message sent about "${listing.title}"`, 
-        type: 'success', 
-        time: new Date().toLocaleTimeString(), 
-        read: false 
-      }});
+        await supabase.from('messages').insert([msgData]);
+        
+        try {
+          await supabase.from('notifications').insert([{
+            user_id: listing.user_id,
+            message: `💬 New inquiry about "${listing.title}" from ${state.profile?.name || state.currentUser.email}`,
+            type: 'info',
+            read: false,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (notifError) {
+          console.log('Could not create notification:', notifError);
+        }
+        
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: `Message sent about "${listing.title}"`, 
+          type: 'success', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+      } catch (error) {
+        console.error('Error sending message:', error);
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: 'Failed to send message. Please try again.', 
+          type: 'error', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+      }
       setShowContact(false);
       setMessage('');
-    } catch (error) {
-      console.error('Error sending message:', error);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Failed to send message. Please try again.', 
-        type: 'error', 
-        time: new Date().toLocaleTimeString(), 
-        read: false 
-      }});
+    } else {
+      setShowContact(!showContact);
     }
-    setSending(false);
-  };
-
-  // Track listing view on expand/contact (non-blocking, best-effort)
-  const trackView = async () => {
-    if (!listing?.id) return;
-    try {
-      await supabase.rpc('increment_listing_views', { listing_id: listing.id }).then(() => {}).catch(() => {
-        // Fallback: direct update if RPC doesn't exist
-        supabase.from('listings').update({ views: (listing.views || 0) + 1 }).eq('id', listing.id).then(() => {}).catch(() => {});
-      });
-    } catch(e) {}
   };
 
   const toggleFavorite = async () => {
@@ -4023,7 +3424,6 @@ function ListingCard({ listing }) {
       return;
     }
     
-    // Optimistic update
     dispatch({ type: 'TOGGLE_FAVORITE', payload: listing });
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: isFavorited ? 'Removed from favorites' : 'Added to favorites', 
@@ -4034,25 +3434,15 @@ function ListingCard({ listing }) {
     
     try {
       if (isFavorited) {
-        const { error } = await supabase.from('favorites').delete().eq('user_id', state.currentUser.id).eq('listing_id', listing.id);
-        if (error) throw error;
+        await supabase.from('favorites').delete().eq('user_id', state.currentUser.id).eq('listing_id', listing.id);
       } else {
-        const { error } = await supabase.from('favorites').insert([{
+        await supabase.from('favorites').insert([{
           user_id: state.currentUser.id,
           listing_id: listing.id,
           created_at: new Date().toISOString()
         }]);
-        if (error) throw error;
       }
     } catch (error) {
-      // Rollback optimistic update
-      dispatch({ type: 'TOGGLE_FAVORITE', payload: listing });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
-        message: '❌ Could not update favorites. Please try again.', 
-        type: 'error', 
-        time: new Date().toLocaleTimeString(), 
-        read: false 
-      }});
       console.error('Error updating favorites:', error);
     }
   };
@@ -4142,28 +3532,13 @@ function ListingCard({ listing }) {
             <span>{listing.date}</span>
           </div>
           {showContact && (
-            <div className="contact-form">
-              <textarea 
-                placeholder="Write your message to the seller..." 
-                value={message} 
-                onChange={e => setMessage(e.target.value)} 
-                className="contact-message" 
-                rows="3" 
-                autoFocus
-              />
-              <div className="contact-form-actions">
-                <button className="btn-secondary btn-sm" onClick={() => { setShowContact(false); setMessage(''); }}>
-                  Cancel
-                </button>
-                <button
-                  className="btn-primary btn-sm"
-                  onClick={handleSendMessage}
-                  disabled={sending || !message.trim()}
-                >
-                  {sending ? '⏳ Sending...' : '📤 Send Message'}
-                </button>
-              </div>
-            </div>
+            <textarea 
+              placeholder="Write your message..." 
+              value={message} 
+              onChange={e => setMessage(e.target.value)} 
+              className="contact-message" 
+              rows="3" 
+            />
           )}
           <div className="card-actions">
             {listing.url && (
@@ -4172,12 +3547,12 @@ function ListingCard({ listing }) {
               </a>
             )}
             <button 
-              onClick={handleContactToggle} 
+              onClick={handleContact} 
               className="btn-primary btn-sm"
               disabled={isOwner}
-              title={isOwner ? 'This is your listing' : showContact ? 'Cancel' : 'Contact seller'}
+              title={isOwner ? 'This is your listing' : 'Contact seller'}
             >
-              {isOwner ? '👤 Your Listing' : showContact ? '✕ Cancel' : '📧 Contact'}
+              {isOwner ? '👤 Your Listing' : showContact ? '📤 Send' : '📧 Contact'}
             </button>
           </div>
         </div>
@@ -4215,14 +3590,12 @@ function Marketplace() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    // Support both ?search= (from the header quick-search) and
-    // ?q= (from the AdvancedSearch modal) so both entry points populate the filter.
     const params = new URLSearchParams(window.location.search);
-    const search = params.get('search') || params.get('q');
+    const search = params.get('search');
     if (search) {
       setSearchTerm(search);
     }
-  }, [window.location.search]);
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -4312,14 +3685,12 @@ function Marketplace() {
     setSubmitting(false);
   };
 
-  const filteredListings = useMemo(() => (state.listings || [])
+  const filteredListings = (state.listings || [])
     .filter(l => {
       // Hide hidden listings from non-admin users
       if (l.hidden && !state.isAdmin) return false;
-      const term = searchTerm.toLowerCase();
-      const matchesSearch = !term ||
-        l.title?.toLowerCase().includes(term) || 
-        l.description?.toLowerCase().includes(term);
+      const matchesSearch = l.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                           l.description?.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesPrice = filterPrice === 'all' ? true : 
                           filterPrice === 'free' ? l.price?.toLowerCase().includes('free') : 
                           !l.price?.toLowerCase().includes('free');
@@ -4332,8 +3703,7 @@ function Marketplace() {
         return (a.title || '').localeCompare(b.title || '');
       }
       return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-    }),
-  [state.listings, state.isAdmin, searchTerm, filterPrice, sortBy]);
+    });
 
   return (
     <div className="marketplace-page">
@@ -4610,16 +3980,14 @@ function Advertise() {
     setSubmitting(false);
   };
 
-  const filteredApps = useMemo(() => (state.apps || []).filter(a => {
-    const term = searchTerm.toLowerCase();
-    const matchesSearch = !term ||
-      a.appName?.toLowerCase().includes(term) || 
-      a.description?.toLowerCase().includes(term);
+  const filteredApps = (state.apps || []).filter(a => {
+    const matchesSearch = a.appName?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         a.description?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesPlatform = filterPlatform === 'all' || a.platform?.toLowerCase() === filterPlatform.toLowerCase();
     return matchesSearch && matchesPlatform;
-  }), [state.apps, searchTerm, filterPlatform]);
+  });
 
-  const platforms = useMemo(() => [...new Set((state.apps || []).map(a => a.platform).filter(Boolean))], [state.apps]);
+  const platforms = [...new Set((state.apps || []).map(a => a.platform))];
 
   return (
     <div className="advertise-page">
@@ -5074,12 +4442,11 @@ function CodeSharing() {
       return;
     }
     
-    // Key by user ID (stable, unique) not display name (mutable, non-unique)
-    const userId = state.currentUser.id;
-    const userLiked = (snippet.likedBy || []).includes(userId);
+    const userName = state.profile?.name || state.currentUser.email;
+    const userLiked = snippet.likedBy?.includes(userName);
     const newLikedBy = userLiked 
-      ? snippet.likedBy.filter(u => u !== userId) 
-      : [...(snippet.likedBy || []), userId];
+      ? snippet.likedBy.filter(u => u !== userName) 
+      : [...(snippet.likedBy || []), userName];
     const newLikes = userLiked ? snippet.likes - 1 : snippet.likes + 1;
     
     dispatch({ 
@@ -5109,8 +4476,6 @@ function CodeSharing() {
           }]);
       }
     } catch (error) {
-      // Rollback optimistic update on failure
-      dispatch({ type: 'LIKE_SNIPPET', payload: snippet });
       console.error('Error updating like:', error);
     }
   };
@@ -5142,16 +4507,14 @@ function CodeSharing() {
     }
   };
 
-  const filteredSnippets = useMemo(() => (state.codeSnippets || []).filter(s => {
-    const term = searchTerm.toLowerCase();
-    const matchesSearch = !term ||
-      s.title?.toLowerCase().includes(term) || 
-      s.description?.toLowerCase().includes(term);
+  const filteredSnippets = (state.codeSnippets || []).filter(s => {
+    const matchesSearch = s.title?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         s.description?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesLanguage = filterLanguage === 'all' || s.language?.toLowerCase() === filterLanguage.toLowerCase();
     return matchesSearch && matchesLanguage;
-  }), [state.codeSnippets, searchTerm, filterLanguage]);
+  });
 
-  const languages = useMemo(() => [...new Set((state.codeSnippets || []).map(s => s.language).filter(Boolean))], [state.codeSnippets]);
+  const languages = [...new Set((state.codeSnippets || []).map(s => s.language))];
 
   return (
     <div className="code-sharing-page">
@@ -5321,8 +4684,8 @@ function CodeCard({ snippet, onLike, onDelete }) {
     });
   };
   
-  // Use user ID (stable, unique) not display name (mutable, non-unique)
-  const isLiked = !!(state.currentUser && (snippet.likedBy || []).includes(state.currentUser.id));
+  const userName = state.profile?.name || state.currentUser?.email;
+  const isLiked = state.currentUser && snippet.likedBy?.includes(userName);
 
   return (
     <>
@@ -5439,14 +4802,13 @@ function Favorites() {
 }
 
 // ============================================
-// SETTINGS COMPONENT — FULLY FUNCTIONAL
+// SETTINGS COMPONENT
 // ============================================
 function Settings() {
   const { state, dispatch } = useAppContext();
   const [activeTab, setActiveTab] = useState('profile');
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [avatarSaved, setAvatarSaved] = useState(false);
   
   const [profileForm, setProfileForm] = useState({
     name: state.profile?.name || '',
@@ -5454,9 +4816,7 @@ function Settings() {
     bio: state.profile?.bio || '',
     website: state.profile?.website || '',
     github: state.profile?.github || '',
-    twitter: state.profile?.twitter || '',
-    linkedin: state.profile?.linkedin || '',
-    role: state.profile?.role || 'developer'
+    twitter: state.profile?.twitter || ''
   });
   
   const [securityForm, setSecurityForm] = useState({
@@ -5464,35 +4824,22 @@ function Settings() {
     newPassword: '',
     confirmNewPassword: ''
   });
-  const [showPwd, setShowPwd] = useState({ current: false, newp: false, confirm: false });
-  const [sessions, setSessions] = useState([
-    { id: 1, device: '💻 Chrome on Windows', location: 'Current session', time: 'Now', current: true },
-    { id: 2, device: '📱 Safari on iPhone', location: 'Last seen 2 days ago', time: '2d ago', current: false },
-  ]);
   
   const [notificationPrefs, setNotificationPrefs] = useState({
-    emailNotifications: state.profile?.notif_email ?? true,
-    pushNotifications: state.profile?.notif_push ?? false,
-    marketingEmails: state.profile?.notif_marketing ?? false,
-    listingUpdates: state.profile?.notif_listings ?? true,
-    messageAlerts: state.profile?.notif_messages ?? true,
-    favoritesActivity: state.profile?.notif_favorites ?? true,
-    weeklyDigest: state.profile?.notif_digest ?? false
+    emailNotifications: true,
+    pushNotifications: false,
+    marketingEmails: false,
+    listingUpdates: true,
+    messageAlerts: true,
+    favoritesActivity: true,
+    weeklyDigest: false
   });
   
   const [privacySettings, setPrivacySettings] = useState({
-    profileVisibility: state.profile?.privacy_visibility || 'public',
-    showEmail: state.profile?.privacy_show_email ?? false,
-    showActivity: state.profile?.privacy_show_activity ?? true,
-    allowMessages: state.profile?.privacy_allow_messages ?? true,
-    showOnlineStatus: state.profile?.privacy_online ?? true,
-    indexableProfile: state.profile?.privacy_indexable ?? true,
-  });
-
-  const [connectedAccounts, setConnectedAccounts] = useState({
-    github: state.profile?.github ? true : false,
-    twitter: state.profile?.twitter ? true : false,
-    linkedin: state.profile?.linkedin ? true : false,
+    profileVisibility: 'public',
+    showEmail: false,
+    showActivity: true,
+    allowMessages: true
   });
 
   useEffect(() => {
@@ -5502,9 +4849,7 @@ function Settings() {
       bio: state.profile?.bio || '',
       website: state.profile?.website || '',
       github: state.profile?.github || '',
-      twitter: state.profile?.twitter || '',
-      linkedin: state.profile?.linkedin || '',
-      role: state.profile?.role || 'developer'
+      twitter: state.profile?.twitter || ''
     });
   }, [state.profile, state.currentUser]);
 
@@ -5523,172 +4868,108 @@ function Settings() {
   const handleProfileUpdate = async (e) => {
     e.preventDefault();
     setSaving(true);
+    
+    dispatch({ type: 'UPDATE_PROFILE', payload: profileForm });
+    
     try {
-      const { error } = await supabase.from('profiles').upsert({
+      await supabase.from('profiles').upsert({
         id: state.currentUser.id,
-        name: profileForm.name,
-        bio: profileForm.bio,
-        website: profileForm.website,
-        github: profileForm.github,
-        twitter: profileForm.twitter,
-        linkedin: profileForm.linkedin,
-        role: profileForm.role,
+        ...profileForm,
         updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-      if (error) throw error;
-      // Only update global state after confirmed DB write
-      dispatch({ type: 'UPDATE_PROFILE', payload: profileForm });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Profile updated successfully!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
+      });
     } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save profile: ' + (error.message || 'Unknown error'), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      console.error('Could not save to Supabase:', error);
     }
+    
+    dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+      message: '✅ Profile updated!', 
+      type: 'success', 
+      time: new Date().toLocaleTimeString(), 
+      read: false 
+    }});
     setSaving(false);
-  };
-
-  const handleAvatarUpdate = async (avatarUrl) => {
-    const prev = state.profile?.avatar_url;
-    dispatch({ type: 'UPDATE_AVATAR', payload: avatarUrl });
-    try {
-      const { error } = await supabase.from('profiles').update({ avatar_url: avatarUrl, updated_at: new Date().toISOString() }).eq('id', state.currentUser.id);
-      if (error) { dispatch({ type: 'UPDATE_AVATAR', payload: prev }); throw error; }
-      setAvatarSaved(true);
-      setTimeout(() => setAvatarSaved(false), 3000);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Avatar updated!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (err) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save avatar', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
   };
 
   const handlePasswordChange = async (e) => {
     e.preventDefault();
+    
     if (!securityForm.currentPassword) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Please enter your current password', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-      return;
-    }
-    if (securityForm.newPassword !== securityForm.confirmNewPassword) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ New passwords do not match', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-      return;
-    }
-    if (securityForm.newPassword.length < 6) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Password must be at least 6 characters', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-      return;
-    }
-    setSaving(true);
-    try {
-      const { error } = await supabase.auth.updateUser({ password: securityForm.newPassword });
-      if (error) throw error;
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Password changed successfully!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-      setSecurityForm({ currentPassword: '', newPassword: '', confirmNewPassword: '' });
-    } catch (error) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `❌ ${error.message}`, type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-    setSaving(false);
-  };
-
-  const handleSaveNotifications = async () => {
-    try {
-      const newVal = state.notificationsEnabled;
-      const updateData = {
-        id: state.currentUser.id,
-        notifications_enabled: newVal,
-        notif_email: notificationPrefs.emailNotifications,
-        notif_push: notificationPrefs.pushNotifications,
-        notif_marketing: notificationPrefs.marketingEmails,
-        notif_listings: notificationPrefs.listingUpdates,
-        notif_messages: notificationPrefs.messageAlerts,
-        notif_favorites: notificationPrefs.favoritesActivity,
-        notif_digest: notificationPrefs.weeklyDigest,
-        updated_at: new Date().toISOString()
-      };
-      await supabase.from('profiles').upsert(updateData, { onConflict: 'id' });
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Notification preferences saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save preferences', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-  };
-
-  const handleSavePrivacy = async () => {
-    try {
-      await supabase.from('profiles').upsert({
-        id: state.currentUser.id,
-        privacy_visibility: privacySettings.profileVisibility,
-        privacy_show_email: privacySettings.showEmail,
-        privacy_show_activity: privacySettings.showActivity,
-        privacy_allow_messages: privacySettings.allowMessages,
-        privacy_online: privacySettings.showOnlineStatus,
-        privacy_indexable: privacySettings.indexableProfile,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-      dispatch({ type: 'UPDATE_PROFILE', payload: {
-        privacy_visibility: privacySettings.profileVisibility,
-        privacy_show_email: privacySettings.showEmail,
-        privacy_show_activity: privacySettings.showActivity,
-        privacy_allow_messages: privacySettings.allowMessages,
-        privacy_online: privacySettings.showOnlineStatus,
-        privacy_indexable: privacySettings.indexableProfile,
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Please enter current password', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
       }});
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Privacy settings saved!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not save privacy settings', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      return;
     }
-  };
-
-  const handleExportData = async () => {
-    try {
-      const exportPayload = {
-        profile: state.profile,
-        listings: (state.listings || []).filter(l => l.user_id === state.currentUser.id),
-        favorites: state.favorites || [],
-        codeSnippets: (state.codeSnippets || []).filter(s => s.user_id === state.currentUser.id),
-        exportedAt: new Date().toISOString()
-      };
-      const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `devmarket-data-${state.currentUser.id.substring(0, 8)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '📦 Data exported successfully!', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Export failed', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+    
+    if (securityForm.newPassword !== securityForm.confirmNewPassword) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Passwords do not match', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
     }
-  };
-
-  const handleDeleteAccount = async () => {
+    
+    if (securityForm.newPassword.length < 6) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Password must be at least 6 characters', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
+      return;
+    }
+    
     setSaving(true);
+    
     try {
-      const userId = state.currentUser.id;
-      // Delete user data in dependency order (non-critical failures are tolerated)
-      await Promise.allSettled([
-        supabase.from('favorites').delete().eq('user_id', userId),
-        supabase.from('listings').delete().eq('user_id', userId),
-        supabase.from('follows').delete().eq('follower_id', userId),
-        supabase.from('follows').delete().eq('following_id', userId),
-      ]);
-      await supabase.from('profiles').delete().eq('id', userId);
-      // signOut triggers onAuthStateChange(SIGNED_OUT) → dispatches LOGOUT
-      await supabase.auth.signOut();
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '👋 Account deleted. Goodbye!', type: 'info', time: new Date().toLocaleTimeString(), read: false, _force: true }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not delete account. Please contact support.', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
+      const { error } = await supabase.auth.updateUser({
+        password: securityForm.newPassword
+      });
+      
+      if (error) {
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: `❌ ${error.message}`, 
+          type: 'error', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+      } else {
+        dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+          message: '✅ Password changed!', 
+          type: 'success', 
+          time: new Date().toLocaleTimeString(), 
+          read: false 
+        }});
+        setSecurityForm({
+          currentPassword: '',
+          newPassword: '',
+          confirmNewPassword: ''
+        });
+      }
+    } catch (error) {
+      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+        message: '❌ Failed to update password', 
+        type: 'error', 
+        time: new Date().toLocaleTimeString(), 
+        read: false 
+      }});
     }
+    
     setSaving(false);
-    setShowDeleteConfirm(false);
   };
 
   const sidebarTabs = [
     { id: 'profile', icon: '👤', label: 'Profile' },
-    { id: 'avatar', icon: '🖼️', label: 'Avatar' },
     { id: 'security', icon: '🔒', label: 'Security' },
     { id: 'notifications', icon: '🔔', label: 'Notifications' },
     { id: 'privacy', icon: '🛡️', label: 'Privacy' },
     { id: 'appearance', icon: '🎨', label: 'Appearance' },
-    { id: 'connected', icon: '🔗', label: 'Connections' },
     { id: 'danger', icon: '⚠️', label: 'Danger Zone' }
   ];
-
-  const userName = state.profile?.name || state.currentUser?.email?.split('@')[0] || 'User';
 
   return (
     <>
@@ -5722,40 +5003,49 @@ function Settings() {
                   <label>Full Name</label>
                   <div className="input-wrapper">
                     <span className="input-icon">👤</span>
-                    <input type="text" value={profileForm.name} onChange={e => setProfileForm({ ...profileForm, name: e.target.value })} placeholder="Your full name" />
+                    <input
+                      type="text"
+                      value={profileForm.name}
+                      onChange={e => setProfileForm({ ...profileForm, name: e.target.value })}
+                      placeholder="Your full name"
+                    />
                   </div>
                 </div>
                 
                 <div className="form-group">
-                  <label>Email Address <span style={{fontSize:'0.75rem',color:'var(--gray-400)'}}>— cannot be changed here</span></label>
+                  <label>Email Address</label>
                   <div className="input-wrapper">
                     <span className="input-icon">📧</span>
-                    <input type="email" value={profileForm.email} disabled style={{ background: 'var(--gray-100)', cursor: 'not-allowed' }} />
+                    <input
+                      type="email"
+                      value={profileForm.email}
+                      disabled
+                      style={{ background: 'var(--gray-100)' }}
+                    />
                   </div>
-                </div>
-
-                <div className="form-group">
-                  <label>Role</label>
-                  <select value={profileForm.role} onChange={e => setProfileForm({ ...profileForm, role: e.target.value })}>
-                    <option value="developer">👨‍💻 Developer</option>
-                    <option value="designer">🎨 Designer</option>
-                    <option value="freelancer">💼 Freelancer</option>
-                    <option value="startup">🚀 Startup</option>
-                    <option value="other">👤 Other</option>
-                  </select>
                 </div>
                 
                 <div className="form-group">
                   <label>Bio</label>
-                  <textarea value={profileForm.bio} onChange={e => setProfileForm({ ...profileForm, bio: e.target.value })} placeholder="Tell the community about yourself..." rows="4" className="settings-textarea" maxLength={500} />
-                  <small style={{color:'var(--gray-400)'}}>{profileForm.bio.length}/500 characters</small>
+                  <textarea
+                    value={profileForm.bio}
+                    onChange={e => setProfileForm({ ...profileForm, bio: e.target.value })}
+                    placeholder="Tell us about yourself..."
+                    rows="4"
+                    className="settings-textarea"
+                  />
                 </div>
                 
                 <div className="form-group">
                   <label>Website</label>
                   <div className="input-wrapper">
                     <span className="input-icon">🌐</span>
-                    <input type="url" value={profileForm.website} onChange={e => setProfileForm({ ...profileForm, website: e.target.value })} placeholder="https://yourwebsite.com" />
+                    <input
+                      type="url"
+                      value={profileForm.website}
+                      onChange={e => setProfileForm({ ...profileForm, website: e.target.value })}
+                      placeholder="https://yourwebsite.com"
+                    />
                   </div>
                 </div>
                 
@@ -5764,192 +5054,133 @@ function Settings() {
                     <label>GitHub Username</label>
                     <div className="input-wrapper">
                       <span className="input-icon">⌨️</span>
-                      <input type="text" value={profileForm.github} onChange={e => setProfileForm({ ...profileForm, github: e.target.value })} placeholder="username" />
+                      <input
+                        type="text"
+                        value={profileForm.github}
+                        onChange={e => setProfileForm({ ...profileForm, github: e.target.value })}
+                        placeholder="username"
+                      />
                     </div>
                   </div>
                   <div className="form-group">
-                    <label>Twitter / X Handle</label>
+                    <label>Twitter Handle</label>
                     <div className="input-wrapper">
                       <span className="input-icon">𝕏</span>
-                      <input type="text" value={profileForm.twitter} onChange={e => setProfileForm({ ...profileForm, twitter: e.target.value })} placeholder="@username" />
-                    </div>
-                  </div>
-                  <div className="form-group">
-                    <label>LinkedIn Username</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">💼</span>
-                      <input type="text" value={profileForm.linkedin} onChange={e => setProfileForm({ ...profileForm, linkedin: e.target.value })} placeholder="your-linkedin-username" />
+                      <input
+                        type="text"
+                        value={profileForm.twitter}
+                        onChange={e => setProfileForm({ ...profileForm, twitter: e.target.value })}
+                        placeholder="@username"
+                      />
                     </div>
                   </div>
                 </div>
                 
                 <button type="submit" className="btn-primary" disabled={saving}>
-                  {saving ? '💾 Saving...' : '💾 Save Profile'}
+                  {saving ? '💾 Saving...' : '💾 Save Changes'}
                 </button>
               </form>
             )}
 
-            {activeTab === 'avatar' && (
-              <div className="settings-form">
-                <h3>Profile Picture</h3>
-                <p className="settings-description">Choose how you appear across DevMarket</p>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, padding: '20px 0' }}>
-                  <AvatarUpload
-                    currentAvatar={state.profile?.avatar_url}
-                    userName={userName}
-                    onAvatarUpdate={handleAvatarUpdate}
-                    size="large"
-                  />
-                  {avatarSaved && <p style={{color:'var(--success)',fontWeight:600}}>✅ Avatar saved to your profile!</p>}
-                  <p style={{color:'var(--gray-500)',fontSize:'0.88rem',textAlign:'center',maxWidth:340}}>
-                    Click your avatar above to choose from preset options. Your picture is shown on your profile, listings, posts and messages.
-                  </p>
-                </div>
-              </div>
-            )}
-
             {activeTab === 'security' && (
-              <div className="settings-form">
-                <h3>Security</h3>
-                <p className="settings-description">Keep your account safe with a strong password</p>
-
-                <form onSubmit={handlePasswordChange}>
-                  <div className="form-group">
-                    <label>Current Password</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">🔒</span>
-                      <input
-                        type={showPwd.current ? 'text' : 'password'}
-                        value={securityForm.currentPassword}
-                        onChange={e => setSecurityForm({ ...securityForm, currentPassword: e.target.value })}
-                        placeholder="Enter current password"
-                      />
-                      <button type="button" className="pwd-toggle" onClick={() => setShowPwd(p => ({...p, current: !p.current}))}>{showPwd.current ? '🙈' : '👁️'}</button>
-                    </div>
+              <form onSubmit={handlePasswordChange} className="settings-form">
+                <h3>Change Password</h3>
+                <p className="settings-description">Ensure your account is using a strong password</p>
+                
+                <div className="form-group">
+                  <label>Current Password</label>
+                  <div className="input-wrapper">
+                    <span className="input-icon">🔒</span>
+                    <input
+                      type="password"
+                      value={securityForm.currentPassword}
+                      onChange={e => setSecurityForm({ ...securityForm, currentPassword: e.target.value })}
+                      placeholder="Enter current password"
+                    />
                   </div>
-                  <div className="form-group">
-                    <label>New Password</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">🔑</span>
-                      <input
-                        type={showPwd.newp ? 'text' : 'password'}
-                        value={securityForm.newPassword}
-                        onChange={e => setSecurityForm({ ...securityForm, newPassword: e.target.value })}
-                        placeholder="At least 6 characters"
-                      />
-                      <button type="button" className="pwd-toggle" onClick={() => setShowPwd(p => ({...p, newp: !p.newp}))}>{showPwd.newp ? '🙈' : '👁️'}</button>
-                    </div>
-                    {securityForm.newPassword && (
-                      <div className="password-strength">
-                        <div className={`strength-bar ${securityForm.newPassword.length < 6 ? 'weak' : securityForm.newPassword.length < 10 ? 'medium' : 'strong'}`}></div>
-                        <small>{securityForm.newPassword.length < 6 ? '⚠️ Too short' : securityForm.newPassword.length < 10 ? '🟡 Medium' : '✅ Strong'}</small>
-                      </div>
-                    )}
-                  </div>
-                  <div className="form-group">
-                    <label>Confirm New Password</label>
-                    <div className="input-wrapper">
-                      <span className="input-icon">🔑</span>
-                      <input
-                        type={showPwd.confirm ? 'text' : 'password'}
-                        value={securityForm.confirmNewPassword}
-                        onChange={e => setSecurityForm({ ...securityForm, confirmNewPassword: e.target.value })}
-                        placeholder="Repeat new password"
-                      />
-                      <button type="button" className="pwd-toggle" onClick={() => setShowPwd(p => ({...p, confirm: !p.confirm}))}>{showPwd.confirm ? '🙈' : '👁️'}</button>
-                    </div>
-                    {securityForm.confirmNewPassword && securityForm.newPassword !== securityForm.confirmNewPassword && (
-                      <small style={{color:'var(--danger)'}}>❌ Passwords don't match</small>
-                    )}
-                    {securityForm.confirmNewPassword && securityForm.newPassword === securityForm.confirmNewPassword && (
-                      <small style={{color:'var(--success)'}}>✅ Passwords match</small>
-                    )}
-                  </div>
-                  <button type="submit" className="btn-primary" disabled={saving}>
-                    {saving ? '🔒 Updating...' : '🔒 Update Password'}
-                  </button>
-                </form>
-
-                <div style={{marginTop: 32}}>
-                  <h4 style={{marginBottom: 12}}>Active Sessions</h4>
-                  {sessions.map(s => (
-                    <div key={s.id} className="session-item">
-                      <span className="session-device">{s.device}</span>
-                      <span className="session-location">{s.location}</span>
-                      {s.current ? (
-                        <span className="badge-current">Current</span>
-                      ) : (
-                        <button className="btn-sm" style={{background:'var(--danger)',color:'white',border:'none',cursor:'pointer'}}
-                          onClick={() => { setSessions(prev => prev.filter(x => x.id !== s.id)); dispatch({type:'ADD_NOTIFICATION',payload:{message:'🔒 Session revoked',type:'info',time:new Date().toLocaleTimeString(),read:false}}); }}>
-                          Revoke
-                        </button>
-                      )}
-                    </div>
-                  ))}
                 </div>
-              </div>
+                
+                <div className="form-group">
+                  <label>New Password</label>
+                  <div className="input-wrapper">
+                    <span className="input-icon">🔑</span>
+                    <input
+                      type="password"
+                      value={securityForm.newPassword}
+                      onChange={e => setSecurityForm({ ...securityForm, newPassword: e.target.value })}
+                      placeholder="Enter new password"
+                    />
+                  </div>
+                </div>
+                
+                <div className="form-group">
+                  <label>Confirm New Password</label>
+                  <div className="input-wrapper">
+                    <span className="input-icon">🔑</span>
+                    <input
+                      type="password"
+                      value={securityForm.confirmNewPassword}
+                      onChange={e => setSecurityForm({ ...securityForm, confirmNewPassword: e.target.value })}
+                      placeholder="Confirm new password"
+                    />
+                  </div>
+                </div>
+                
+                <button type="submit" className="btn-primary" disabled={saving}>
+                  {saving ? '🔒 Updating...' : '🔒 Update Password'}
+                </button>
+              </form>
             )}
 
             {activeTab === 'notifications' && (
               <div className="settings-form">
                 <h3>Notification Preferences</h3>
-                <p className="settings-description">Configure how and when you receive notifications</p>
+                <p className="settings-description">Configure how you receive notifications</p>
 
                 <div className="setting-item master-toggle">
                   <div className="setting-info">
-                    <strong>Enable All Notifications</strong>
+                    <strong>Enable Notifications</strong>
                     <p>When disabled, no notifications will appear or be stored</p>
                   </div>
                   <label className="toggle-switch">
-                    <input type="checkbox" checked={state.notificationsEnabled} onChange={async () => {
-                      const newVal = !state.notificationsEnabled;
-                      dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
-                      if (!newVal) {
-                        dispatch({ type: 'CLEAR_NOTIFICATIONS' });
-                      }
-                      // Use _force:true so this feedback toast bypasses the disabled-notifications guard
-                      dispatch({ type: 'ADD_NOTIFICATION', payload: {
-                        message: newVal ? '🔔 Notifications are now ON' : '🔕 Notifications are now OFF',
-                        type: newVal ? 'success' : 'info',
-                        time: new Date().toLocaleTimeString(),
-                        read: false,
-                        _force: true
-                      }});
-                      if (state.currentUser) {
-                        try {
-                          await supabase.from('profiles').upsert({
-                            id: state.currentUser.id,
-                            notifications_enabled: newVal,
-                            updated_at: new Date().toISOString()
-                          }, { onConflict: 'id' });
-                        } catch(e) {}
-                      }
-                    }} />
+                    <input
+                      type="checkbox"
+                      checked={state.notificationsEnabled}
+                      onChange={async () => {
+                        const newVal = !state.notificationsEnabled;
+                        dispatch({ type: 'SET_NOTIFICATIONS_ENABLED', payload: newVal });
+                        // Save to Supabase profile if logged in
+                        if (state.currentUser) {
+                          try {
+                            await supabase.from('profiles').upsert({
+                              id: state.currentUser.id,
+                              notifications_enabled: newVal,
+                              updated_at: new Date().toISOString()
+                            }, { onConflict: 'id' });
+                          } catch(e) { console.log('Could not save notification pref:', e); }
+                        }
+                        if (!newVal) {
+                          dispatch({ type: 'CLEAR_NOTIFICATIONS' });
+                        }
+                      }}
+                    />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
-                <p style={{ fontSize: '0.8rem', marginTop: 4, fontWeight: 600, minHeight: '1.2em', color: state.notificationsEnabled ? 'var(--success)' : 'var(--danger)' }}>
-                  {state.notificationsEnabled ? '🔔 Notifications are currently ON' : '🔕 Notifications are currently OFF'}
-                </p>
 
                 {state.notificationsEnabled && (
                   <div className="notification-settings">
-                    {[
-                      { key: 'emailNotifications', label: 'Email Notifications', desc: 'Get important updates via email' },
-                      { key: 'pushNotifications', label: 'Push Notifications', desc: 'Browser push alerts (requires permission)' },
-                      { key: 'messageAlerts', label: 'Message Alerts', desc: 'When someone sends you a message' },
-                      { key: 'listingUpdates', label: 'Listing Updates', desc: 'Activity on your listings' },
-                      { key: 'favoritesActivity', label: 'Favorites Activity', desc: 'Updates from items you favorited' },
-                      { key: 'weeklyDigest', label: 'Weekly Digest', desc: 'Weekly summary of platform activity' },
-                      { key: 'marketingEmails', label: 'Marketing Emails', desc: 'Product news and feature announcements' },
-                    ].map(({ key, label, desc }) => (
+                    {Object.entries(notificationPrefs).map(([key, value]) => (
                       <div className="setting-item" key={key}>
                         <div className="setting-info">
-                          <strong>{label}</strong>
-                          <p>{desc}</p>
+                          <strong>{key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</strong>
                         </div>
                         <label className="toggle-switch">
-                          <input type="checkbox" checked={notificationPrefs[key]} onChange={() => setNotificationPrefs({ ...notificationPrefs, [key]: !notificationPrefs[key] })} />
+                          <input
+                            type="checkbox"
+                            checked={value}
+                            onChange={() => setNotificationPrefs({ ...notificationPrefs, [key]: !value })}
+                          />
                           <span className="toggle-slider"></span>
                         </label>
                       </div>
@@ -5957,7 +5188,19 @@ function Settings() {
                   </div>
                 )}
                 
-                <button onClick={handleSaveNotifications} className="btn-primary">
+                <button
+                  onClick={() => {
+                    if (state.notificationsEnabled) {
+                      dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+                        message: '✅ Notification preferences saved!', 
+                        type: 'success', 
+                        time: new Date().toLocaleTimeString(), 
+                        read: false 
+                      }});
+                    }
+                  }}
+                  className="btn-primary"
+                >
                   💾 Save Preferences
                 </button>
               </div>
@@ -5966,134 +5209,109 @@ function Settings() {
             {activeTab === 'privacy' && (
               <div className="settings-form">
                 <h3>Privacy Settings</h3>
-                <p className="settings-description">Control your privacy, visibility and data</p>
+                <p className="settings-description">Control your privacy and visibility</p>
                 
                 <div className="form-group">
                   <label>Profile Visibility</label>
-                  <select value={privacySettings.profileVisibility} onChange={e => setPrivacySettings({ ...privacySettings, profileVisibility: e.target.value })}>
-                    <option value="public">🌍 Public — visible to everyone</option>
-                    <option value="members">👥 Members Only — logged-in users only</option>
-                    <option value="private">🔒 Private — only you</option>
+                  <select
+                    value={privacySettings.profileVisibility}
+                    onChange={e => setPrivacySettings({ ...privacySettings, profileVisibility: e.target.value })}
+                  >
+                    <option value="public">Public</option>
+                    <option value="members">Members Only</option>
+                    <option value="private">Private</option>
                   </select>
                 </div>
                 
-                {[
-                  { key: 'showEmail', label: 'Show Email on Profile', desc: 'Display your email publicly' },
-                  { key: 'showActivity', label: 'Show Activity Feed', desc: 'Others can see your recent activity' },
-                  { key: 'allowMessages', label: 'Allow Direct Messages', desc: 'Let others message you' },
-                  { key: 'showOnlineStatus', label: 'Show Online Status', desc: 'Show when you\'re active' },
-                  { key: 'indexableProfile', label: 'Allow Search Indexing', desc: 'Your profile may appear in search results' },
-                ].map(({ key, label, desc }) => (
+                {Object.entries({
+                  showEmail: 'Show Email',
+                  showActivity: 'Show Activity',
+                  allowMessages: 'Allow Messages'
+                }).map(([key, label]) => (
                   <div className="setting-item" key={key}>
                     <div className="setting-info">
                       <strong>{label}</strong>
-                      <p>{desc}</p>
                     </div>
                     <label className="toggle-switch">
-                      <input type="checkbox" checked={privacySettings[key]} onChange={() => setPrivacySettings({ ...privacySettings, [key]: !privacySettings[key] })} />
+                      <input
+                        type="checkbox"
+                        checked={privacySettings[key]}
+                        onChange={() => setPrivacySettings({ ...privacySettings, [key]: !privacySettings[key] })}
+                      />
                       <span className="toggle-slider"></span>
                     </label>
                   </div>
                 ))}
                 
-                <button onClick={handleSavePrivacy} className="btn-primary">💾 Save Privacy Settings</button>
+                <button
+                  onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+                    message: '✅ Privacy settings saved!', 
+                    type: 'success', 
+                    time: new Date().toLocaleTimeString(), 
+                    read: false 
+                  }})}
+                  className="btn-primary"
+                >
+                  💾 Save Privacy Settings
+                </button>
               </div>
             )}
 
             {activeTab === 'appearance' && (
               <div className="settings-form">
-                <h3>Appearance</h3>
+                <h3>Appearance Settings</h3>
                 <p className="settings-description">Customize your visual experience</p>
                 
-                <div className="theme-cards-row">
-                  {[
-                    { id: 'light', label: '☀️ Light', desc: 'Clean and bright' },
-                    { id: 'dark', label: '🌙 Dark', desc: 'Easy on the eyes' },
-                  ].map(t => (
-                    <div
-                      key={t.id}
-                      className={`theme-card ${state.theme === t.id ? 'selected' : ''}`}
-                      onClick={() => { if (state.theme !== t.id) dispatch({ type: 'TOGGLE_THEME' }); }}
-                    >
-                      <div className={`theme-preview theme-preview-${t.id}`}></div>
-                      <strong>{t.label}</strong>
-                      <p>{t.desc}</p>
-                      {state.theme === t.id && <span className="theme-check">✅ Active</span>}
-                    </div>
-                  ))}
+                <div className="theme-toggle-section">
+                  <div className="theme-info">
+                    <strong>Theme Mode</strong>
+                    <p>Choose between light and dark theme</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="theme-toggle"
+                    onClick={() => dispatch({ type: 'TOGGLE_THEME' })}
+                  >
+                    {state.theme === 'light' ? '🌙 Switch to Dark' : '☀️ Switch to Light'}
+                  </button>
                 </div>
+                
                 <p style={{ marginTop: '16px', color: 'var(--gray-500)' }}>
                   Current theme: <strong>{state.theme === 'light' ? '☀️ Light' : '🌙 Dark'}</strong>
                 </p>
               </div>
             )}
 
-            {activeTab === 'connected' && (
-              <div className="settings-form">
-                <h3>Connected Accounts</h3>
-                <p className="settings-description">Link your social accounts to your DevMarket profile</p>
-
-                {[
-                  { key: 'github', icon: '⌨️', label: 'GitHub', url: profileForm.github ? `https://github.com/${profileForm.github}` : null, placeholder: 'Enter your GitHub username' },
-                  { key: 'twitter', icon: '𝕏', label: 'Twitter / X', url: profileForm.twitter ? `https://twitter.com/${profileForm.twitter.replace('@','')}` : null, placeholder: 'Enter your Twitter handle' },
-                  { key: 'linkedin', icon: '💼', label: 'LinkedIn', url: profileForm.linkedin ? `https://linkedin.com/in/${profileForm.linkedin}` : null, placeholder: 'Enter your LinkedIn username' },
-                ].map(({ key, icon, label, url, placeholder }) => (
-                  <div key={key} className="connected-account-item">
-                    <div className="connected-account-info">
-                      <span className="connected-icon">{icon}</span>
-                      <div>
-                        <strong>{label}</strong>
-                        {profileForm[key] ? (
-                          <p style={{color:'var(--success)',fontSize:'0.82rem'}}>✅ Connected: {profileForm[key]}</p>
-                        ) : (
-                          <p style={{color:'var(--gray-400)',fontSize:'0.82rem'}}>Not connected</p>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                      {url && <a href={url} target="_blank" rel="noopener noreferrer" className="btn-sm btn-secondary">View</a>}
-                      {profileForm[key] ? (
-                        <button className="btn-sm" style={{background:'var(--danger)',color:'white',border:'none',cursor:'pointer'}}
-                          onClick={() => { setProfileForm(f => ({...f, [key]: ''})); }}>
-                          Disconnect
-                        </button>
-                      ) : (
-                        <button className="btn-sm btn-secondary"
-                          onClick={() => {
-                            const val = prompt(`Enter your ${label} username:`);
-                            if (val) setProfileForm(f => ({...f, [key]: val.replace('@','')}));
-                          }}>
-                          + Connect
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-
-                <div style={{marginTop:20}}>
-                  <button className="btn-primary" onClick={handleProfileUpdate} disabled={saving}>
-                    {saving ? '💾 Saving...' : '💾 Save Connections'}
-                  </button>
-                </div>
-              </div>
-            )}
-
             {activeTab === 'danger' && (
               <div className="settings-form">
                 <h3 style={{ color: 'var(--danger)' }}>⚠️ Danger Zone</h3>
-                <p className="settings-description">These actions are irreversible — proceed with caution</p>
+                <p className="settings-description">Irreversible actions for your account</p>
+                
+                <div className="danger-zone-card">
+                  <h4 style={{ color: 'var(--danger)' }}>Delete Account</h4>
+                  <p>Once you delete your account, there is no going back.</p>
+                  <button
+                    className="btn-primary"
+                    onClick={() => setShowDeleteConfirm(true)}
+                    style={{ background: 'var(--danger)' }}
+                  >
+                    🗑️ Delete My Account
+                  </button>
+                </div>
                 
                 <div className="danger-zone-card warning">
-                  <h4 style={{ color: 'var(--warning)' }}>📥 Export My Data</h4>
-                  <p>Download all your data including your profile, listings, snippets, and favorites as a JSON file.</p>
-                  <button className="btn-secondary" onClick={handleExportData}>📥 Download My Data</button>
-                </div>
-
-                <div className="danger-zone-card" style={{marginTop:16}}>
-                  <h4 style={{ color: 'var(--danger)' }}>🗑️ Delete Account</h4>
-                  <p>Permanently delete your DevMarket account. All your data, listings, and messages will be erased. <strong>This cannot be undone.</strong></p>
-                  <button className="btn-primary" onClick={() => setShowDeleteConfirm(true)} style={{ background: 'var(--danger)' }}>
-                    🗑️ Delete My Account
+                  <h4 style={{ color: 'var(--warning)' }}>Export Data</h4>
+                  <p>Download all your data including listings, messages, and activity.</p>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+                      message: '📦 Data export started!', 
+                      type: 'info', 
+                      time: new Date().toLocaleTimeString(), 
+                      read: false 
+                    }})}
+                  >
+                    📥 Export My Data
                   </button>
                 </div>
               </div>
@@ -6104,246 +5322,22 @@ function Settings() {
       
       <ConfirmDialog
         isOpen={showDeleteConfirm}
-        title="⚠️ Delete Account Forever"
-        message="Are you absolutely sure? Your profile, listings, and all data will be permanently deleted. This cannot be undone."
-        onConfirm={handleDeleteAccount}
+        title="Delete Account"
+        message="Are you absolutely sure? This action cannot be undone."
+        onConfirm={() => {
+          dispatch({ type: 'ADD_NOTIFICATION', payload: { 
+            message: '⚠️ Account deletion is not available in demo mode', 
+            type: 'warning', 
+            time: new Date().toLocaleTimeString(), 
+            read: false 
+          }});
+          setShowDeleteConfirm(false);
+        }}
         onCancel={() => setShowDeleteConfirm(false)}
-        confirmText="Yes, Delete Forever"
+        confirmText="Delete Forever"
         type="danger"
       />
     </>
-  );
-}
-
-// ============================================
-// ADMIN POSTS TAB
-// ============================================
-function AdminPostsTab({ dispatch, state }) {
-  const [posts, setPosts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
-
-  useEffect(() => { loadPosts(); }, []);
-
-  const loadPosts = async () => {
-    setLoading(true);
-    try {
-      const { data } = await supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(100);
-      if (data) setPosts(data);
-    } catch (e) { setPosts([]); }
-    setLoading(false);
-  };
-
-  const handleDeletePost = async (post) => {
-    try {
-      await supabase.from('posts').delete().eq('id', post.id);
-      setPosts(prev => prev.filter(p => p.id !== post.id));
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `🗑️ Post deleted`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-    } catch (e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not delete post', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-    setDeleteConfirm(null);
-  };
-
-  return (
-    <div className="admin-section-card">
-      <div className="admin-section-header">
-        <h3>📝 Community Posts ({posts.length})</h3>
-        <button className="btn-sm btn-secondary" onClick={loadPosts}>🔄 Refresh</button>
-      </div>
-      {loading ? (
-        <div style={{textAlign:'center',padding:40,color:'var(--gray-400)'}}>Loading posts...</div>
-      ) : posts.length === 0 ? (
-        <div style={{textAlign:'center',padding:40,color:'var(--gray-400)'}}>No posts yet</div>
-      ) : (
-        <div className="admin-listings-grid">
-          {posts.map(post => (
-            <div key={post.id} className="admin-listing-item">
-              <div className="admin-listing-info">
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                  <img src={post.author_avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(post.author_name||'U')}&background=667eea&color=fff&size=24`} alt="" style={{width:24,height:24,borderRadius:'50%'}} />
-                  <strong>{post.author_name || 'Unknown'}</strong>
-                  <small style={{color:'var(--gray-400)'}}>{new Date(post.created_at).toLocaleDateString()}</small>
-                  <span style={{marginLeft:'auto',color:'var(--danger)',fontSize:'0.8rem'}}>❤️ {post.likes || 0}</span>
-                </div>
-                <p style={{fontSize:'0.88rem',color:'var(--gray-600)',margin:0}}>{post.text?.substring(0, 120)}{post.text?.length > 120 ? '...' : ''}</p>
-                {post.image_url && <small style={{color:'var(--primary)'}}>📷 Has image</small>}
-                {post.video_url && <small style={{color:'var(--primary)'}}>🎥 Has video</small>}
-              </div>
-              <div className="admin-listing-actions">
-                <button className="btn-sm" style={{background:'var(--danger)',color:'white',border:'none',cursor:'pointer'}} onClick={() => setDeleteConfirm(post)}>🗑️ Remove</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      <ConfirmDialog
-        isOpen={!!deleteConfirm}
-        title="Delete Post"
-        message={`Remove this post by ${deleteConfirm?.author_name}? This cannot be undone.`}
-        onConfirm={() => handleDeletePost(deleteConfirm)}
-        onCancel={() => setDeleteConfirm(null)}
-        confirmText="Delete"
-        type="danger"
-      />
-    </div>
-  );
-}
-
-// ============================================
-// ADMIN ANNOUNCEMENTS TAB — FULL IMPLEMENTATION
-// ============================================
-function AdminAnnouncementsTab({ dispatch, state }) {
-  const [form, setForm] = useState({ title: '', message: '', type: 'info' });
-  const [submitting, setSubmitting] = useState(false);
-  const [maintenanceOn, setMaintenanceOn] = useState(state.maintenanceMode || false);
-  const [savingMaintenance, setSavingMaintenance] = useState(false);
-  const [activeAnnouncement, setActiveAnnouncement] = useState(state.announcement?.message || '');
-  const [announcements, setAnnouncements] = useState([]);
-
-  useEffect(() => { loadRecentAnnouncements(); }, []);
-
-  const loadRecentAnnouncements = async () => {
-    try {
-      const { data } = await supabase.from('notifications').select('*').eq('is_announcement', true).order('created_at', { ascending: false }).limit(10);
-      if (data) setAnnouncements(data);
-    } catch(e) {}
-  };
-
-  const savePlatformSettings = async (updates) => {
-    try {
-      await supabase.from('platform_settings').upsert({ id: 'main', ...updates, updated_at: new Date().toISOString() }, { onConflict: 'id' });
-    } catch(e) { console.error('platform_settings save failed:', e); }
-  };
-
-  const handleToggleMaintenance = async () => {
-    setSavingMaintenance(true);
-    const newVal = !maintenanceOn;
-    setMaintenanceOn(newVal);
-    dispatch({ type: 'SET_MAINTENANCE_MODE', payload: newVal });
-    await savePlatformSettings({ maintenance_mode: newVal });
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: newVal ? '🔧 Maintenance mode ON — users see maintenance page' : '✅ Maintenance mode OFF — site is live', type: newVal ? 'warning' : 'success', time: new Date().toLocaleTimeString(), read: false }});
-    setSavingMaintenance(false);
-  };
-
-  const handleSetAnnouncement = async () => {
-    if (!form.title.trim() && !form.message.trim()) return;
-    setSubmitting(true);
-    const fullMsg = form.title.trim() ? `${form.title}: ${form.message}` : form.message;
-    try {
-      // Save to platform_settings for real-time broadcast
-      await savePlatformSettings({ announcement_message: fullMsg, announcement_type: form.type });
-      // Also notify all users via notifications table
-      const { data: allUsers } = await supabase.from('profiles').select('id').limit(500);
-      if (allUsers && allUsers.length > 0) {
-        const notifs = allUsers.map(u => ({ user_id: u.id, message: `📢 ${fullMsg}`, type: form.type, is_announcement: true, read: false, created_at: new Date().toISOString() }));
-        await supabase.from('notifications').insert(notifs);
-      }
-      dispatch({ type: 'SET_ANNOUNCEMENT', payload: { message: fullMsg, type: form.type, id: Date.now() } });
-      setActiveAnnouncement(fullMsg);
-      setAnnouncements(prev => [{ id: Date.now(), message: `📢 ${fullMsg}`, type: form.type, created_at: new Date().toISOString() }, ...prev]);
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: `📢 Announcement broadcast to ${allUsers?.length || 0} users`, type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-      setForm({ title: '', message: '', type: 'info' });
-    } catch(e) {
-      dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '❌ Could not send: ' + (e.message || ''), type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-    }
-    setSubmitting(false);
-  };
-
-  const handleClearAnnouncement = async () => {
-    await savePlatformSettings({ announcement_message: null });
-    dispatch({ type: 'CLEAR_ANNOUNCEMENT' });
-    setActiveAnnouncement('');
-    dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '✅ Announcement cleared', type: 'success', time: new Date().toLocaleTimeString(), read: false }});
-  };
-
-  return (
-    <div style={{display:'flex',flexDirection:'column',gap:20}}>
-      {/* Maintenance Mode */}
-      <div className="admin-section-card">
-        <div className="admin-section-header"><h3>🔧 Maintenance Mode</h3></div>
-        <div className="settings-form" style={{padding:'12px 0 0'}}>
-          <div className="setting-item master-toggle">
-            <div className="setting-info">
-              <strong>Enable Maintenance Mode</strong>
-              <p>When ON, non-admin users see a maintenance page. You can still access the admin panel.</p>
-            </div>
-            <label className="toggle-switch">
-              <input type="checkbox" checked={maintenanceOn} onChange={handleToggleMaintenance} disabled={savingMaintenance} />
-              <span className="toggle-slider"></span>
-            </label>
-          </div>
-          {maintenanceOn && (
-            <div className="maintenance-active-notice">
-              ⚠️ <strong>Maintenance mode is ACTIVE.</strong> Regular users cannot access the site right now.
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Active Announcement */}
-      {activeAnnouncement && (
-        <div className="admin-section-card">
-          <div className="admin-section-header"><h3>📌 Active Announcement</h3></div>
-          <div style={{padding:'12px 0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
-            <p style={{margin:0,fontSize:'0.9rem',color:'var(--gray-700)'}}>{activeAnnouncement}</p>
-            <button className="btn-sm" style={{background:'var(--danger)',color:'white',border:'none',cursor:'pointer',flexShrink:0}} onClick={handleClearAnnouncement}>🗑️ Clear</button>
-          </div>
-        </div>
-      )}
-
-      {/* Send Announcement */}
-      <div className="admin-section-card">
-        <div className="admin-section-header"><h3>📢 Send Announcement Banner</h3></div>
-        <div className="settings-form" style={{padding:'12px 0 0'}}>
-          <div className="form-group">
-            <label>Title (optional)</label>
-            <div className="input-wrapper">
-              <span className="input-icon">📢</span>
-              <input type="text" value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="e.g., New Feature Available!" />
-            </div>
-          </div>
-          <div className="form-group">
-            <label>Message <span className="required">*</span></label>
-            <textarea value={form.message} onChange={e => setForm({...form, message: e.target.value})} placeholder="Write your announcement..." rows={3} className="settings-textarea" />
-          </div>
-          <div className="form-group">
-            <label>Type</label>
-            <select value={form.type} onChange={e => setForm({...form, type: e.target.value})}>
-              <option value="info">ℹ️ Info</option>
-              <option value="success">✅ Success</option>
-              <option value="warning">⚠️ Warning</option>
-              <option value="error">🚨 Alert</option>
-            </select>
-          </div>
-          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-            <button className="btn-primary" onClick={handleSetAnnouncement} disabled={submitting || (!form.title.trim() && !form.message.trim())}>
-              {submitting ? '📤 Sending...' : '📤 Broadcast to All Users'}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Recent */}
-      <div className="admin-section-card">
-        <div className="admin-section-header"><h3>📋 Recent Announcements</h3></div>
-        {announcements.length === 0 ? (
-          <p style={{color:'var(--gray-400)',textAlign:'center',padding:20}}>No announcements sent yet</p>
-        ) : (
-          <div className="activity-list">
-            {announcements.map((a, i) => (
-              <div key={a.id || i} className="activity-item">
-                <span>{a.type === 'success' ? '✅' : a.type === 'warning' ? '⚠️' : a.type === 'error' ? '🚨' : 'ℹ️'}</span>
-                <div>
-                  <p style={{margin:0,fontSize:'0.88rem'}}>{a.message}</p>
-                  <small style={{color:'var(--gray-400)'}}>{new Date(a.created_at).toLocaleDateString()}</small>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -6352,7 +5346,6 @@ function AdminAnnouncementsTab({ dispatch, state }) {
 // ============================================
 function Footer() {
   const currentYear = new Date().getFullYear();
-  const { canInstall, install } = usePWAInstall();
   
   return (
     <footer className="footer">
@@ -6367,150 +5360,13 @@ function Footer() {
           <Link to="/advertise">Advertise</Link>
           <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
-        {canInstall && (
-          <button className="footer-pwa-btn" onClick={install}>
-            📲 Add to Home Screen
-          </button>
-        )}
         <p className="footer-copy">&copy; {currentYear} DevMarket</p>
       </div>
     </footer>
   );
 }
 
-// ============================================
-// FLOATING PWA INSTALL BUTTON
-// ============================================
-function FloatingPWAButton() {
-  const { canInstall, install } = usePWAInstall();
-  const [dismissed, setDismissed] = useState(() => {
-    try { return localStorage.getItem('pwaDismissed') === '1'; } catch(e) { return false; }
-  });
-
-  if (!canInstall || dismissed) return null;
-
-  return (
-    <div className="pwa-float-banner">
-      <div className="pwa-float-content">
-        <span className="pwa-float-icon">📲</span>
-        <div className="pwa-float-text">
-          <strong>Install DevMarket</strong>
-          <p>Add to your home screen for the best experience</p>
-        </div>
-      </div>
-      <div className="pwa-float-actions">
-        <button className="pwa-float-install" onClick={install}>Install</button>
-        <button className="pwa-float-dismiss" onClick={() => { setDismissed(true); try { localStorage.setItem('pwaDismissed', '1'); } catch(e) {} }}>✕</button>
-      </div>
-    </div>
-  );
-}
-
 export default App;
-
-// ============================================
-// MEDIA UPLOAD ZONE — Drag & Drop + URL
-// ============================================
-function MediaUploadZone({ label, accept, currentUrl, onUrl, onFile }) {
-  const [isDragging, setIsDragging] = useState(false);
-  const [urlMode, setUrlMode] = useState(false);
-  const [urlVal, setUrlVal] = useState(currentUrl || '');
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef();
-
-  const handleDrop = async (e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    await onFile(file);
-    setUploading(false);
-  };
-
-  const handleFileChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    await onFile(file);
-    setUploading(false);
-  };
-
-  const handleUrlSubmit = (e) => {
-    e.preventDefault();
-    onUrl(urlVal.trim());
-    setUrlMode(false);
-  };
-
-  const isImage = label.includes('📷');
-  const preview = currentUrl;
-
-  return (
-    <div className="media-upload-zone-wrapper">
-      {urlMode ? (
-        <div className="media-url-mode">
-          <input
-            type="url"
-            placeholder={isImage ? "Paste image URL..." : "Paste video/YouTube URL..."}
-            value={urlVal}
-            onChange={e => setUrlVal(e.target.value)}
-            className="compose-url-input"
-            autoFocus
-          />
-          <div className="media-url-actions">
-            <button className="btn-secondary btn-sm" onClick={() => setUrlMode(false)}>Cancel</button>
-            <button className="btn-primary btn-sm" onClick={handleUrlSubmit}>Use URL</button>
-          </div>
-        </div>
-      ) : (
-        <div
-          className={`media-dropzone ${isDragging ? 'dragging' : ''} ${preview ? 'has-media' : ''}`}
-          onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          onClick={() => !preview && fileRef.current?.click()}
-        >
-          <input
-            ref={fileRef}
-            type="file"
-            accept={accept}
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
-          {uploading ? (
-            <div className="dropzone-uploading">
-              <div className="upload-spinner"></div>
-              <p>Uploading...</p>
-            </div>
-          ) : preview ? (
-            <div className="dropzone-preview">
-              {isImage ? (
-                <img src={preview} alt="Preview" onError={e => e.target.style.display='none'} />
-              ) : (
-                <div className="dropzone-video-thumb">🎥 Video attached</div>
-              )}
-              <button
-                className="dropzone-remove"
-                onClick={e => { e.stopPropagation(); onUrl(''); setUrlVal(''); }}
-                title="Remove"
-              >×</button>
-            </div>
-          ) : (
-            <div className="dropzone-empty">
-              <span className="dropzone-icon">{isImage ? '📷' : '🎥'}</span>
-              <p className="dropzone-label">{label}</p>
-              <p className="dropzone-hint">Drag & drop or click to upload</p>
-              <button
-                className="dropzone-url-btn"
-                onClick={e => { e.stopPropagation(); setUrlMode(true); }}
-              >🔗 Use URL instead</button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ============================================
 // POSTS COMPONENT — Social Feed
@@ -6583,21 +5439,12 @@ function Posts() {
       dispatch({ type: 'ADD_NOTIFICATION', payload: { message: '🔒 Sign in to like posts', type: 'warning', time: new Date().toLocaleTimeString(), read: false }});
       return;
     }
-    // Toggle: prevent double-liking by tracking who liked
-    const likedBy = post.liked_by || [];
-    const alreadyLiked = likedBy.includes(state.currentUser.id);
-    const newLikes = alreadyLiked ? Math.max(0, (post.likes || 0) - 1) : (post.likes || 0) + 1;
-    const newLikedBy = alreadyLiked
-      ? likedBy.filter(id => id !== state.currentUser.id)
-      : [...likedBy, state.currentUser.id];
-
-    // Optimistic update
-    setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: newLikes, liked_by: newLikedBy } : p));
+    const newLikes = (post.likes || 0) + 1;
+    setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: newLikes } : p));
     try {
       await supabase.from('posts').update({ likes: newLikes }).eq('id', post.id);
     } catch (_) {
-      // Rollback
-      setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: post.likes, liked_by: post.liked_by } : p));
+      setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: post.likes } : p));
     }
   };
 
@@ -6659,43 +5506,19 @@ function Posts() {
             rows={4}
           />
           <div className="compose-media-inputs">
-            <MediaUploadZone
-              label="📷 Image"
-              accept="image/*"
-              currentUrl={newPost.imageUrl}
-              onUrl={url => setNewPost({...newPost, imageUrl: url})}
-              onFile={async (file) => {
-                try {
-                  const ext = file.name.split('.').pop();
-                  const path = `posts/${Date.now()}.${ext}`;
-                  const { error } = await supabase.storage.from('post-media').upload(path, file, { upsert: true });
-                  if (!error) {
-                    const { data } = supabase.storage.from('post-media').getPublicUrl(path);
-                    setNewPost(p => ({...p, imageUrl: data.publicUrl}));
-                  }
-                } catch(e) {
-                  dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Image upload failed, try URL instead', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-                }
-              }}
+            <input
+              type="url"
+              placeholder="📷 Image URL (paste a link to an image)"
+              value={newPost.imageUrl}
+              onChange={e => setNewPost({...newPost, imageUrl: e.target.value})}
+              className="compose-url-input"
             />
-            <MediaUploadZone
-              label="🎥 Video"
-              accept="video/*"
-              currentUrl={newPost.videoUrl}
-              onUrl={url => setNewPost({...newPost, videoUrl: url})}
-              onFile={async (file) => {
-                try {
-                  const ext = file.name.split('.').pop();
-                  const path = `posts/${Date.now()}.${ext}`;
-                  const { error } = await supabase.storage.from('post-media').upload(path, file, { upsert: true });
-                  if (!error) {
-                    const { data } = supabase.storage.from('post-media').getPublicUrl(path);
-                    setNewPost(p => ({...p, videoUrl: data.publicUrl}));
-                  }
-                } catch(e) {
-                  dispatch({ type: 'ADD_NOTIFICATION', payload: { message: 'Video upload failed, try URL instead', type: 'error', time: new Date().toLocaleTimeString(), read: false }});
-                }
-              }}
+            <input
+              type="url"
+              placeholder="🎥 Video URL (YouTube, Vimeo, or .mp4 link)"
+              value={newPost.videoUrl}
+              onChange={e => setNewPost({...newPost, videoUrl: e.target.value})}
+              className="compose-url-input"
             />
           </div>
           {newPost.imageUrl && (
@@ -6796,12 +5619,8 @@ function Posts() {
               )}
 
               <div className="post-footer">
-                <button 
-                  className={`post-like-btn ${(post.liked_by || []).includes(state.currentUser?.id) ? 'liked' : ''}`} 
-                  onClick={() => handleLikePost(post)}
-                  title={(post.liked_by || []).includes(state.currentUser?.id) ? 'Unlike' : 'Like'}
-                >
-                  {(post.liked_by || []).includes(state.currentUser?.id) ? '❤️' : '🤍'} <span>{post.likes || 0}</span>
+                <button className="post-like-btn" onClick={() => handleLikePost(post)}>
+                  ❤️ <span>{post.likes || 0}</span>
                 </button>
               </div>
             </div>
