@@ -1,0 +1,10 @@
+@"
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+"@ | Out-File -Encoding utf8 vercel.json
