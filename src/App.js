@@ -1,5 +1,5 @@
 // ============================================
-// src/App.js (COMPLETE ENHANCED VERSION - FIXED)
+// src/App.js (COMPLETE ENHANCED VERSION)
 // ============================================
 import React, { useState, useEffect, createContext, useContext, useReducer, useCallback, useRef, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, Navigate } from 'react-router-dom';
@@ -114,6 +114,7 @@ function appReducer(state, action) {
               unreadCount: action.payload.message.to_user === state.currentUser?.id ? c.unreadCount + 1 : c.unreadCount
             };
           }
+          // Check if this is a new conversation
           if (c.userId !== action.payload.otherUserId && !state.conversations.find(conv => conv.userId === action.payload.otherUserId)) {
             return c;
           }
@@ -213,19 +214,23 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Reset error
     setError(null);
 
+    // Validate file type
     const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
     if (!validTypes.includes(file.type)) {
       setError('Please select a valid image file (JPEG, PNG, GIF, WebP, SVG)');
       return;
     }
 
+    // Validate file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
       setError('Image must be less than 5MB');
       return;
     }
 
+    // Show preview immediately
     const reader = new FileReader();
     reader.onload = (event) => {
       setPreview(event.target.result);
@@ -238,6 +243,7 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
       const fileName = `avatar-${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
       const filePath = `public/${fileName}`;
 
+      // Try to upload to Supabase Storage
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('avatars')
         .upload(filePath, file, {
@@ -249,6 +255,7 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
       if (uploadError) {
         console.log('Storage upload error, trying alternative method...');
         
+        // Alternative: Try uploading with different path
         const { data: uploadData2, error: uploadError2 } = await supabase.storage
           .from('avatars')
           .upload(fileName, file, {
@@ -257,6 +264,7 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
           });
 
         if (uploadError2) {
+          // If storage upload fails, use a generated avatar URL
           const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
           onAvatarUpdate(avatarUrl);
           setPreview(null);
@@ -264,12 +272,14 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
           return;
         }
 
+        // Get public URL from alternative upload
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
           .getPublicUrl(fileName);
 
         onAvatarUpdate(publicUrl);
       } else {
+        // Get public URL from successful upload
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
           .getPublicUrl(filePath);
@@ -281,12 +291,14 @@ function AvatarUpload({ currentAvatar, userName, onAvatarUpdate, size = 'large' 
       setError(null);
     } catch (error) {
       console.error('Upload error:', error);
+      // Fallback to generated avatar
       const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userName || 'User')}&background=667eea&color=fff&size=200`;
       onAvatarUpdate(avatarUrl);
       setPreview(null);
       setError('Upload failed, using generated avatar instead');
     } finally {
       setUploading(false);
+      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -507,6 +519,7 @@ function App() {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [hasShownLoader, setHasShownLoader] = useState(false);
 
+  // Check if loader has been shown before
   useEffect(() => {
     const loaderShown = sessionStorage.getItem('devMarketLoaderShown');
     if (loaderShown) {
@@ -514,6 +527,7 @@ function App() {
     }
   }, []);
 
+  // Load public data
   async function loadPublicData() {
     try {
       const [listingsResult, appsResult, snippetsResult] = await Promise.all([
@@ -556,6 +570,7 @@ function App() {
         dispatch({ type: 'SET_CODE_SNIPPETS', payload: formattedSnippets });
       }
 
+      // Load analytics for admin
       const stats = await analytics.getDashboardStats();
       if (stats) {
         dispatch({ type: 'SET_ANALYTICS_DATA', payload: stats });
@@ -571,6 +586,7 @@ function App() {
     }
   }
 
+  // Load user profile
   async function loadProfile(user) {
     try {
       const { data: profile } = await supabase
@@ -614,6 +630,7 @@ function App() {
     }
   }
 
+  // Load user data and setup real-time
   async function loadUserData(userId) {
     try {
       const [notifsResult, msgsResult, favsResult] = await Promise.all([
@@ -648,15 +665,19 @@ function App() {
         dispatch({ type: 'SET_FAVORITES', payload: favorites });
       }
 
+      // Setup real-time subscriptions
       setupRealtimeSubscriptions(userId);
     } catch (error) {
       console.error('Error loading user data:', error);
     }
   }
 
+  // Setup real-time subscriptions for messages and notifications
   function setupRealtimeSubscriptions(userId) {
+    // Clean up existing channels
     realtimeManager.unsubscribeAll();
 
+    // Subscribe to new messages
     realtimeManager.subscribe(
       `messages-${userId}`,
       {
@@ -671,6 +692,7 @@ function App() {
         
         dispatch({ type: 'ADD_MESSAGE', payload: newMsg });
         
+        // Add to conversation
         const otherUserId = newMsg.from_user;
         const otherUserName = newMsg.from_name || 'User';
         const otherUserAvatar = newMsg.from_avatar;
@@ -683,6 +705,7 @@ function App() {
           }
         });
         
+        // Show notification
         dispatch({ type: 'ADD_NOTIFICATION', payload: {
           message: `💬 New message from ${otherUserName}: ${newMsg.subject || newMsg.message?.substring(0, 50)}`,
           type: 'info',
@@ -690,6 +713,7 @@ function App() {
           read: false
         }});
         
+        // Play sound notification if enabled
         try {
           const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2qEcP+1j2Z...');
           audio.volume = 0.3;
@@ -698,6 +722,7 @@ function App() {
       }
     );
 
+    // Subscribe to new notifications
     realtimeManager.subscribe(
       `notifications-${userId}`,
       {
@@ -715,6 +740,7 @@ function App() {
       }
     );
 
+    // Subscribe to listing updates
     realtimeManager.subscribe(
       'listings-updates',
       {
@@ -730,6 +756,7 @@ function App() {
         } else if (payload.eventType === 'UPDATE') {
           dispatch({ type: 'UPDATE_LISTING', payload: payload.new });
         }
+        // Reload public data for consistency
         loadPublicData();
       }
     );
@@ -737,6 +764,7 @@ function App() {
     dispatch({ type: 'SET_REALTIME_CONNECTED', payload: true });
   }
 
+  // Build conversations helper
   function buildConversations(messages, userId) {
     const conversationMap = new Map();
     
@@ -776,6 +804,7 @@ function App() {
     dispatch({ type: 'SET_CONVERSATIONS', payload: conversations });
   }
 
+  // Initialize app
   useEffect(() => {
     let mounted = true;
 
@@ -798,6 +827,7 @@ function App() {
           dispatch({ type: 'INITIALIZED' });
         }
 
+        // Track page view
         analytics.trackPageView(window.location.pathname);
       } catch (error) {
         console.error('Init error:', error);
@@ -823,6 +853,7 @@ function App() {
       initialize().then(() => setIsInitialLoading(false));
     }
 
+    // Auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (mounted) {
         dispatch({ type: 'SET_SESSION', payload: session });
@@ -842,19 +873,23 @@ function App() {
       subscription?.unsubscribe();
       realtimeManager.unsubscribeAll();
     };
+    // eslint-disable-next-line
   }, []);
 
+  // Load theme
   useEffect(() => {
     const savedTheme = localStorage.getItem('devMarketTheme');
     if (savedTheme && savedTheme !== state.theme) {
       dispatch({ type: 'TOGGLE_THEME' });
     }
+    // eslint-disable-next-line
   }, []);
 
   const removeNotification = useCallback((id) => {
     dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
   }, []);
 
+  // Loading states
   if (isInitialLoading && !hasShownLoader) {
     return (
       <div className="dm-loader">
@@ -1260,7 +1295,7 @@ function Header() {
 }
 
 // ============================================
-// AUTH MODAL
+// AUTH MODAL (Same as before, included for completeness)
 // ============================================
 function AuthModal({ setShowAuth, authMode, setAuthMode }) {
   const { state, dispatch } = useAppContext();
@@ -1439,6 +1474,7 @@ function AuthModal({ setShowAuth, authMode, setAuthMode }) {
 function AdminDashboard() {
   const { state, dispatch } = useAppContext();
   const [activeTab, setActiveTab] = useState('overview');
+  const [moderationAction, setModerationAction] = useState(null);
   const [loading, setLoading] = useState(false);
 
   if (!state.currentUser || !state.isAdmin) {
@@ -1695,6 +1731,7 @@ function Messages() {
   }, [state.activeConversation?.messages, scrollToBottom]);
 
   useEffect(() => {
+    // Scroll when new messages arrive via real-time
     if (state.realtimeConnected) {
       scrollToBottom();
     }
@@ -1732,6 +1769,7 @@ function Messages() {
       const { error } = await supabase.from('messages').insert([msgData]);
       
       if (!error) {
+        // Create notification for recipient
         try {
           await supabase.from('notifications').insert([{
             user_id: replyingTo.userId,
@@ -1753,6 +1791,8 @@ function Messages() {
         
         setReplyMessage('');
         
+        // The real-time subscription will handle updating the UI
+        // But we'll also refresh messages for consistency
         const { data: msgsResult } = await supabase
           .from('messages')
           .select('*')
@@ -1799,6 +1839,7 @@ function Messages() {
     setReplyingTo(conv);
     dispatch({ type: 'MARK_CONVERSATION_READ', payload: conv.userId });
     
+    // Mark messages as read in database
     conv.messages.forEach(async (msg) => {
       if (!msg.read && msg.to_user === state.currentUser.id) {
         try {
@@ -2007,6 +2048,7 @@ function Profile() {
   };
 
   const handleDeleteAccount = async () => {
+    // Demo mode - just show notification
     dispatch({ type: 'ADD_NOTIFICATION', payload: { 
       message: '⚠️ Account deletion requires admin approval. Contact support.', 
       type: 'warning', 
@@ -2188,7 +2230,7 @@ function Home() {
 }
 
 // ============================================
-// LISTING CARD COMPONENT
+// LISTING CARD COMPONENT (With Delete)
 // ============================================
 function ListingCard({ listing }) {
   const { state, dispatch } = useAppContext();
@@ -2234,6 +2276,7 @@ function ListingCard({ listing }) {
 
         await supabase.from('messages').insert([msgData]);
         
+        // Also create a notification for the recipient
         try {
           await supabase.from('notifications').insert([{
             user_id: listing.user_id,
@@ -2442,6 +2485,7 @@ function Marketplace() {
   });
   const [submitting, setSubmitting] = useState(false);
 
+  // Parse search query from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const search = params.get('search');
@@ -2733,7 +2777,7 @@ function Marketplace() {
 }
 
 // ============================================
-// ADVERTISE COMPONENT
+// ADVERTISE COMPONENT (With Delete)
 // ============================================
 function Advertise() {
   const { state, dispatch } = useAppContext();
@@ -3192,7 +3236,7 @@ function AppCard({ app }) {
 }
 
 // ============================================
-// CODE SHARING COMPONENT
+// CODE SHARING COMPONENT (With Delete)
 // ============================================
 function CodeSharing() {
   const { state, dispatch } = useAppContext();
@@ -3614,10 +3658,6 @@ function CodeCard({ snippet, onLike, onDelete }) {
     </>
   );
 }
-
-// ============================================
-// FAVORITES COMPONENT
-// ============================================
 function Favorites() {
   const { state } = useAppContext();
   

@@ -1,0 +1,212 @@
+[1mdiff --git a/src/App.css b/src/App.css[m
+[1mindex 43a7997..02cf769 100644[m
+[1m--- a/src/App.css[m
+[1m+++ b/src/App.css[m
+[36m@@ -123,7 +123,65 @@[m [mbody.modal-open {[m
+   background: var(--gray-500);[m
+ }[m
+ [m
+[31m-/* Overlay Backdrop */[m
+[32m+[m[32m/* Desktop nav — hidden on mobile */[m
+[32m+[m[32m.desktop-nav {[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* Legacy menu-toggle — hidden */[m
+[32m+[m[32m.menu-toggle {[m
+[32m+[m[32m  display: none;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* ============================================[m
+[32m+[m[32m   MOBILE BOTTOM NAVIGATION[m
+[32m+[m[32m   ============================================ */[m
+[32m+[m[32m.mobile-bottom-nav {[m
+[32m+[m[32m  display: none;[m
+[32m+[m[32m  position: fixed;[m
+[32m+[m[32m  bottom: 0;[m
+[32m+[m[32m  left: 0;[m
+[32m+[m[32m  right: 0;[m
+[32m+[m[32m  background: var(--white);[m
+[32m+[m[32m  border-top: 1px solid var(--gray-200);[m
+[32m+[m[32m  z-index: var(--z-header);[m
+[32m+[m[32m  padding: 0;[m
+[32m+[m[32m  padding-bottom: env(safe-area-inset-bottom, 0px);[m
+[32m+[m[32m  box-shadow: 0 -2px 10px rgba(0,0,0,0.08);[m
+[32m+[m[32m}[m
+[32m+[m[32m@media (max-width: 768px) {[m
+[32m+[m[32m  .desktop-nav { display: none !important; }[m
+[32m+[m[32m  .mobile-bottom-nav { display: flex; }[m
+[32m+[m
+[32m+[m[32m  /* Compact toasts on mobile */[m
+[32m+[m[32m  .toast-container { top: 12px; right: 12px; left: 12px; max-width: none; gap: 8px; }[m
+[32m+[m[32m  .toast { padding: 10px 14px; font-size: 0.88rem; }[m
+[32m+[m[32m  .toast-message { font-size: 0.85rem; }[m
+[32m+[m[32m  .toast-time { font-size: 0.75rem; }[m
+[32m+[m[32m  .toast-icon { font-size: 1rem; }[m
+[32m+[m
+[32m+[m[32m  /* Compact notification dropdown on mobile */[m
+[32m+[m[32m  .notifications-dropdown { left: 8px; right: 8px; top: 72px; max-height: 60vh; }[m
+[32m+[m[32m  .notification-item { padding: 8px 12px; gap: 8px; }[m
+[32m+[m[32m  .notification-body p { font-size: 0.82rem; }[m
+[32m+[m[32m  .notification-body small { font-size: 0.72rem; }[m
+[32m+[m
+[32m+[m[32m  /* Main content bottom padding */[m
+[32m+[m[32m  .main-content { padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px)); }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* Dark mode mobile nav */[m
+[32m+[m[32m.App.dark .mobile-bottom-nav {[m
+[32m+[m[32m  background: rgba(17,24,39,0.97);[m
+[32m+[m[32m  border-top-color: var(--gray-700);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* Dark mode mobile nav item active state */[m
+[32m+[m[32m.App.dark .mobile-nav-btn.active {[m
+[32m+[m[32m  background: rgba(102,126,234,0.12);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+ .overlay-backdrop {[m
+   position: fixed;[m
+   top: 0;[m
+[36m@@ -768,102 +826,235 @@[m [mbody.modal-open {[m
+ }[m
+ [m
+ /* ============================================[m
+[31m-   MODAL STYLES[m
+[31m-   ============================================ */[m
+[31m-/* ============================================[m
+[31m-   AUTHENTICATION MODAL CENTERING FIX[m
+[32m+[m[32m   MODAL STYLES — Portal-rendered, always above everything[m
+    ============================================ */[m
+ [m
+[31m-/* Ensure the modal overlay is properly centered */[m
+[32m+[m[32m/* Base overlay — rendered on document.body via ReactDOM.createPortal[m
+[32m+[m[32m   so it's NEVER trapped inside a header stacking context */[m
+ .modal-overlay {[m
+   position: fixed;[m
+[31m-  top: 0;[m
+[31m-  left: 0;[m
+[31m-  right: 0;[m
+[31m-  bottom: 0;[m
+[32m+[m[32m  inset: 0; /* top:0 right:0 bottom:0 left:0 */[m
+   background: rgba(0, 0, 0, 0.6);[m
+   backdrop-filter: blur(4px);[m
+[32m+[m[32m  -webkit-backdrop-filter: blur(4px);[m
+   display: flex;[m
+   align-items: center;[m
+   justify-content: center;[m
+[31m-  z-index: 2000;[m
+[32m+[m[32m  /* z-index must beat header (100) and any dropdowns (200) */[m
+[32m+[m[32m  z-index: 9000;[m
+   animation: fadeIn 0.2s ease;[m
+[31m-  padding: 20px;[m
+[32m+[m[32m  /* Safe-area-aware padding so content never hides behind notch/home-indicator */[m
+[32m+[m[32m  padding: max(24px, env(safe-area-inset-top, 24px))[m
+[32m+[m[32m           max(16px, env(safe-area-inset-right, 16px))[m
+[32m+[m[32m           max(24px, env(safe-area-inset-bottom, 24px))[m
+[32m+[m[32m           max(16px, env(safe-area-inset-left, 16px));[m
+[32m+[m[32m  overflow-y: auto;[m
+[32m+[m[32m  -webkit-overflow-scrolling: touch;[m
+[32m+[m[32m  overscroll-behavior: contain;[m
+ }[m
+ [m
+[31m-/* Auth Modal - perfectly centered */[m
+[32m+[m[32m/* Auth Modal */[m
+ .auth-modal {[m
+   background: var(--white);[m
+   border-radius: var(--radius-2xl);[m
+[31m-  padding: 48px;[m
+[32m+[m[32m  padding: 40px 48px;[m
+   max-width: 460px;[m
+   width: 100%;[m
+   position: relative;[m
+   animation: authModalIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);[m
+[31m-  box-shadow: var(--shadow-2xl);[m
+[31m-  margin: auto; /* Additional centering */[m
+[31m-  max-height: 90vh;[m
+[32m+[m[32m  box-shadow: 0 32px 64px rgba(0,0,0,0.24);[m
+[32m+[m[32m  /* margin:auto combined with flex centering on overlay = perfectly centered */[m
+[32m+[m[32m  margin: auto;[m
+[32m+[m[32m  max-height: calc(100dvh - 48px);[m
+   overflow-y: auto;[m
+[32m+[m[32m  -webkit-overflow-scrolling: touch;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m@keyframes authModalIn {[m
+[32m+[m[32m  from { opacity: 0; transform: scale(0.92) translateY(16px); }[m
+[32m+[m[32m  to   { opacity: 1; transform: scale(1) translateY(0); }[m
+ }[m
+ [m
+[31m-/* For very small screens */[m
+[31m-@media (max-height: 700px) {[m
+[32m+[m[32m/* Short screens (landscape phones) */[m
+[32m+[m[32m@media (max-height: 680px) {[m
+   .auth-modal {[m
+[31m-    padding: 32px 24px;[m
+[31m-    max-height: 95vh;[m
+[31m-    overflow-y: auto;[m
+[32m+[m[32m    padding: 24px 28px;[m
+[32m+[m[32m    border-radius: var(--radius-xl);[m
+[32m+[m[32m    max-height: calc(100dvh - 24px);[m
+   }[m
+ }[m
+ [m
+[31m-@media (max-width: 480px) {[m
+[32m+[m[32m/* Mobile */[m
+[32m+[m[32m@media (max-width: 520px) {[m
+[32m+[m[32m  .modal-overlay {[m
+[32m+[m[32m    padding: max(12px, env(safe-area-inset-top, 12px))[m
+[32m+[m[32m             12px[m
+[32m+[m[32m             max(12px, env(safe-area-inset-bottom, 12px))[m
+[32m+[m[32m             12px;[m
+[32m+[m[32m  }[m
+[32m+[m
+   .auth-modal {[m
+[31m-    padding: 32px 20px;[m
+[31m-    margin: 16px;[m
+[31m-    max-width: calc(100% - 32px);[m
+[32m+[m[32m    padding: 28px 20px;[m
+[32m+[m[32m    border-radius: var(--radius-xl);[m
+[32m+[m[32m    width: 100%;[m
+[32m+[m[32m    max-width: 100%;[m
+[32m+[m[32m    max-height: calc(100dvh - 24px);[m
+   }[m
+ }[m
+ [m
+[31m-/* Smooth animation */[m
+[31m-@keyframes authModalIn {[m
+[31m-  from {[m
+[31m-    opacity: 0;[m
+[31m-    transform: translate(-50%, -50%) scale(0.9) translateY(20px);[m
+[31m-  }[m
+[31m-  to {[m
+[31m-    opacity: 1;[m
+[31m-    transform: translate(-50%, -50%) scale(1) translateY(0);[m
+[32m+[m[32m@media (max-width: 380px) {[m
+[32m+[m[32m  .auth-modal {[m
+[32m+[m[32m    padding: 22px 16px;[m
+   }[m
+ }[m
+ [m
+[31m-/* Fixed position centering method (alternative) */[m
+[31m-.auth-modal-centered {[m
+[31m-  position: fixed;[m
+[31m-  top: 50%;[m
+[31m-  left: 50%;[m
+[31m-  transform: translate(-50%, -50%);[m
+[32m+[m[32m/* Modal content (confirm dialogs, generic modals) */[m
+[32m+[m[32m.modal-content {[m
+   background: var(--white);[m
+[31m-  border-radius: var(--radius-2xl);[m
+[31m-  padding: 48px;[m
+[31m-  max-width: 460px;[m
+[31m-  width: 90%;[m
+[31m-  z-index: 2001;[m
+[31m-  animation: authModalIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);[m
+[31m-  box-shadow: var(--shadow-2xl);[m
+[31m-  max-height: 90vh;[m
+[32m+[m[32m  border-radius: var(--radius-xl);[m
+[32m+[m[32m  padding: 28px;[m
+[32m+[m[32m  max-width: 500px;[m
+[32
